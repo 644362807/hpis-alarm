@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmConfigureMapper">
+
+    <resultMap type="com.hpis.alarm.domain.AlarmConfigure" id="AlarmConfigureResult" autoMapping="true">
+        <result property="alarmConfigureId"    column="alarm_configure_id" jdbcType="INTEGER"   />
+        <result property="alarmConfigureName"    column="alarm_configure_name"    />
+        <result property="alarmType"    column="alarm_type"    />
+        <result property="deviceSn"    column="device_sn"    />
+        <result property="deviceAlarmControl"    column="device_alarm_control"    />
+        <result property="alarmConfigurePeriod"    column="alarm_configure_period"    />
+        <result property="delFlag"    column="del_flag"    />
+        <result property="createTime"    column="create_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="updateBy"    column="update_by"    />
+        <result property="repeatAlarmDuration"    column="repeat_alarm_duration"    />
+        <result property="sceneType"    column="scene_type"    />
+        <result property="tenantId"    column="tenant_id"    />
+        <result property="repeatCycleNumber"    column="repeat_cycle_number"    />
+        <collection property="alarmConfigureTimeList"
+                    ofType="com.hpis.alarm.domain.AlarmConfigureTime" column="alarm_configure_id" select="queryList1">
+        </collection>
+        <!-- 核心：把 device_id 绑定到集合 -->
+        <collection property="deviceSet" ofType="string">
+            <result column="device_sn"/>
+        </collection>
+    </resultMap>
+
+    <select id="queryList1" resultType="com.hpis.alarm.domain.AlarmConfigureTime" >
+        select alarm_configure_starttime ,alarm_configure_endtime from alarm_configure_time where alarm_configure_id = #{alarm_configure_id} and del_flag = "0"
+    </select>
+
+    <sql id="selectAlarmConfigureVo">
+        select alarm_configure_id, alarm_configure_name, alarm_type, device_sn, device_alarm_control, alarm_configure_period, del_flag, create_time, create_by, update_time, update_by,repeat_alarm_duration,scene_type,tenant_id,repeat_cycle_number from alarm_configure
+    </sql>
+
+    <select id="selectAlarmConfigureList" parameterType="AlarmConfigure" resultMap="AlarmConfigureResult">
+        <include refid="selectAlarmConfigureVo"/>
+
+        <where>
+            del_flag = "0"
+            <if test="alarmConfigureName != null  and alarmConfigureName != ''"> and alarm_configure_name like concat('%', #{alarmConfigureName}, '%')</if>
+            <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
+            <if test="deviceSn != null  and deviceSn != ''"> and device_sn = #{deviceSn}</if>
+            <if test="deviceAlarmControl != null  and deviceAlarmControl != ''"> and device_alarm_control = #{deviceAlarmControl}</if>
+            <if test="alarmConfigurePeriod != null  and alarmConfigurePeriod != ''"> and alarm_configure_period = #{alarmConfigurePeriod}</if>
+            <if test="repeatAlarmDuration != null  "> and repeat_alarm_duration = #{repeatAlarmDuration}</if>
+            <if test="repeatCycleNumber != null  "> and repeat_cycle_number = #{repeatCycleNumber}</if>
+            <if test="sceneType != null  and sceneType != ''"> and scene_type = #{sceneType}</if>
+            <if test="tenantId != null  and tenantId != ''"> and tenant_id = #{tenantId}</if>
+        </where>
+        order by create_time desc
+    </select>
+
+    <select id="selectAlarmConfigureById" parameterType="Long" resultMap="AlarmConfigureResult">
+        <include refid="selectAlarmConfigureVo"/>
+        where alarm_configure_id = #{alarmConfigureId}
+    </select>
+
+    
+    <select id="selectDeviceConfigureByCustomer" resultMap="AlarmConfigureResult">
+        select d.device_sn,c.repeat_cycle_number,c.alarm_configure_id,alarm_configure_name,alarm_type,device_alarm_control,alarm_configure_period,repeat_alarm_duration,scene_type,tenant_id
+        from  alarm_configure c left join alarm_device_configure d on c.alarm_configure_id = d.alarm_configure_id
+        <where>
+            <if test="alarmConfigureName != null  and alarmConfigureName != ''"> and alarm_configure_name like concat('%', #{alarmConfigureName}, '%')</if>
+            <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
+            <if test="deviceSn != null  and deviceSn != ''"> and device_sn = #{deviceSn}</if>
+            <if test="deviceAlarmControl != null  and deviceAlarmControl != ''"> and device_alarm_control = #{deviceAlarmControl}</if>
+            <if test="alarmConfigurePeriod != null  and alarmConfigurePeriod != ''"> and alarm_configure_period = #{alarmConfigurePeriod}</if>
+            <if test="sceneType != null  and sceneType != ''"> and scene_type = #{sceneType}</if>
+            <if test="tenantId != null  and tenantId != ''"> and tenant_id = #{tenantId}</if>
+        </where>
+
+    </select>
+
+    <insert id="insertAlarmConfigure" parameterType="com.hpis.alarm.domain.AlarmConfigure" useGeneratedKeys="true" keyProperty="alarmConfigureId">
+        insert into alarm_configure
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmConfigureName != null and alarmConfigureName != ''">alarm_configure_name,</if>
+            <if test="alarmType != null and alarmType != ''">alarm_type,</if>
+            <if test="deviceSn != null and deviceSn != ''">device_sn,</if>
+            <if test="deviceAlarmControl != null and deviceAlarmControl != ''">device_alarm_control,</if>
+            <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">alarm_configure_period,</if>
+            <if test="delFlag != null and delFlag != ''">del_flag,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="createBy != null and createBy != ''">create_by,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="repeatAlarmDuration != null">repeat_alarm_duration,</if>
+            <if test="updateBy != null">update_by,</if>
+
+            <if test="sceneType != null">scene_type,</if>
+            <if test="tenantId != null">tenant_id,</if>
+            <if test="repeatCycleNumber != null">repeat_cycle_number,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmConfigureName != null and alarmConfigureName != ''">#{alarmConfigureName},</if>
+            <if test="alarmType != null and alarmType != ''">#{alarmType},</if>
+            <if test="deviceSn != null and deviceSn != ''">#{deviceSn},</if>
+            <if test="deviceAlarmControl != null and deviceAlarmControl != ''">#{deviceAlarmControl},</if>
+            <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">#{alarmConfigurePeriod},</if>
+            <if test="delFlag != null and delFlag != ''">#{delFlag},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="createBy != null and createBy != ''">#{createBy},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="repeatAlarmDuration != null">#{repeatAlarmDuration},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+
+            <if test="sceneType != null">#{sceneType},</if>
+            <if test="tenantId != null">#{tenantId},</if>
+            <if test="repeatCycleNumber != null">#{repeatCycleNumber},</if>
+        </trim>
+    </insert>
+
+    <insert id="insertConfigTime" parameterType="com.hpis.alarm.domain.AlarmConfigureTime">
+        insert into alarm_configure_time (alarm_configure_id,alarm_configure_starttime,alarm_configure_endtime,del_flag)
+        values (#{alarmConfigureId},#{alarmConfigureStarttime},#{alarmConfigureEndtime},#{delFlag})
+    </insert>
+
+    <update id="updateAlarmConfigure" parameterType="AlarmConfigure">
+        update alarm_configure
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="alarmConfigureName != null and alarmConfigureName != ''">alarm_configure_name = #{alarmConfigureName},</if>
+            <if test="alarmType != null and alarmType != ''">alarm_type = #{alarmType},</if>
+            <if test="deviceSn != null and deviceSn != ''">device_sn = #{deviceSn},</if>
+            <if test="deviceAlarmControl != null and deviceAlarmControl != ''">device_alarm_control = #{deviceAlarmControl},</if>
+            <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">alarm_configure_period = #{alarmConfigurePeriod},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="createBy != null and createBy != ''">create_by = #{createBy},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+            <if test="repeatAlarmDuration != null">repeat_alarm_duration = #{repeatAlarmDuration},</if>
+
+            <if test="sceneType != null and sceneType != '' ">scene_type = #{sceneType},</if>
+            <if test="tenantId != null">tenant_id = #{tenantId},</if>
+            <if test="repeatCycleNumber != null">repeat_cycle_number = #{repeatCycleNumber},</if>
+        </trim>
+        where alarm_configure_id = #{alarmConfigureId}
+    </update>
+
+    <delete id="deleteAlarmConfigureById" parameterType="Long">
+        delete from alarm_configure where alarm_configure_id = #{alarmConfigureId}
+    </delete>
+
+    <delete id="deleteConfigTime" parameterType="Long">
+        delete from alarm_configure_time where alarm_configure_id = #{alarmConfigureId}
+    </delete>
+
+    <delete id="deleteAlarmConfigureByIds" parameterType="String">
+        update alarm_configure set del_flag=2 where alarm_configure_id in
+        <foreach item="alarmConfigureId" collection="array" open="(" separator="," close=")">
+            #{alarmConfigureId}
+        </foreach>
+    </delete>
+
+    <insert id="batchDeviceConfigure">
+        insert into alarm_device_configure(device_sn, alarm_configure_id) values
+        <foreach item="item" index="index" collection="devices" separator=",">
+            (#{item},#{alarmConfigureId})
+        </foreach>
+    </insert>
+
+
+    <delete id="deleteAlarmConfigureDeviceById" parameterType="Long">
+        delete from alarm_device_configure where alarm_configure_id = #{alarmConfigureId}
+    </delete>
+</mapper>

@@ -1,0 +1,422 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmMapper">
+
+    <resultMap type="Alarm" id="AlarmResult">
+        <result property="alarmId"    column="alarm_id"    />
+        <result property="deviceSn"    column="device_sn"    />
+        <result property="alarmType"    column="alarm_type"    />
+        <result property="alarmRank"    column="alarm_rank"    />
+        <result property="alarmStatus"    column="alarm_status"    />
+        <result property="delFlag"    column="del_flag"    />
+        <result property="alarmBegintime"    column="alarm_beginTime"    />
+        <result property="alarmEndtime"    column="alarm_endTime"    />
+        <result property="picturePath"    column="picture_path"    />
+        <result property="videoPath"    column="video_path"    />
+        <result property="createTime"    column="create_time"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="updateBy"    column="update_by"    />
+        <result property="identify"    column="identify"     />
+        <result property="opinion"     column="opinion"     />
+        <result property="alarmCid"     column="alarm_cid"     />
+        <result property="irmsSn"     column="irms_sn"     />
+        <result property="targetName"     column="target_name"     />
+    </resultMap>
+
+    <sql id="selectAlarmVo">
+        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time, h.update_time, a.create_by, a.update_by,a.scene_type ,h.identify,h.opinion,a.alarm_cid,a.irms_sn,a.target_name,a.remark_data from alarm a
+                                                                                                                                                                                                                                                        left join alarm_handle h on a.alarm_id = h.alarm_id
+    </sql>
+
+    <select id="selectAlarmListPage"  resultMap="AlarmResult">
+        <include refid="selectAlarmVo"/>
+       <where>
+        ${ew.sqlSegment}
+       </where>
+        order by a.create_time desc
+    </select>
+
+    <select id="selectAlarmList"  resultMap="AlarmResult" >
+        <include refid="selectAlarmVo"/>
+        <where>
+            a.del_flag = '0'
+            <if test="deviceSn != null "> and device_sn = #{deviceSn}</if>
+            <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and alarm_rank = #{alarmRank}</if>
+            <if test="alarmStatus != null  and alarmStatus != ''"> and alarm_status = #{alarmStatus}</if>
+            <if test="alarmBegintime != null "> and a.alarm_beginTime > #{alarmBegintime} </if>
+            <if test="alarmEndtime != null "> and  #{alarmEndtime} > a.alarm_beginTime</if>
+        </where>
+        order by a.create_time desc
+    </select>
+
+    <select id="selectAlarmById" parameterType="Long" resultMap="AlarmResult">
+        <include refid="selectAlarmVo"/>
+        where a.alarm_id = #{alarmId}
+    </select>
+
+    <select id="selectAlarmByQueryParameter" resultMap="AlarmResult" >
+        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time,  a.create_by, a.update_by ,a.alarm_cid,a.irms_sn from alarm a
+
+        <where>
+            a.del_flag = '0'
+            <if test="deviceSn != null "> and device_sn = #{deviceSn}</if>
+            <if test="sceneType != null and sceneType != ''"> and scene_type = #{sceneType}</if>
+            <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and alarm_rank = #{alarmRank}</if>
+            <if test="tenantId != null "> and tenant_id = #{tenantId}</if>
+            <if test="alarmStatus != null  and alarmStatus != ''"> and alarm_status = #{alarmStatus}</if>
+            <if test="startTime != null "> and a.alarm_beginTime > #{startTime} </if>
+            <if test="endTime != null "> and  #{endTime} > a.alarm_beginTime</if>
+        </where>
+    </select>
+
+
+    <select id="alarmOfDay" resultType="map">
+
+        SELECT DATE(alarm_beginTime) AS day,
+        COUNT(0) AS count_records
+        FROM  alarm
+        <where>
+            <if test="startTime != null "> and alarm_beginTime > #{startTime} </if>
+            <if test="endTime != null "> and  #{endTime} > alarm_beginTime</if>
+            <if test="tenantId != null "> and tenant_id = #{tenantId}</if>
+        </where>
+        GROUP BY DATE(alarm_beginTime)
+        ORDER BY day;
+    </select>
+
+    <select id="countNoHandelOfDay" resultType="map">
+        SELECT
+
+        COUNT(CASE WHEN DATE(a.alarm_beginTime) = CURDATE() THEN 1 END) AS count_of_transactions_today,
+
+        COUNT(CASE WHEN DATE(a.alarm_beginTime) BETWEEN DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND DATE_SUB(CURDATE(), INTERVAL 3 DAY) THEN 1 END) AS count_of_transactions_three_to_seven_days_ago,
+
+        COUNT(CASE WHEN   DATE_SUB(CURDATE(), INTERVAL 7 DAY)  >  DATE(a.alarm_beginTime)  THEN 1 END) AS count_of_transactions_before_seven_days_ago
+
+        FROM alarm a left join alarm_handle d on a.alarm_id =  d.alarm_id
+
+        <where>
+            a.del_flag = '0'
+            <if test="handleStatus !=null and handleStatus != ''"> and  #{handleStatus} = d.handle_status</if>
+            <if test="startTime != null "> and a.alarm_beginTime &gt; #{startTime} </if>
+            <if test="endTime != null "> and  #{endTime} &gt; a.alarm_beginTime</if>
+        </where>
+    </select>
+
+    <select id="countAlarmMode" resultType="map">
+     select
+    SUM(CASE WHEN alarm_rank = 1 THEN 1 ELSE 0 END) AS rank0,
+    SUM(CASE WHEN alarm_rank = 2 THEN 1 ELSE 0 END) AS rank1,
+    SUM(CASE WHEN alarm_rank = 3 THEN 1 ELSE 0 END) AS rank2
+    from alarm
+        <where>
+            del_flag = '0'
+            <if test="startTime != null "> and alarm_beginTime > #{startTime} </if>
+            <if test="endTime != null "> and  #{endTime} > alarm_beginTime</if>
+     </where>
+</select>
+
+
+
+    <select id="alarmCountByTime" resultType="map">
+        SELECT
+        SUM(CASE WHEN alarm_beginTime > #{alarm.startTime} AND #{alarm.endTime} > alarm_beginTime  THEN 1 ELSE 0 END) AS total_count_custom_range,
+        SUM(CASE WHEN DATE(alarm_beginTime) = CURDATE() THEN 1 ELSE 0 END) AS count_today
+        FROM
+        alarm
+        <where>
+            <if test="alarm.startTime != null "> alarm_beginTime &gt; #{alarm.startTime} </if>
+            <if test="alarm.endTime != null "> and #{alarm.endTime} &gt; alarm_beginTime</if>
+        </where>
+    </select>
+
+    <insert id="insertAlarm" parameterType="com.hpis.alarm.domain.Alarm">
+        insert into alarm
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">alarm_id,</if>
+            <if test="deviceSn != null">device_sn,</if>
+            <if test="alarmType != null and alarmType != ''">alarm_type,</if>
+            <if test="alarmRank != null">alarm_rank,</if>
+            <if test="alarmStatus != null">alarm_status,</if>
+            <if test="delFlag != null">del_flag,</if>
+            <if test="alarmBegintime != null">alarm_beginTime,</if>
+            <if test="alarmEndtime != null">alarm_endTime,</if>
+            <if test="picturePath != null">picture_path,</if>
+            <if test="videoPath != null">video_path,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="createBy != null">create_by,</if>
+            <if test="updateBy != null">update_by,</if>
+            <if test="alarmCid != null">alarm_cid,</if>
+            <if test="irmsSn != null">irms_sn,</if>
+            <if test="areaSn != null">area_sn,</if>
+            <if test="sceneType != null">scene_type,</if>
+            <if test="maxTemp != null">maxTemp,</if>
+            <if test="minTemp != null">minTemp,</if>
+            <if test="targetName != null">target_name,</if>
+            <if test="tenantId != null">tenant_id,</if>
+            <if test="remarkData != null">remark_data,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">#{alarmId},</if>
+            <if test="deviceSn != null">#{deviceSn},</if>
+            <if test="alarmType != null and alarmType != ''">#{alarmType},</if>
+            <if test="alarmRank != null">#{alarmRank},</if>
+            <if test="alarmStatus != null">#{alarmStatus},</if>
+            <if test="delFlag != null">#{delFlag},</if>
+            <if test="alarmBegintime != null">#{alarmBegintime},</if>
+            <if test="alarmEndtime != null">#{alarmEndtime},</if>
+            <if test="picturePath != null">#{picturePath},</if>
+            <if test="videoPath != null">#{videoPath},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="createBy != null">#{createBy},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+            <if test="alarmCid != null">#{alarmCid},</if>
+            <if test="irmsSn != null">#{irmsSn},</if>
+            <if test="areaSn != null">#{areaSn},</if>
+            <if test="sceneType != null">#{sceneType},</if>
+            <if test="maxTemp != null">#{maxTemp},</if>
+            <if test="minTemp != null">#{minTemp},</if>
+            <if test="targetName != null">#{targetName},</if>
+            <if test="tenantId != null">#{tenantId},</if>
+            <if test="remarkData != null">#{remarkData},</if>
+        </trim>
+    </insert>
+
+    <insert id="insertAlarmList" parameterType="java.util.List">
+        insert into alarm
+        <!-- 字段列表：先判断集合是否为空，避免空指针 -->
+        <if test="list != null and list.size() > 0">
+            <trim prefix="(" suffix=")" suffixOverrides=",">
+                <!-- 保留至少一个必选字段，避免字段列表为空 -->
+                alarm_id,
+                <if test="list[0].deviceSn != null">device_sn,</if>
+                <if test="list[0].alarmType != null and list[0].alarmType != ''">alarm_type,</if>
+                <if test="list[0].alarmRank != null">alarm_rank,</if>
+                <if test="list[0].alarmBegintime != null">alarm_beginTime,</if>
+                <if test="list[0].createTime != null">create_time,</if>
+                <if test="list[0].alarmCid != null">alarm_cid,</if>
+                <if test="list[0].irmsSn != null">irms_sn,</if>
+                <if test="list[0].areaSn != null">area_sn,</if>
+                <if test="list[0].sceneType != null">scene_type,</if>
+                <if test="list[0].maxTemp != null">maxTemp,</if>
+                <if test="list[0].minTemp != null">minTemp,</if>
+                <if test="list[0].targetName != null">target_name,</if>
+            </trim>
+        </if>
+        values
+        <!-- 循环值列表：增加非空判断，避免循环空集合 -->
+        <if test="list != null and list.size() > 0">
+            <foreach collection="list" item="item" separator=",">
+                <trim prefix="(" suffix=")" suffixOverrides=",">
+                    <!-- 必选字段：与上面的字段列表对应 -->
+                    #{item.alarmId},
+                    <if test="item.deviceSn != null">#{item.deviceSn},</if>
+                    <if test="item.alarmType != null and item.alarmType != ''">#{item.alarmType},</if>
+                    <if test="item.alarmRank != null">#{item.alarmRank},</if>
+                    <if test="item.alarmBegintime != null">#{item.alarmBegintime},</if>
+                    <if test="item.createTime != null">#{item.createTime},</if>
+                    <if test="item.alarmCid != null">#{item.alarmCid},</if>
+                    <if test="item.irmsSn != null">#{item.irmsSn},</if>
+                    <if test="item.areaSn != null">#{item.areaSn},</if>
+                    <if test="item.sceneType != null">#{item.sceneType},</if>
+                    <if test="item.maxTemp != null">#{item.maxTemp},</if>
+                    <if test="item.minTemp != null">#{item.minTemp},</if>
+                    <if test="item.targetName != null">#{item.targetName},</if>
+                </trim>
+            </foreach>
+        </if>
+    </insert>
+
+    <update id="updateAlarm" parameterType="Alarm">
+        update alarm
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="deviceSn != null">device_sn = #{deviceSn},</if>
+            <if test="alarmType != null and alarmType != ''">alarm_type = #{alarmType},</if>
+            <if test="alarmRank != null">alarm_rank = #{alarmRank},</if>
+            <if test="alarmStatus != null">alarm_status = #{alarmStatus},</if>
+            <if test="delFlag != null">del_flag = #{delFlag},</if>
+            <if test="alarmBegintime != null">alarm_beginTime = #{alarmBegintime},</if>
+            <if test="alarmEndtime != null">alarm_endTime = #{alarmEndtime},</if>
+            <if test="picturePath != null">picture_path = #{picturePath},</if>
+            <if test="videoPath != null">video_path = #{videoPath},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="createBy != null">create_by = #{createBy},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+            <if test="identify != null">update_by = #{identify},</if>
+            <if test="alarmCid != null">alarm_cid = #{alarmCid},</if>
+            <if test="irmsSn != null">irms_sn = #{irmsSn},</if>
+            <if test="areaSn != null">area_sn = #{areaSn},</if>
+            <if test="targetName != null">target_name = #{targetName},</if>
+            <if test="sceneType != null">scene_type = #{sceneType},</if>
+            <if test="minTemp != null">minTemp = #{minTemp},</if>
+            <if test="maxTemp != null">maxTemp = #{maxTemp},</if>
+            <if test="tenantId != null">tenant_id = #{tenantId},</if>
+        </trim>
+        where
+        <choose>
+            <when test="alarmIds !=null ">
+                alarm_id in
+                <foreach item="alarmIdItem" collection="alarmIds" open="(" separator="," close=")">
+                    #{alarmIdItem}
+                </foreach>
+            </when>
+            <otherwise>alarm_id = #{alarmId}</otherwise>
+        </choose>
+    </update>
+
+    <update id="deleteAlarmById" parameterType="Long">
+        update  alarm set del_flag='2' where alarm_id = #{alarmId}
+    </update>
+
+    <delete id="deleteAlarmByIdReal" parameterType="Long">
+        delete from alarm where alarm_id = #{alarmId}
+    </delete>
+
+    <delete id="deleteAlarmByIds" parameterType="String">
+        delete from alarm where alarm_id in
+        <foreach item="alarmId" collection="array" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </delete>
+
+    <update id="alarmStop" parameterType="String">
+        update alarm set alarm_endTime = #{endTime},alarm_status = #{alarmStatus} where  alarm_cid = #{alarmCId}
+    </update>
+
+    <update id="batchStopByAlarmIds">
+        update alarm
+        set alarm_endTime = case alarm_id
+        <foreach collection="items" item="item">
+            when #{item.alarmId} then #{item.stopTime}
+        </foreach>
+        end,
+            alarm_status = #{alarmStatus}
+        where alarm_id in
+        <foreach collection="items" item="item" open="(" separator="," close=")">
+            #{item.alarmId}
+        </foreach>
+          and alarm_endTime is null
+    </update>
+
+    <select id="selectAlarmByIdsForStop" resultMap="AlarmResult">
+        select a.alarm_id,
+               a.device_sn,
+               a.alarm_type,
+               a.alarm_rank,
+               a.alarm_status,
+               a.del_flag,
+               a.alarm_beginTime,
+               a.alarm_endTime,
+               a.picture_path,
+               a.video_path,
+               a.create_time,
+               a.create_by,
+               a.update_by,
+               a.alarm_cid,
+               a.irms_sn,
+               a.target_name
+        from alarm a
+        where a.alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </select>
+
+
+    <update id="alarmStopByDeviceId" parameterType="String">
+        update alarm set alarm_endTime = #{endTime} where  device_sn = #{deviceSn} and  alarm_endTime IS NULL and alarm_type !='3'
+    </update>
+
+    <update id="alarmAllStopByIrmsSn" parameterType="String">
+        update alarm set alarm_endTime = #{endTime} where  irms_sn = #{irmsSn} and  alarm_endTime IS NULL
+    </update>
+
+    <select id="selectAlarmByCid" parameterType="String" resultMap="AlarmResult">
+        select a.alarm_id,
+               a.device_sn,
+               a.alarm_type,
+               a.alarm_rank,
+               a.alarm_status,
+               a.del_flag,
+               a.alarm_beginTime,
+               a.alarm_endTime,
+               a.picture_path,
+               a.video_path,
+               a.create_time,
+               a.create_by,
+               a.update_by,
+               a.target_name
+        from alarm a
+        where a.alarm_cid = #{alarmCid} and a.del_flag=0
+        order by alarm_beginTime,a.create_time desc
+        limit 1
+    </select>
+
+
+    <select id="getDeviceAlarmCountByDeviceIdAndDateRangeToday" resultType="map">
+        SELECT
+        DATE_FORMAT(a.alarm_beginTime, '%Y-%m-%d %H:00:00') AS onDate,
+        SUM(CASE WHEN a.alarm_rank = 0 THEN 1 ELSE 0 END) AS rank0,
+        SUM(CASE WHEN a.alarm_rank = 1 THEN 1 ELSE 0 END) AS rank1,
+        SUM(CASE WHEN a.alarm_rank = 2 THEN 1 ELSE 0 END) AS rank2,
+        COUNT(*) AS count
+        FROM alarm a
+        <if test="tenantId != null and tenantId != ''">
+            JOIN device d ON a.device_sn = d.device_sn
+        </if>
+        WHERE '2' = '2'
+        <if test="deviceSn != null and deviceSn != ''">
+            AND a.device_sn = #{deviceSn}
+        </if>
+        <if test="deviceSn == null or deviceSn == '' and tenantId != null and tenantId != ''">
+            AND d.tenant_id = #{tenantId}
+        </if>
+        AND a.alarm_beginTime BETWEEN #{startTime} AND #{stopTime}
+        AND a.alarm_type = '0'
+        GROUP BY
+        onDate
+        ORDER BY
+        onDate
+    </select>
+
+    <select id="getDeviceAlarmCountByDeviceIdAndDateRange" resultType="map">
+        SELECT
+        DATE_FORMAT(a.alarm_beginTime, '%Y-%m-%d') AS onDate,
+        SUM(CASE WHEN a.alarm_rank = 0 THEN 1 ELSE 0 END) AS rank0,
+        SUM(IF(a.alarm_rank = 1, 1, 0)) AS rank1,
+        SUM(CASE WHEN a.alarm_rank = 2 THEN 1 ELSE 0 END) AS rank2,
+        COUNT(*) AS count
+        FROM alarm a
+        <if test="tenantId != null and tenantId != ''">
+            JOIN device d ON a.device_sn = d.device_sn
+        </if>
+        WHERE '2' = '2'
+        <if test="deviceSn != null and deviceSn != ''">
+            AND a.device_sn = #{deviceSn}
+        </if>
+        <if test="deviceSn == null or deviceSn == '' and tenantId != null and tenantId != ''">
+            AND d.tenant_id = #{tenantId}
+        </if>
+        AND a.alarm_beginTime BETWEEN #{startTime} AND #{stopTime}
+        AND a.alarm_type = '0'
+        GROUP BY
+        onDate
+        ORDER BY
+        onDate
+    </select>
+    <select id="selectCountByBreakLine" resultType="java.lang.Long">
+        select count(0) from alarm
+        where device_sn = #{deviceSn} and alarm_endTime is null
+        <if test="targetName!=null">
+            and target_name = #{targetName}
+        </if>
+    </select>
+</mapper>

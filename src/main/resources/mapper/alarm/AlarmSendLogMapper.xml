@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmSendLogMapper">
+
+    <resultMap type="AlarmSendLog" id="AlarmSendLogResult">
+        <result property="sendLogId"    column="send_log_id"    />
+        <result property="customerId"    column="customer_id"    />
+        <result property="sendStatus"    column="send_status"    />
+        <result property="sendMethod"    column="send_method"    />
+        <result property="sendTarget"    column="send_target"    />
+        <result property="sendContent"    column="send_content"    />
+        <result property="sendTime"    column="send_time"    />
+        <result property="createTime"    column="create_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="updateBy"    column="update_by"    />
+    </resultMap>
+
+    <sql id="selectAlarmSendLogVo">
+        select send_log_id, customer_id, send_status, send_method, send_target, send_content, send_time, create_time, create_by, update_time, update_by from alarm_send_log
+    </sql>
+
+    <select id="selectAlarmSendLogList" parameterType="AlarmSendLog" resultMap="AlarmSendLogResult">
+        <include refid="selectAlarmSendLogVo"/>
+        WHERE del_flag = "0"
+            <if test="customerId != null "> and customer_id = #{customerId}</if>
+            <if test="sendMethod != null  and sendMethod != ''"> and send_method like concat('%', #{sendMethod}, '%')</if>
+            <if test="params.beginSendTime != null and params.beginSendTime != '' and params.endSendTime != null and params.endSendTime != ''"> and send_time between #{params.beginSendTime} and #{params.endSendTime}</if>
+    </select>
+
+    <select id="selectAlarmSendLogById" parameterType="Long" resultMap="AlarmSendLogResult">
+        <include refid="selectAlarmSendLogVo"/>
+        where send_log_id = #{sendLogId}
+    </select>
+
+    <insert id="insertAlarmSendLog" parameterType="AlarmSendLog" useGeneratedKeys="true" keyProperty="sendLogId">
+        insert into alarm_send_log
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="customerId != null">customer_id,</if>
+            <if test="sendStatus != null">send_status,</if>
+            <if test="sendMethod != null">send_method,</if>
+            <if test="sendTarget != null">send_target,</if>
+            <if test="sendContent != null">send_content,</if>
+            <if test="sendTime != null">send_time,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="createBy != null">create_by,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="updateBy != null">update_by,</if>
+         </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="customerId != null">#{customerId},</if>
+            <if test="sendStatus != null">#{sendStatus},</if>
+            <if test="sendMethod != null">#{sendMethod},</if>
+            <if test="sendTarget != null">#{sendTarget},</if>
+            <if test="sendContent != null">#{sendContent},</if>
+            <if test="sendTime != null">#{sendTime},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="createBy != null">#{createBy},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+         </trim>
+    </insert>
+
+    <update id="updateAlarmSendLog" parameterType="AlarmSendLog">
+        update alarm_send_log
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="customerId != null">customer_id = #{customerId},</if>
+            <if test="sendStatus != null">send_status = #{sendStatus},</if>
+            <if test="sendMethod != null">send_method = #{sendMethod},</if>
+            <if test="sendTarget != null">send_target = #{sendTarget},</if>
+            <if test="sendContent != null">send_content = #{sendContent},</if>
+            <if test="sendTime != null">send_time = #{sendTime},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="createBy != null">create_by = #{createBy},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+        </trim>
+        where send_log_id = #{sendLogId}
+    </update>
+
+    <delete id="deleteAlarmSendLogById" parameterType="Long">
+        delete from alarm_send_log where send_log_id = #{sendLogId}
+    </delete>
+
+    <delete id="deleteAlarmSendLogByIds" parameterType="String">
+        update alarm_send_log set del_flag=2 where send_log_id in
+        <foreach item="sendLogId" collection="array" open="(" separator="," close=")">
+            #{sendLogId}
+        </foreach>
+    </delete>
+</mapper>

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmColorMapper">
+    
+    <resultMap type="AlarmColor" id="AlarmColorResult">
+        <result property="colorId"    column="color_id"    />
+        <result property="irmsSn"    column="irms_sn"    />
+        <result property="color0"    column="color0"    />
+        <result property="color1"    column="color1"    />
+        <result property="color2"    column="color2"    />
+        <result property="color3"    column="color3"    />
+        <result property="volColor"    column="vol_color"    />
+    </resultMap>
+
+    <sql id="selectAlarmColorVo">
+        select color_id, irms_sn, color0, color1, color2, color3, vol_color from alarm_color
+    </sql>
+
+    <select id="selectAlarmColorList" parameterType="AlarmColor" resultMap="AlarmColorResult">
+        <include refid="selectAlarmColorVo"/>
+        WHERE del_flag = "0"
+            <if test="irmsSn != null  and irmsSn != ''"> and irms_sn = #{irmsSn}</if>
+    </select>
+    
+    <select id="selectAlarmColorById" parameterType="Long" resultMap="AlarmColorResult">
+        <include refid="selectAlarmColorVo"/>
+        where color_id = #{colorId}
+    </select>
+
+    <select id="selectAlarmColorByIrmsSn" parameterType="String" resultMap="AlarmColorResult">
+        <include refid="selectAlarmColorVo"/>
+        where irms_sn = #{irmsSn}
+    </select>
+        
+    <insert id="insertAlarmColor" parameterType="AlarmColor" useGeneratedKeys="true" keyProperty="colorId">
+        insert into alarm_color
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="irmsSn != null">irms_sn,</if>
+            <if test="color0 != null">color0,</if>
+            <if test="color1 != null">color1,</if>
+            <if test="color2 != null">color2,</if>
+            <if test="color3 != null">color3,</if>
+         </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="irmsSn != null">#{irmsSn},</if>
+            <if test="color0 != null">#{color0},</if>
+            <if test="color1 != null">#{color1},</if>
+            <if test="color2 != null">#{color2},</if>
+            <if test="color3 != null">#{color3},</if>
+         </trim>
+    </insert>
+
+    <update id="updateAlarmColor" parameterType="AlarmColor">
+        update alarm_color
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="irmsSn != null">irms_sn = #{irmsSn},</if>
+            <if test="color0 != null">color0 = #{color0},</if>
+            <if test="color1 != null">color1 = #{color1},</if>
+            <if test="color2 != null">color2 = #{color2},</if>
+            <if test="color3 != null">color3 = #{color3},</if>
+        </trim>
+        where color_id = #{colorId}
+    </update>
+
+    <delete id="deleteAlarmColorById" parameterType="Long">
+        delete from alarm_color where color_id = #{colorId}
+    </delete>
+
+    <delete id="deleteAlarmColorByIds" parameterType="String">
+        update alarm_color set del_flag=2 where color_id in
+        <foreach item="colorId" collection="array" open="(" separator="," close=")">
+            #{colorId}
+        </foreach>
+    </delete>
+</mapper>

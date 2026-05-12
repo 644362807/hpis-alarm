@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmStopSideEffectMapper">
+
+    <resultMap id="AlarmStopSideEffectResult" type="com.hpis.alarm.domain.AlarmStopSideEffectEvent">
+        <id property="id" column="id"/>
+        <result property="alarmId" column="alarm_id"/>
+        <result property="alarmCid" column="alarm_cid"/>
+        <result property="tableSuffix" column="table_suffix"/>
+        <result property="effectType" column="effect_type"/>
+        <result property="payloadJson" column="payload_json"/>
+        <result property="effectStatus" column="effect_status"/>
+        <result property="retryCount" column="retry_count"/>
+        <result property="lastError" column="last_error"/>
+        <result property="createdTime" column="created_time"/>
+        <result property="updatedTime" column="updated_time"/>
+    </resultMap>
+
+    <insert id="upsertPending" parameterType="com.hpis.alarm.domain.AlarmStopSideEffectEvent">
+        insert into alarm_stop_side_effect_event
+        (alarm_id, alarm_cid, table_suffix, effect_type, payload_json, effect_status,
+         retry_count, last_error, created_time, updated_time)
+        values
+        (#{alarmId}, #{alarmCid}, #{tableSuffix}, #{effectType}, #{payloadJson}, 'PENDING',
+         0, null, now(), now())
+        on duplicate key update
+            payload_json = values(payload_json),
+            effect_status = if(effect_status = 'DONE', effect_status, 'PENDING'),
+            last_error = if(effect_status = 'DONE', last_error, null),
+            updated_time = now()
+    </insert>
+
+    <select id="selectPendingBatch" resultMap="AlarmStopSideEffectResult">
+        select *
+        from alarm_stop_side_effect_event
+        where effect_status = 'PENDING'
+        order by created_time, id
+        limit #{limit}
+    </select>
+
+    <update id="markDone">
+        update alarm_stop_side_effect_event
+        set effect_status = 'DONE',
+            updated_time = now()
+        where id = #{id}
+    </update>
+
+    <update id="markRetry">
+        update alarm_stop_side_effect_event
+        set retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where id = #{id}
+          and effect_status = 'PENDING'
+    </update>
+
+    <update id="markFailed">
+        update alarm_stop_side_effect_event
+        set effect_status = 'FAILED',
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where id = #{id}
+          and effect_status = 'PENDING'
+    </update>
+</mapper>

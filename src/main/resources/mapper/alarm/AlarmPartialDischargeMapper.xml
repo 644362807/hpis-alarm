@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmPartialDischargeMapper">
+
+    <resultMap type="AlarmPartialDischarge" id="AlarmPartialDischargeResult">
+        <result property="alarmId"    column="alarm_id"    />
+        <result property="sensorType"    column="sensor_type"    />
+        <result property="channelIndex"    column="channel_index"    />
+        <result property="sensorId"    column="sensor_id"    />
+        <result property="cycleUnit"    column="cycle_unit"    />
+        <result property="alarmFrequency"    column="alarm_frequency"    />
+        <result property="attentionNumber"    column="attention_number"    />
+        <result property="alarmNumber"    column="alarm_number"    />
+        <result property="maxAmplitude"    column="max_amplitude"    />
+    </resultMap>
+
+    <sql id="selectAlarmPartialDischargeVo">
+        select alarm_id, sensor_type, channel_index, sensor_id, cycle_unit, alarm_frequency, attention_number, alarm_number, max_amplitude from alarm_partial_discharge
+    </sql>
+
+    <sql id="selectAlarmPartialDischargeAll">
+        select a.device_sn,a.alarm_type,a.target_name,a.alarm_id, apd.sensor_type, apd.channel_index, apd.sensor_id, apd.cycle_unit, apd.alarm_frequency, apd.attention_number, apd.alarm_number, apd.max_amplitude,a.alarm_beginTime from alarm a left join  alarm_partial_discharge apd
+        on a.alarm_id = apd.alarm_id
+    </sql>
+
+    <select id="selectAlarmPartialDischargeList" parameterType="AlarmPartialDischarge" resultType="com.hpis.alarm.dto.AlarmPartialDischargeDto">
+        <include refid="selectAlarmPartialDischargeAll"/>
+        WHERE del_flag = "0"
+        <if test="deviceSn != null "> and a.device_sn = #{deviceSn}</if>
+        <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+        <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+        <if test="sceneType != null "> and scene_type = #{sceneType}</if>
+        <if test="startTime != null "> and a.alarm_beginTime &gt;= #{startTime}</if>
+        <if test="endTime != null "> and a.alarm_beginTime &lt;= #{endTime}</if>
+         order by a.alarm_beginTime desc
+    </select>
+
+
+    <select id="selectPDListPage" resultType="com.hpis.alarm.dto.AlarmPartialDischargeDto">
+        <include refid="selectAlarmPartialDischargeAll"/>
+        <where>
+            ${ew.sqlSegment}
+        </where>
+        order by a.create_time desc
+    </select>
+
+
+    <select id="selectAlarmPartialDischargeById" parameterType="Long" resultMap="AlarmPartialDischargeResult">
+        <include refid="selectAlarmPartialDischargeVo"/>
+        where alarm_id = #{alarmId}
+    </select>
+
+    <select id="selectAlarmPartialDischargeAll" parameterType="AlarmPartialDischarge"  resultType="com.hpis.alarm.dto.AlarmPartialDischargeDto" >
+        <include refid="selectAlarmPartialDischargeAll"/>
+        <where>
+            1=1
+            <if test="deviceSn != null "> and a.device_sn = #{deviceSn}</if>
+            <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="sceneType != null "> and scene_type = #{sceneType}</if>
+            <if test="startTime != null "> and a.alarm_beginTime &gt;= #{startTime}</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt;= #{endTime}</if>
+            and a.del_flag = '0'
+        </where>
+
+    </select>
+
+    <select id="channelOrDeviceModeCount"  resultType="com.hpis.alarm.dto.AlarmPartialDischargeDto" >
+        select a.device_sn,a.alarm_type, apd.alarm_id, apd.sensor_type, apd.channel_index, apd.sensor_id, apd.cycle_unit, apd.alarm_frequency, apd.attention_number, apd.alarm_number, apd.max_amplitude,a.alarm_beginTime
+        from alarm a left join  alarm_partial_discharge apd
+        on a.alarm_id = apd.alarm_id
+        <where>
+            1=1
+            <if test="deviceSn != null "> and a.device_sn = #{deviceSn}</if>
+            <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="sceneType != null "> and scene_type = #{sceneType}</if>
+            <if test="startTime != null "> and a.alarm_beginTime &gt;= #{startTime}</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt;= #{endTime}</if>
+            and a.del_flag = '0'
+        </where>
+
+    </select>
+
+    <select id="deviceAlarmOfDayByCustomer"  resultType="com.hpis.alarm.dto.AlarmPartialDischargeDto" >
+        select a.device_sn,a.alarm_type, apd.alarm_id, apd.sensor_type, apd.channel_index, apd.sensor_id, apd.cycle_unit, apd.alarm_frequency, apd.attention_number, apd.alarm_number, apd.max_amplitude,a.alarm_beginTime,apd.pd_type
+        from alarm a left join  alarm_partial_discharge apd
+        on a.alarm_id = apd.alarm_id
+        <where>
+            a.del_flag = '0'
+            <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="sceneType != null "> and scene_type = #{sceneType}</if>
+            <if test="startTime != null "> and a.alarm_beginTime &gt;= #{startTime}</if>
+            <if test="deviceSn != null "> and a.device_sn = #{deviceSn}</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt;= #{endTime}</if>
+            <if test="deviceIds != null ">
+             and a.device_id in
+                <foreach item="deviceId" collection="deviceIds" open="(" separator="," close=")">
+                    #{deviceId}
+                </foreach>
+             </if>
+        </where>
+
+    </select>
+
+    <insert id="insertAlarmPartialDischarge" parameterType="AlarmPartialDischarge">
+        insert into alarm_partial_discharge
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">alarm_id,</if>
+            <if test="sensorType != null">sensor_type,</if>
+            <if test="channelIndex != null">channel_index,</if>
+            <if test="sensorId != null">sensor_id,</if>
+            <if test="cycleUnit != null">cycle_unit,</if>
+            <if test="alarmFrequency != null">alarm_frequency,</if>
+            <if test="attentionNumber != null">attention_number,</if>
+            <if test="alarmNumber != null">alarm_number,</if>
+            <if test="maxAmplitude != null">max_amplitude,</if>
+            <if test="pdType != null">pd_type,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">#{alarmId},</if>
+            <if test="sensorType != null">#{sensorType},</if>
+            <if test="channelIndex != null">#{channelIndex},</if>
+            <if test="sensorId != null">#{sensorId},</if>
+            <if test="cycleUnit != null">#{cycleUnit},</if>
+            <if test="alarmFrequency != null">#{alarmFrequency},</if>
+            <if test="attentionNumber != null">#{attentionNumber},</if>
+            <if test="alarmNumber != null">#{alarmNumber},</if>
+            <if test="maxAmplitude != null">#{maxAmplitude},</if>
+            <if test="pdType != null">#{pdType},</if>
+        </trim>
+    </insert>
+
+    <update id="updateAlarmPartialDischarge" parameterType="AlarmPartialDischarge">
+        update alarm_partial_discharge
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="sensorType != null">sensor_type = #{sensorType},</if>
+            <if test="channelIndex != null">channel_index = #{channelIndex},</if>
+            <if test="sensorId != null">sensor_id = #{sensorId},</if>
+            <if test="cycleUnit != null">cycle_unit = #{cycleUnit},</if>
+            <if test="alarmFrequency != null">alarm_frequency = #{alarmFrequency},</if>
+            <if test="attentionNumber != null">attention_number = #{attentionNumber},</if>
+            <if test="alarmNumber != null">alarm_number = #{alarmNumber},</if>
+            <if test="maxAmplitude != null">max_amplitude = #{maxAmplitude},</if>
+        </trim>
+        where alarm_id = #{alarmId}
+    </update>
+
+    <delete id="deleteAlarmPartialDischargeById" parameterType="Long">
+        delete from alarm_partial_discharge where alarm_id = #{alarmId}
+    </delete>
+
+    <delete id="deleteAlarmPartialDischargeByIds" parameterType="String">
+        update alarm_partial_discharge set del_flag=2 where alarm_id in
+        <foreach item="alarmId" collection="array" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </delete>
+</mapper>

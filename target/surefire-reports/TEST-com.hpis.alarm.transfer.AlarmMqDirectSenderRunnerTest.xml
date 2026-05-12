@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuite tests="1" failures="0" name="com.hpis.alarm.transfer.AlarmMqDirectSenderRunnerTest" time="3.217" errors="0" skipped="0">
+  <properties>
+    <property name="java.vendor" value="Oracle Corporation"/>
+    <property name="mq.queue" value="alarm_queue"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="alarm.mq.send.progressEvery" value="1000"/>
+    <property name="alarm.mq.send.alarmIdPrefix" value="A260512213104b4f"/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="os.name" value="Windows 10"/>
+    <property name="alarm.mq.send.orderMode" value="START_THEN_STOP"/>
+    <property name="sun.boot.class.path" value="C:\Program Files\Java\jdk1.8.0_321\jre\lib\resources.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\rt.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\sunrsasign.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\jsse.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\jce.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\charsets.jar;C:\Program Files\Java\jdk1.8.0_321\jre\lib\jfr.jar;C:\Program Files\Java\jdk1.8.0_321\jre\classes"/>
+    <property name="alarm.mq.send.seed" value="1778592664286"/>
+    <property name="sun.desktop" value="windows"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.runtime.version" value="1.8.0_321-b07"/>
+    <property name="mq.virtualHost" value="/"/>
+    <property name="alarm.mq.send.stopRatio" value="1"/>
+    <property name="alarm.mq.send.stopStartTime" value="2025-11-01 23:53:00"/>
+    <property name="mq.password" value="guest"/>
+    <property name="user.name" value="ADMIN"/>
+    <property name="guice.disable.misplaced.annotation.check" value="true"/>
+    <property name="user.language" value="zh"/>
+    <property name="failIfNoSpecifiedTests" value="false"/>
+    <property name="alarm.mq.send.alarmCount" value="20000"/>
+    <property name="sun.boot.library.path" value="C:\Program Files\Java\jdk1.8.0_321\jre\bin"/>
+    <property name="classworlds.conf" value="D:\javaSwoft\apache-maven-3.8.8\bin\m2.conf"/>
+    <property name="alarm.mq.send.outputDir" value="D:\studyProject\hpis2.0\hpis\hpis-alarm\target\alarm-loadtest\AUTO-20260512213104"/>
+    <property name="java.version" value="1.8.0_321"/>
+    <property name="user.timezone" value="Asia/Shanghai"/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="java.endorsed.dirs" value="C:\Program Files\Java\jdk1.8.0_321\jre\lib\endorsed"/>
+    <property name="sun.cpu.isalist" value="amd64"/>
+    <property name="sun.jnu.encoding" value="GBK"/>
+    <property name="mq.username" value="guest"/>
+    <property name="file.encoding.pkg" value="sun.io"/>
+    <property name="file.separator" value="\"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="maven.conf" value="D:\javaSwoft\apache-maven-3.8.8/conf"/>
+    <property name="java.class.version" value="52.0"/>
+    <property name="alarm.mq.send.stopEndTime" value="2025-11-01 23:59:55"/>
+    <property name="user.country" value="CN"/>
+    <property name="java.home" value="C:\Program Files\Java\jdk1.8.0_321\jre"/>
+    <property name="alarm.mq.send.maxAlarmCidLength" value="38"/>
+    <property name="java.vm.info" value="mixed mode"/>
+    <property name="os.version" value="10.0"/>
+    <property name="path.separator" value=";"/>
+    <property name="java.vm.version" value="25.321-b07"/>
+    <property name="user.variant" value=""/>
+    <property name="mq.host" value="127.0.0.1"/>
+    <property name="java.awt.printerjob" value="sun.awt.windows.WPrinterJob"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
+    <property name="awt.toolkit" value="sun.awt.windows.WToolkit"/>
+    <property name="user.script" value=""/>
+    <property name="user.home" value="C:\Users\ADMIN"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="test" value="AlarmMqDirectSenderRunnerTest"/>
+    <property name="library.jansi.path" value="D:\javaSwoft\apache-maven-3.8.8\lib\jansi-native"/>
+    <property name="java.library.path" value="C:\Program Files\Java\jdk1.8.0_321\bin;C:\Windows\Sun\Java\bin;C:\Windows\system32;C:\Windows;C:\Users\ADMIN\.codex\tmp\arg0\codex-arg0N0utWa;C:\Program Files\Common Files\Oracle\Java\javapath;D:\Linux\bin\;C:\Program Files (x86)\Common Files\Oracle\Java\javapath;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\javaSwoft\nvm\nvm;C:\Program Files\nodejs;D:\javaSwoft\java17\bin;D:\javaSwoft\git\Git\cmd;D:\javaSwoft\fmpeg\ffmpeg-5.1.2-essentials_build\bin;D:\javaSwoft\apache-maven-3.8.8\bin;D:\javaSwoft\mysql\mysql-8.2.0-winx64\bin;C:\Program Files\Common Files\Autodesk Shared\;C:\Program Files\Microsoft SQL Server\120\Tools\Binn\;D:\javaSwoft\mq\erl9.2\bin;D:\ShellExt\;C:\Program Files\NVIDIA Corporation\NVIDIA app\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\dotnet\;D:\javaSwoft\Docker\Docker\resources\bin;D:\Android\adb\platform-tools;D:\Android\gradle-8.1.1\bin;D:\javaSwoft\mongodb\bin;D:\Android\gradle-8.1.1\bin;D:\javaSwoft\cursor\resources\app\bin;D:\Program Files\Docker\resources\bin;D:\Program Files\Docker\resources\bin;D:\javaSwoft\Scripts\;D:\javaSwoft\;C:\Users\ADMIN\AppData\Local\Microsoft\WindowsApps;D:\javaSwoft\PyCharm Community Edition 2023.2.2\bin;D:\javaSwoft\PyCharm 2020.1.5\bin;C:\Users\ADMIN\AppData\Local\Programs\Ollama;C:\Program Files\JetBrains\IntelliJ IDEA 2024.3.5\bin;D:\javaSwoft\Antigravity\bin;C:\Users\ADMIN\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;."/>
+    <property name="java.vendor.url" value="http://java.oracle.com/"/>
+    <property name="java.vm.vendor" value="Oracle Corporation"/>
+    <property name="maven.home" value="D:\javaSwoft\apache-maven-3.8.8"/>
+    <property name="java.runtime.name" value="Java(TM) SE Runtime Environment"/>
+    <property name="sun.java.command" value="org.codehaus.plexus.classworlds.launcher.Launcher -pl hpis-alarm -am -DfailIfNoTests=false -DfailIfNoSpecifiedTests=false -Dalarm.loadtest.runner.enabled=true -Dmq.host=127.0.0.1 -Dmq.port=5672 -Dmq.username=guest -Dmq.password=guest -Dmq.virtualHost=/ -Dmq.queue=alarm_queue -Dtest=AlarmMqDirectSenderRunnerTest -Dalarm.mq.send.runId=AUTO-20260512213104 -Dalarm.mq.send.alarmIdPrefix=A260512213104b4f -Dalarm.mq.send.maxAlarmCidLength=38 -Dalarm.mq.send.outputDir=D:\studyProject\hpis2.0\hpis\hpis-alarm\target\alarm-loadtest\AUTO-20260512213104 -Dalarm.mq.send.alarmCount=20000 -Dalarm.mq.send.stopRatio=1 -Dalarm.mq.send.orderMode=START_THEN_STOP -Dalarm.mq.send.seed=1778592664286 -Dalarm.mq.send.alarmStartTime=2025-11-01 23:50:00 -Dalarm.mq.send.alarmEndTime=2025-11-01 23:59:50 -Dalarm.mq.send.stopStartTime=2025-11-01 23:53:00 -Dalarm.mq.send.stopEndTime=2025-11-01 23:59:55 -Dalarm.mq.send.deviceSns=HM-TD2068T-5/Q20250724AACHEA4925334 -Dalarm.mq.send.gatewaySns=5b6bebaff7aed77ae423af7e4065ef91 -Dalarm.mq.send.stopQueueDelayMillis=1000 -Dalarm.mq.send.progressEvery=1000 test"/>
+    <property name="java.class.path" value="D:\javaSwoft\apache-maven-3.8.8\boot\plexus-classworlds-2.6.0.jar"/>
+    <property name="alarm.mq.send.stopQueueDelayMillis" value="1000"/>
+    <property name="alarm.mq.send.gatewaySns" value="5b6bebaff7aed77ae423af7e4065ef91"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="java.vm.specification.version" value="1.8"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="sun.os.patch.level" value=""/>
+    <property name="alarm.mq.send.runId" value="AUTO-20260512213104"/>
+    <property name="alarm.mq.send.alarmEndTime" value="2025-11-01 23:59:50"/>
+    <property name="java.io.tmpdir" value="C:\Users\ADMIN\AppData\Local\Temp\"/>
+    <property name="maven.multiModuleProjectDirectory" value="D:\studyProject\hpis2.0\hpis"/>
+    <property name="java.vendor.url.bug" value="http://bugreport.sun.com/bugreport/"/>
+    <property name="java.awt.graphicsenv" value="sun.awt.Win32GraphicsEnvironment"/>
+    <property name="os.arch" value="amd64"/>
+    <property name="alarm.mq.send.alarmStartTime" value="2025-11-01 23:50:00"/>
+    <property name="java.ext.dirs" value="C:\Program Files\Java\jdk1.8.0_321\jre\lib\ext;C:\Windows\Sun\Java\lib\ext"/>
+    <property name="user.dir" value="D:\studyProject\hpis2.0\hpis"/>
+    <property name="line.separator" value="
+"/>
+    <property name="mq.port" value="5672"/>
+    <property name="java.vm.name" value="Java HotSpot(TM) 64-Bit Server VM"/>
+    <property name="alarm.loadtest.runner.enabled" value="true"/>
+    <property name="file.encoding" value="GBK"/>
+    <property name="failIfNoTests" value="false"/>
+    <property name="alarm.mq.send.deviceSns" value="HM-TD2068T-5/Q20250724AACHEA4925334"/>
+    <property name="java.specification.version" value="1.8"/>
+  </properties>
+  <testcase classname="com.hpis.alarm.transfer.AlarmMqDirectSenderRunnerTest" name="runSenderWhenExplicitlyEnabled" time="3.217"/>
+</testsuite>

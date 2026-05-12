@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmElectrolyticCellMapper">
+    
+    <resultMap type="AlarmElectrolyticCell" id="AlarmElectrolyticCellResult">
+        <result property="alarmId"    column="alarm_id"    />
+        <result property="sequenceId"    column="sequence_id"    />
+        <result property="rowIndex"    column="row_index"    />
+        <result property="grooveNumber"    column="groove_number"    />
+        <result property="subdivideNumber"    column="subdivide_number"    />
+        <result property="observationPlace"    column="observation_place"    />
+        <result property="temperatureVariation"    column="temperature_variation"    />
+        <result property="repeatNumber"    column="repeat_number"    />
+        <result property="repeatTime"    column="repeat_time"    />
+        <result property="repeatHandlerUsers"    column="repeat_handler_users"    />
+        <result property="repeatHandleTime"    column="repeat_handle_time"    />
+        <result property="alarmBegintime"    column="alarm_beginTime"    />
+    </resultMap>
+
+    <sql id="selectAlarmElectrolyticCellVo">
+        select alarm_id, alarm_beginTime, sequence_id, row_index, groove_number, subdivide_number, observation_place, temperature_variation from alarm_electrolytic_cell
+    </sql>
+
+    <sql id="selectAllInfoVo">
+        select a.alarm_id,
+               c.sequence_id,
+               c.row_index,
+               c.groove_number,
+               c.subdivide_number,
+               c.observation_place,
+               c.temperature_variation,
+               c.repeat_number,
+               c.repeat_time,
+               c.repeat_handler_users,
+               c.repeat_handle_time,
+               h.handle_status,
+               h.handle_time,
+               h.handler_id,
+               a.device_sn,
+               a.alarm_type,
+               a.alarm_rank,
+               a.alarm_status,
+               a.alarm_beginTime,
+               a.alarm_endTime,
+               a.picture_path,
+               a.irms_sn,
+               a.alarm_cid,
+               a.target_name,
+               h.apparatus_id,
+               h.opinion,
+               h.handler_name,
+               h.confirm_user_id,
+               handle_picture
+               from alarm a
+               inner join alarm_electrolytic_cell c  on c.alarm_id = a.alarm_id inner join  alarm_handle h on h.alarm_id = a.alarm_id
+    </sql>
+
+    <select id="selectAlarmElectrolyticCellList" parameterType="AlarmElectrolyticCell" resultType="com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO">
+        <include refid="selectAllInfoVo"/>
+
+        <where>
+            a.del_flag = '0'
+            <if test="alarmId != null "> and c.alarm_id = #{alarmId}</if>
+            <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+            <choose>
+                <when test="sequenceId =='-1'"> and c.sequence_id is not null</when>
+                <when test="sequenceId != null"> and c.sequence_id = #{sequenceId}</when>
+                <otherwise></otherwise>
+            </choose>
+            <if test="sequenceName != null  and sequenceName != ''"> and a.target_name like concat(#{sequenceName}, '%')</if>
+            <if test="rowIndex != null "> and c.row_index = #{rowIndex}</if>
+            <if test="grooveNumber != null "> and c.groove_number = #{grooveNumber}</if>
+            <if test="busBarsNumber != null "> and c.subdivide_number = #{busBarsNumber} and c.observation_place =2</if>
+            <if test="electrodesNumber != null "> and c.subdivide_number = #{electrodesNumber} and c.observation_place =1</if>
+            <if test="observationPlace != null  and observationPlace != ''"> and c.observation_place = #{observationPlace}</if>
+            <if test="temperatureVariation != null "> and c.temperature_variation &gt;= #{temperatureVariation}</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and a.alarm_rank = #{alarmRank}</if>
+            <if test="startDate != null "> and a.alarm_beginTime &gt;= #{startDate}</if>
+            <if test="endDate != null "> and a.alarm_beginTime &lt;= #{endDate}</if>
+            <if test="alarmStatus != null  and alarmStatus != ''"> and a.alarm_status = #{alarmStatus}</if>
+            <if test="deviceName != null and deviceName!=''">and d.device_name like concat('%', #{deviceName}, '%')</if>
+            <if test="stopAlarmFlag==0"> and a.alarm_endTime is null</if>
+            <if test="sceneType != null  and sceneType != ''"> and a.scene_type = #{sceneType}</if>
+            <if test="handlerId != null "> and h.handler_id = #{handlerId}</if>
+            <if test="handleStatus != null  and handleStatus != ''"> and h.handle_status = #{handleStatus}</if>
+            <if test="alarmTypes !=null">
+                and a.alarm_type in
+                <foreach item="item" index="index" collection="alarmTypes" open="(" separator="," close=")">
+                    #{item}
+                </foreach>
+            </if>
+        </where>
+        order by a.alarm_beginTime desc,c.alarm_id desc
+    </select>
+
+    <select id="selectAlarmAlarmDetailEcList" parameterType="AlarmElectrolyticCell" resultType="com.hpis.alarm.dto.AlarmDetailEc">
+        <include refid="selectAllInfoVo"/>
+        <where>
+            a.del_flag = '0'
+            <if test="alarmId != null "> and c.alarm_id = #{alarmId}</if>
+            <if test="tenantId != null "> and a.tenant_id = #{tenantId}</if>
+            <choose>
+                <when test="sequenceId =='-1'"> and c.sequence_id is not null</when>
+                <when test="sequenceId != null"> and c.sequence_id = #{sequenceId}</when>
+                <otherwise></otherwise>
+            </choose>
+            <if test="sequenceName != null  and sequenceName != ''"> and a.target_name like concat(#{sequenceName}, '%')</if>
+            <if test="rowIndex != null "> and c.row_index = #{rowIndex}</if>
+            <if test="grooveNumber != null "> and c.groove_number = #{grooveNumber}</if>
+            <if test="busBarsNumber != null "> and c.subdivide_number = #{busBarsNumber} and c.observation_place =2</if>
+            <if test="electrodesNumber != null "> and c.subdivide_number = #{electrodesNumber} and c.observation_place =1</if>
+            <if test="observationPlace != null  and observationPlace != ''"> and c.observation_place = #{observationPlace}</if>
+            <if test="temperatureVariation != null "> and c.temperature_variation &gt;= #{temperatureVariation}</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and a.alarm_rank = #{alarmRank}</if>
+            <if test="startTime != null "> and a.alarm_beginTime &gt;= #{startTime}</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt;= #{endTime}</if>
+            <if test="alarmStatus != null  and alarmStatus != ''"> and a.alarm_status = #{alarmStatus}</if>
+            <if test="deviceName != null and deviceName!=''">and d.device_name like concat('%', #{deviceName}, '%')</if>
+            <if test="stopAlarmFlag==0"> and a.alarm_endTime is null</if>
+            <if test="sceneType != null  and sceneType != ''"> and a.scene_type = #{sceneType}</if>
+            <if test="handlerId != null "> and h.handler_id = #{handlerId}</if>
+            <if test="handleStatus != null  and handleStatus != ''"> and h.handle_status = #{handleStatus}</if>
+            <if test="alarmTypes !=null">
+                and a.alarm_type in
+                <foreach item="item" index="index" collection="alarmTypes" open="(" separator="," close=")">
+                    #{item}
+                </foreach>
+            </if>
+        </where>
+        order by
+        <if test="stopAlarmFlag==0">  c.groove_number , </if>
+        a.alarm_beginTime desc,c.alarm_id desc
+    </select>
+
+    <select id="selectECPage"  resultType="com.hpis.alarm.dto.AlarmDetailEc">
+        <include refid="selectAllInfoVo"/>
+         <where>
+            ${ew.sqlSegment}
+        </where>
+    </select>
+
+
+
+    <select id="selectAlarmElectrolyticCellRecordList" parameterType="AlarmElectrolyticCell" resultType="com.hpis.alarm.dto.AlarmElectrolyticCellRecord">
+        SELECT
+            a.alarm_id,
+            a.alarm_beginTime,
+            a.alarm_endTime,
+            a.alarm_type,
+            a.alarm_rank,
+            s.sequence_name,
+            c.row_index,
+            c.groove_number,
+            s.first_electrodes_polarity,
+            c.observation_place,
+            c.subdivide_number
+        FROM
+            alarm_electrolytic_cell c
+                LEFT JOIN alarm a ON a.alarm_id = c.alarm_id
+                LEFT JOIN electrolytic_cell_sequence s ON s.sequence_id = c.sequence_id
+        <where>
+            1=1
+            <if test="alarmId != null "> and c.alarm_id = #{alarmId}</if>
+            <if test="sequenceId != null  and sequenceId != ''"> and c.sequence_id = #{sequenceId}</if>
+            <if test="rowIndex != null "> and c.row_index = #{rowIndex}</if>
+            <if test="grooveNumber != null "> and c.groove_number = #{grooveNumber}</if>
+            <if test="busBarsNumber != null "> and c.subdivide_number = #{busBarsNumber} and c.observation_place =2</if>
+            <if test="electrodesNumber != null "> and c.subdivide_number = #{electrodesNumber} and c.observation_place =1</if>
+            <if test="observationPlace != null  and observationPlace != ''"> and c.observation_place = #{observationPlace}</if>
+            <if test="temperatureVariation != null "> and c.temperature_variation &gt;= #{temperatureVariation}</if>
+
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and a.alarm_rank = #{alarmRank}</if>
+            <if test="startDate != null "> and a.alarm_beginTime &gt;= #{startDate}</if>
+            <if test="endDate != null "> and a.alarm_beginTime &lt;= #{endDate}</if>
+            <if test="deviceId != null and deviceId!=''">and a.device_id = #{deviceId}</if>
+            and a.del_flag = '0'
+        </where>
+        ORDER BY
+            a.alarm_beginTime DESC
+    </select>
+    
+    <select id="selectAlarmElectrolyticCellById" parameterType="Long" resultMap="AlarmElectrolyticCellResult">
+        <include refid="selectAlarmElectrolyticCellVo"/>
+        where alarm_id = #{alarmId}
+    </select>
+
+    <select id="selectAlarmElectrolyticCellDetailById" parameterType="Long" resultType="com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO">
+    select a.alarm_id,
+               c.sequence_id,
+               c.row_index,
+               c.groove_number,
+               c.subdivide_number,
+               c.observation_place,
+               c.temperature_variation,
+               c.repeat_number,
+               c.repeat_time,
+               c.repeat_handler_users,
+               c.repeat_handle_time,
+               h.handle_status,
+               h.handle_time,
+               h.handler_id,
+               a.device_sn,
+               a.alarm_type,
+               a.alarm_rank,
+               a.alarm_status,
+               a.alarm_beginTime,
+               a.alarm_endTime,
+               a.picture_path,
+               a.irms_sn,
+               a.alarm_cid,
+               a.target_name,
+               h.apparatus_id,
+               h.handler_name,
+               h.confirm_user_id,
+               h.handle_picture,
+               h.opinion
+               from alarm a
+               left join alarm_electrolytic_cell c  on c.alarm_id = a.alarm_id left join  alarm_handle h on h.alarm_id = c.alarm_id
+        where a.alarm_id = #{alarmId}
+    </select>
+
+
+    <insert id="insertAlarmElectrolyticCell" parameterType="AlarmElectrolyticCell">
+        insert into alarm_electrolytic_cell
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">alarm_id,</if>
+            <if test="alarmBegintime != null">alarm_beginTime,</if>
+            <if test="sequenceId != null">sequence_id,</if>
+            <if test="rowIndex != null">row_index,</if>
+            <if test="grooveNumber != null">groove_number,</if>
+            <if test="subdivideNumber != null">subdivide_number,</if>
+            <if test="observationPlace != null">observation_place,</if>
+            <if test="temperatureVariation != null">temperature_variation,</if>
+            <if test="repeatNumber !=null">repeat_number, </if>
+            <if test="repeatTime !=null">repeat_time, </if>
+            <if test="repeatHandlerUsers !=null and repeatHandlerUsers!='' ">repeat_handler_users, </if>
+            <if test="repeatHandleTime !=null and repeatHandleTime != ''">repeat_handle_time, </if>
+         </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">#{alarmId},</if>
+            <if test="alarmBegintime != null">#{alarmBegintime},</if>
+            <if test="sequenceId != null">#{sequenceId},</if>
+            <if test="rowIndex != null">#{rowIndex},</if>
+            <if test="grooveNumber != null">#{grooveNumber},</if>
+            <if test="subdivideNumber != null">#{subdivideNumber},</if>
+            <if test="observationPlace != null">#{observationPlace},</if>
+            <if test="temperatureVariation != null">#{temperatureVariation},</if>
+            <if test="repeatNumber !=null">#{repeatNumber}, </if>
+            <if test="repeatTime !=null">#{repeatTime}, </if>
+            <if test="repeatHandlerUsers !=null and repeatHandlerUsers!='' ">#{repeatHandlerUsers}, </if>
+            <if test="repeatHandleTime !=null and repeatHandleTime != ''">#{repeatHandleTime}, </if>
+         </trim>
+    </insert>
+
+    <insert id="insertAlarmElectrolyticCellEctype" parameterType="AlarmElectrolyticCell">
+        insert into alarm_electrolytic_cell_ectype
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">alarm_id,</if>
+            <if test="sequenceId != null">sequence_id,</if>
+            <if test="rowIndex != null">row_index,</if>
+            <if test="grooveNumber != null">groove_number,</if>
+            <if test="subdivideNumber != null">subdivide_number,</if>
+            <if test="observationPlace != null">observation_place,</if>
+            <if test="temperatureVariation != null">temperature_variation,</if>
+            <if test="deviceSn != null">device_sn,</if>
+            <if test="irmsSn != null">irms_sn,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmId != null">#{alarmId},</if>
+            <if test="sequenceId != null">#{sequenceId},</if>
+            <if test="rowIndex != null">#{rowIndex},</if>
+            <if test="grooveNumber != null">#{grooveNumber},</if>
+            <if test="subdivideNumber != null">#{subdivideNumber},</if>
+            <if test="observationPlace != null">#{observationPlace},</if>
+            <if test="temperatureVariation != null">#{temperatureVariation},</if>
+            <if test="deviceSn != null">#{deviceSn},</if>
+            <if test="irmsSn != null">#{irmsSn},</if>
+        </trim>
+    </insert>
+
+    <!-- 在 Mapper XML 文件中定义批量插入语句 -->
+    <insert id="insertAlarmElectrolyticCellList" parameterType="java.util.List">
+        insert into alarm_electrolytic_cell
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            alarm_id,
+            <if test="list[0].alarmBegintime != null">alarm_beginTime,</if>
+            <if test="list[0].sequenceId != null">sequence_id,</if>
+            <if test="list[0].rowIndex != null">row_index,</if>
+            <if test="list[0].grooveNumber != null">groove_number,</if>
+            <if test="list[0].subdivideNumber != null">subdivide_number,</if>
+            <if test="list[0].observationPlace != null">observation_place,</if>
+            <if test="list[0].temperatureVariation != null">temperature_variation,</if>
+        </trim>
+        values
+        <foreach collection="list" item="item" separator=",">
+            <trim prefix="(" suffix=")" suffixOverrides=",">
+                #{item.alarmId},
+                <if test="item.alarmBegintime != null">#{item.alarmBegintime},</if>
+                <if test="item.sequenceId != null">#{item.sequenceId},</if>
+                <if test="item.rowIndex != null">#{item.rowIndex},</if>
+                <if test="item.grooveNumber != null">#{item.grooveNumber},</if>
+                <if test="item.subdivideNumber != null">#{item.subdivideNumber},</if>
+                <if test="item.observationPlace != null">#{item.observationPlace},</if>
+                <if test="item.temperatureVariation != null">#{item.temperatureVariation},</if>
+            </trim>
+        </foreach>
+    </insert>
+
+    <update id="updateAlarmElectrolyticCell" parameterType="AlarmElectrolyticCell">
+        update alarm_electrolytic_cell
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="sequenceId != null">sequence_id = #{sequenceId},</if>
+            <if test="rowIndex != null">row_index = #{rowIndex},</if>
+            <if test="grooveNumber != null">groove_number = #{grooveNumber},</if>
+            <if test="subdivideNumber != null">subdivide_number = #{subdivideNumber},</if>
+            <if test="observationPlace != null">observation_place = #{observationPlace},</if>
+            <if test="temperatureVariation != null">temperature_variation = #{temperatureVariation},</if>
+            <if test="repeatNumber !=null">repeat_number = #{repeatNumber}, </if>
+            <if test="repeatTime !=null">repeat_time = #{repeatTime}, </if>
+            <if test="repeatHandlerUsers !=null and repeatHandlerUsers!='' ">repeat_handler_users = #{repeatHandlerUsers}, </if>
+            <if test="repeatHandleTime !=null and repeatHandleTime != ''">repeat_handle_time = #{repeatHandleTime}, </if>
+        </trim>
+        where alarm_id = #{alarmId}
+    </update>
+
+    <delete id="deleteAlarmElectrolyticCellEctypeById" parameterType="Long">
+        delete from alarm_electrolytic_cell_ectype where alarm_id = #{alarmId}
+    </delete>
+    <delete id="deleteAlarmECEctypeByDeviceId" parameterType="String">
+        delete from alarm_electrolytic_cell_ectype where device_sn = #{deviceSn}
+    </delete>
+
+    <delete id="deleteAlarmECEctypeByIrmsSn" parameterType="String">
+        delete from alarm_electrolytic_cell_ectype where irms_sn = #{irmsSn}
+    </delete>
+
+
+    <delete id="deleteAlarmElectrolyticCellByIds" parameterType="String">
+        update alarm_electrolytic_cell set del_flag=2 where alarm_id in
+        <foreach item="alarmId" collection="array" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </delete>
+
+    <select id="selectAlarmRankByPt" resultType="java.lang.String">
+        SELECT
+        a.alarm_rank
+        FROM
+        alarm_electrolytic_cell_ectype b
+        INNER JOIN alarm a ON a.alarm_id = b.alarm_id
+        WHERE
+        b.sequence_id = #{sequenceId}
+        AND b.row_index = #{rowIndex}
+        AND b.groove_number = #{grooveNumber}
+        AND b.observation_place = #{observationPlace}
+        <if test="subdivideNumber!=null">
+            AND b.subdivide_number = #{subdivideNumber}
+        </if>
+    </select>
+
+    <select id="selectRepeatAlarmHandleByPt" resultType="com.hpis.alarm.dto.RepeatAlarmDto">
+        select  repeat_number ,repeat_time,h.alarm_id,handle_status,handle_time,handler_id,h.create_time,h.handler_name,c.repeat_handler_users,c.repeat_handle_time
+        from alarm_electrolytic_cell  c left  join alarm_handle  h on c.alarm_id = h.alarm_id
+        <where>
+            1=1
+            <if test="sequenceId != null  and sequenceId != ''"> and c.sequence_id = #{sequenceId} </if>
+            <if test="rowIndex != null "> and c.row_index = #{rowIndex}</if>
+            <if test="grooveNumber != null "> and c.groove_number = #{grooveNumber}</if>
+            <choose>
+                <when test="busBarsNumber != null">
+                    and c.subdivide_number = #{busBarsNumber}
+                    and c.observation_place = 2
+                </when>
+                <when test="electrodesNumber != null">
+                    and c.subdivide_number = #{electrodesNumber}
+                    and c.observation_place = 1
+                </when>
+                <otherwise>
+                    <if test="observationPlace != null and observationPlace != ''">
+                        and c.observation_place = #{observationPlace}
+                    </if>
+                </otherwise>
+            </choose>
+            <if test="endDate != null "> and  h.create_time &lt; #{endDate}</if>
+             <if test="alarmId != null">and h.alarm_id != #{alarmId}</if>
+        </where>
+        ORDER BY
+        h.create_time DESC
+        LIMIT 1
+    </select>
+    <delete id="deleteOldAlarmEctypeByPt">
+        delete from alarm_electrolytic_cell_ectype
+        WHERE
+        sequence_id = #{sequenceId}
+        AND row_index = #{rowIndex}
+        AND groove_number = #{grooveNumber}
+        AND observation_place = #{observationPlace}
+        AND irms_sn = #{irmsSn}
+        <if test="subdivideNumber!=null">
+            AND subdivide_number = #{subdivideNumber}
+        </if>
+    </delete>
+
+    <select id="selectNewAlarmElectrolyticCellList"  resultType="com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO">
+        select a.alarm_id,
+               c.sequence_id,
+               c.row_index,
+               c.groove_number,
+               c.subdivide_number,
+               c.observation_place,
+               c.temperature_variation,
+               a.device_sn,
+               a.alarm_type,
+               a.alarm_rank,
+               a.alarm_beginTime,
+               a.alarm_endTime
+        from alarm_electrolytic_cell_ectype c
+                 inner join alarm a on c.alarm_id = a.alarm_id
+        where c.sequence_id is not null
+        order by a.alarm_beginTime desc, c.alarm_id desc
+    </select>
+</mapper>

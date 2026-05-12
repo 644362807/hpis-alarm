@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmStopEventMapper">
+
+    <resultMap id="AlarmStopEventResult" type="com.hpis.alarm.domain.AlarmStopEvent">
+        <id property="id" column="id"/>
+        <result property="alarmCid" column="alarm_cid"/>
+        <result property="stopTime" column="stop_time"/>
+        <result property="eventStatus" column="event_status"/>
+        <result property="retryCount" column="retry_count"/>
+        <result property="lastError" column="last_error"/>
+        <result property="createdTime" column="created_time"/>
+        <result property="updatedTime" column="updated_time"/>
+        <result property="appliedTime" column="applied_time"/>
+        <result property="deleteAfter" column="delete_after"/>
+    </resultMap>
+
+    <insert id="upsertPending">
+        insert into alarm_stop_event
+        (alarm_cid, stop_time, event_status, retry_count, last_error, created_time, updated_time)
+        values
+        (#{alarmCid}, #{stopTime}, 'PENDING', 0, null, now(), now())
+        on duplicate key update
+            stop_time = greatest(stop_time, values(stop_time)),
+            event_status = if(event_status = 'APPLIED', event_status, 'PENDING'),
+            retry_count = if(event_status = 'APPLIED', retry_count, 0),
+            last_error = if(event_status = 'APPLIED', last_error, null),
+            updated_time = now()
+    </insert>
+
+    <select id="selectPendingByCid" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where alarm_cid = #{alarmCid}
+          and event_status = 'PENDING'
+        limit 1
+    </select>
+
+    <select id="selectPendingBatch" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where event_status = 'PENDING'
+        order by created_time, id
+        limit #{limit}
+    </select>
+
+    <update id="markApplied">
+        update alarm_stop_event
+        set event_status = 'APPLIED',
+            applied_time = now(),
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where id = #{id}
+    </update>
+
+    <update id="markRetry">
+        update alarm_stop_event
+        set retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where id = #{id}
+          and event_status = 'PENDING'
+    </update>
+
+    <update id="markFailed">
+        update alarm_stop_event
+        set event_status = 'FAILED',
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where id = #{id}
+          and event_status = 'PENDING'
+    </update>
+
+    <delete id="deleteApplied">
+        delete from alarm_stop_event
+        where event_status = 'APPLIED'
+          and delete_after is not null
+          and delete_after &lt;= #{now}
+        limit #{limit}
+    </delete>
+
+    <select id="countPending" resultType="java.lang.Integer">
+        select count(1)
+        from alarm_stop_event
+        where event_status = 'PENDING'
+    </select>
+</mapper>

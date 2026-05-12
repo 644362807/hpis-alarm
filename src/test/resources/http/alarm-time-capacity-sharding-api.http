@@ -1,0 +1,96 @@
+### hpis-alarm 时间 + 容量分片接口测试用例
+### 使用说明：
+### 1. 将 host/token 替换为测试环境真实值。
+### 2. 如果网关统一鉴权，请保留 Authorization 请求头。
+### 3. 开启新分片前先执行 SQL，并关闭旧 alarm_id % 5 inline 规则。
+
+@host = http://127.0.0.1:9208
+@token = Bearer replace-me
+@alarmTime = 2026-04-15 10:20:30
+
+### 1. 新增普通报警：应写入 alarm_202604_00，并回填 alarm_shard_route
+POST {{host}}/alarm/alarmAdd
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "alarmId": "cid-202604-001",
+  "time": "{{alarmTime}}",
+  "deviceSn": "device-001",
+  "irmsSn": "irms-001",
+  "sceneType": 1,
+  "alarmType": "1",
+  "alarmDegree": "2",
+  "maxTemp": "67.8",
+  "minTemp": "23.1"
+}
+
+### 2. 新增电解槽报警：alarm、alarm_handle、alarm_electrolytic_cell 应同 suffix
+POST {{host}}/alarm/alarmAdd
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "alarmId": "cid-202604-ec-001",
+  "time": "{{alarmTime}}",
+  "deviceSn": "device-ec-001",
+  "irmsSn": "irms-001",
+  "sceneType": 2,
+  "alarmType": "1",
+  "alarmDegree": "2",
+  "seq": "A01",
+  "type": "1",
+  "subdivideIndex": 1,
+  "kua": 1,
+  "grooveIndex": 1,
+  "maxTemp": "78.1"
+}
+
+### 3. 按设备停止报警：旧接口参数不变
+POST {{host}}/alarm/alarmStopByDeviceSn
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "deviceSn": "device-001",
+  "time": "2026-04-15 10:30:30"
+}
+
+### 4. 按 IRMS 停止报警：旧接口参数不变
+POST {{host}}/alarm/alarmStopByIrmsSn
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "irmsSn": "irms-001",
+  "time": "2026-04-15 10:30:30"
+}
+
+### 5. 报警列表时间范围查询：应只命中对应月份和迁移期旧表
+GET {{host}}/alarm/list?alarmBegintime=2026-04-01%2000:00:00&alarmEndtime=2026-05-01%2000:00:00&deviceSn=device-001
+Authorization: {{token}}
+
+### 6. 报警时间统计：SQL 日志应包含 alarm_beginTime 范围条件
+GET {{host}}/alarm/alarmCountByTime?startTime=2026-04-01%2000:00:00&endTime=2026-05-01%2000:00:00&tenantId=1
+Authorization: {{token}}
+
+### 7. 电解槽报警列表时间范围查询
+GET {{host}}/cell/list?startDate=2026-04-01%2000:00:00&endDate=2026-05-01%2000:00:00&deviceSn=device-ec-001
+Authorization: {{token}}
+
+### 8. 处理表直接新增：验证 alarmBegintime 可接收并写入 alarm_handle.alarm_beginTime
+POST {{host}}/handle
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "alarmId": 202604150001,
+  "alarmBegintime": "{{alarmTime}}",
+  "handleStatus": "0"
+}
+
+### 9. 验证路由元数据
+### 在数据库执行：
+### SELECT alarm_id, alarm_cid, device_sn, irms_sn, alarm_beginTime, table_suffix, active_flag
+### FROM alarm_shard_route
+### WHERE alarm_cid IN ('cid-202604-001', 'cid-202604-ec-001');

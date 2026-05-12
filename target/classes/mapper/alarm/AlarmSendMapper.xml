@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmSendMapper">
+
+    <resultMap type="AlarmSend" id="AlarmSendResult" >
+        <result property="alarmSendId"    column="alarm_send_id"    />
+        <result property="deviceId"    column="device_id"    />
+        <result property="deviceAlarmControl"    column="device_alarm_control"    />
+        <result property="alarmMethod"    column="alarm_method"    />
+        <result property="alarmCategories"    column="alarm_categories"    />
+        <result property="alarmTargets"    column="alarm_targets"    />
+        <result property="isAllDay"    column="is_all_day"    />
+        <result property="alarmTimePeriods"    column="alarm_time_periods" />
+        <result property="createTime"    column="create_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="updateBy"    column="update_by"    />
+    </resultMap>
+
+    <sql id="selectAlarmSendVo">
+        select alarm_send_id, device_id, device_alarm_control, alarm_method, alarm_categories, alarm_targets, is_all_day, alarm_time_periods, create_time, create_by, update_time, update_by from alarm_send
+    </sql>
+
+    <select id="selectAlarmSendList" parameterType="AlarmSend" resultMap="AlarmSendResult">
+        <include refid="selectAlarmSendVo"/>
+        WHERE
+        <trim prefixOverrides="and">
+            <if test="deviceId != null "> and device_id = #{deviceId}</if>
+            <if test="deviceAlarmControl != null  and deviceAlarmControl != ''"> and device_alarm_control = #{deviceAlarmControl}</if>
+            <if test="alarmMethod != null  and alarmMethod != ''"> and alarm_method = #{alarmMethod}</if>
+            <if test="alarmCategories != null  and alarmCategories != ''"> and alarm_categories = #{alarmCategories}</if>
+            <if test="alarmTargets != null  and alarmTargets != ''"> and alarm_targets = #{alarmTargets}</if>
+            <if test="isAllDay != null  and isAllDay != ''"> and is_all_day = #{isAllDay}</if>
+            <if test="alarmTimePeriods != null  and alarmTimePeriods != ''"> and alarm_time_periods = #{alarmTimePeriods}</if>
+        </trim>
+    </select>
+
+
+    <select id="selectAlarmSendById" parameterType="Long" resultMap="AlarmSendResult">
+        <include refid="selectAlarmSendVo"/>
+        where alarm_send_id = #{alarmSendId}
+    </select>
+    <select id="selectAlarmConfigureByDeviceId" resultType="AlarmSend">
+        SELECT *FROM alarm_send WHERE device_id=#{deviceId}
+    </select>
+
+    <insert id="insertAlarmSend" parameterType="AlarmSend" useGeneratedKeys="true" keyColumn="alarmSendId" keyProperty="alarmSendId">
+        insert into alarm_send
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmSendId != null">alarm_send_id,</if>
+            <if test="deviceId != null">device_id,</if>
+            <if test="deviceAlarmControl != null">device_alarm_control,</if>
+            <if test="alarmMethod != null">alarm_method,</if>
+            <if test="alarmCategories != null">alarm_categories,</if>
+            <if test="alarmTargets != null">alarm_targets,</if>
+            <if test="isAllDay != null">is_all_day,</if>
+            <if test="alarmTimePeriods != null">alarm_time_periods,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="createBy != null">create_by,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="updateBy != null">update_by,</if>
+         </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmSendId != null">#{alarmSendId},</if>
+            <if test="deviceId != null">#{deviceId},</if>
+            <if test="deviceAlarmControl != null">#{deviceAlarmControl},</if>
+            <if test="alarmMethod != null">#{alarmMethod},</if>
+            <if test="alarmCategories != null">#{alarmCategories},</if>
+            <if test="alarmTargets != null">#{alarmTargets},</if>
+            <if test="isAllDay != null">#{isAllDay},</if>
+            <if test="alarmTimePeriods != null">#{alarmTimePeriods},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="createBy != null">#{createBy},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+         </trim>
+    </insert>
+
+    <update id="updateAlarmSend" parameterType="AlarmSend">
+        update alarm_send
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="deviceId != null">device_id = #{deviceId},</if>
+            <if test="deviceAlarmControl != null">device_alarm_control = #{deviceAlarmControl},</if>
+            <if test="alarmMethod != null">alarm_method = #{alarmMethod},</if>
+            <if test="alarmCategories != null">alarm_categories = #{alarmCategories},</if>
+            <if test="alarmTargets != null">alarm_targets = #{alarmTargets},</if>
+            <if test="isAllDay != null">is_all_day = #{isAllDay},</if>
+            <if test="alarmTimePeriods != null">alarm_time_periods = #{alarmTimePeriods},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="createBy != null">create_by = #{createBy},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+        </trim>
+        where alarm_send_id = #{alarmSendId}
+    </update>
+
+    <delete id="deleteAlarmSendById" parameterType="Long">
+        delete from alarm_send where alarm_send_id = #{alarmSendId}
+    </delete>
+
+
+</mapper>

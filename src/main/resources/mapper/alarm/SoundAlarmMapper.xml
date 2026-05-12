@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.SoundAlarmMapper">
+
+    <resultMap type="SoundAlarm" id="SoundAlarmResult">
+        <result property="soundId"    column="sound_id"    />
+        <result property="customerId"    column="customer_id"    />
+<!--        <result property="soundName"    column="sound_name"    />-->
+        <result property="soundLocation"    column="sound_location"    />
+        <result property="soundOrder"    column="sound_order"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="updateBy"    column="update_by"    />
+        <result property="createTime"    column="create_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="delFlag"    column="del_flag"    />
+    </resultMap>
+
+    <sql id="selectSoundAlarmVo">
+        select sound_id, customer_id, sound_location, sound_order, update_time, update_by, create_time, create_by, del_flag from sound_alarm
+    </sql>
+
+    <select id="selectSoundAlarmList" parameterType="SoundAlarm" resultMap="SoundAlarmResult">
+        <include refid="selectSoundAlarmVo"/>
+        WHERE del_flag = "0"
+            <if test="customerId != null "> and customer_id = #{customerId}</if>
+<!--            <if test="soundName != null  and soundName != ''"> and sound_name like concat('%', #{soundName}, '%')</if>-->
+            <if test="soundLocation != null  and soundLocation != ''"> and sound_location like concat('%', #{soundLocation}, '%')</if>
+            <if test="soundOrder != null "> and sound_order = #{soundOrder}</if>
+    </select>
+
+    <select id="selectSoundAlarmById" parameterType="Long" resultMap="SoundAlarmResult">
+        <include refid="selectSoundAlarmVo"/>
+        where sound_id = #{soundId}
+    </select>
+    <select id="selectSoundAlarmByLocation" parameterType="SoundAlarm" resultType="SoundAlarm">
+        <include refid="selectSoundAlarmVo"/>
+        WHERE del_flag = "0" AND sound_location = #{soundLocation} AND customer_id = #{customerId}
+    </select>
+
+    <insert id="insertSoundAlarm" parameterType="SoundAlarm" useGeneratedKeys="true" keyProperty="soundId">
+        insert into sound_alarm
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="customerId != null">customer_id,</if>
+<!--            <if test="soundName != null and soundName != ''">sound_name,</if>-->
+            <if test="soundLocation != null and soundLocation != ''">sound_location,</if>
+            <if test="soundOrder != null">sound_order,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="updateBy != null">update_by,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="createBy != null">create_by,</if>
+            <if test="delFlag != null">del_flag,</if>
+         </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="customerId != null">#{customerId},</if>
+<!--            <if test="soundName != null and soundName != ''">#{soundName},</if>-->
+            <if test="soundLocation != null and soundLocation != ''">#{soundLocation},</if>
+            <if test="soundOrder != null">#{soundOrder},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="createBy != null">#{createBy},</if>
+            <if test="delFlag != null">#{delFlag},</if>
+         </trim>
+    </insert>
+
+    <update id="updateSoundAlarm" parameterType="SoundAlarm">
+        update sound_alarm
+        <trim prefix="SET" suffixOverrides=",">
+            <if test="customerId != null">customer_id = #{customerId},</if>
+<!--            <if test="soundName != null and soundName != ''">sound_name = #{soundName},</if>-->
+            <if test="soundLocation != null and soundLocation != ''">sound_location = #{soundLocation},</if>
+            <if test="soundOrder != null">sound_order = #{soundOrder},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="createBy != null">create_by = #{createBy},</if>
+            <if test="delFlag != null">del_flag = #{delFlag},</if>
+        </trim>
+        where sound_id = #{soundId}
+    </update>
+
+    <delete id="deleteSoundAlarmById" parameterType="Long">
+        delete from sound_alarm where sound_id = #{soundId}
+    </delete>
+
+    <delete id="deleteSoundAlarmByIds" parameterType="String">
+        update sound_alarm set del_flag=2 where sound_id in
+        <foreach item="soundId" collection="array" open="(" separator="," close=")">
+            #{soundId}
+        </foreach>
+    </delete>
+</mapper>

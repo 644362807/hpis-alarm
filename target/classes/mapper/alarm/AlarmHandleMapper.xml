@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+    <mapper namespace="com.hpis.alarm.mapper.AlarmHandleMapper">
+
+    <resultMap type="AlarmHandle" id="AlarmHandleResult">
+        <result property="alarmHandleId"    column="alarm_handle_id"    />
+        <result property="alarmId"    column="alarm_id"    />
+        <result property="handlerId"    column="handler_id"    />
+
+        <result property="handleStatus"    column="handle_status"    />
+        <result property="delFlag"    column="del_flag"    />
+        <result property="identify"    column="identify"    />
+        <result property="opinion"    column="opinion"    />
+        <result property="createTime"    column="create_time"    />
+        <result property="createBy"    column="create_by"    />
+        <result property="updateTime"    column="update_time"    />
+        <result property="updateBy"    column="update_by"    />
+        <result property="deviceName"    column="device_name"    />
+        <result property="irmsSn"    column="irms_sn"    />
+        <result property="areaSn"    column="area_sn"    />
+        <result property="alarmBegintime"    column="alarm_beginTime"    />
+    </resultMap>
+
+    <sql id="selectAlarmHandleVo">
+        select h.alarm_handle_id, a.alarm_id, a.device_id, a.alarm_type, a.alarm_rank, a.alarm_status,  h.identify, h.opinion, a.alarm_beginTime,h.update_time, h.update_by
+    </sql>
+
+    <select id="selectAlarmHandleList" parameterType="AlarmHandle" resultMap="AlarmHandleResult">
+        <include refid="selectAlarmHandleVo"/>
+        ,a.irms_sn,a.area_sn,a.target_name
+        from
+        alarm a left join alarm_handle h on a.alarm_id = h.alarm_id
+
+        <where>
+            a.del_flag = '0'
+            <if test="deviceId != null "> and device_id like concat('%',#{alarmId},'%')</if>
+            <if test="alarmType != null  and alarmType != ''"> and a.alarm_type = #{alarmType}</if>
+            <if test="alarmRank != null  and alarmRank != ''"> and a.alarm_rank = #{alarmRank}</if>
+            <if test="alarmStatus != null  and alarmStatus != ''"> and a.alarm_status = #{alarmStatus}</if>
+            <if test="alarmBegintime != null "> and a.alarm_beginTime &gt;= #{alarmBegintime} </if>
+            <if test="alarmEndtime != null "> and  a.alarm_beginTime &lt;= #{alarmEndtime}</if>
+            <if test="customerId != null  and customerId != ''"> and  a.customer_id = #{customerId}</if>
+            <if test="sceneType != null and sceneType !=''"> and a.scene_type = #{sceneType}</if>
+        </where>
+        order by a.alarm_beginTime desc,a.alarm_id desc
+    </select>
+
+    <select id="selectAlarmHandleById" parameterType="Long" resultMap="AlarmHandleResult">
+        <include refid="selectAlarmHandleVo"/>
+        from
+        alarm a left join alarm_handle h on a.alarm_id = h.alarm_id
+        where alarm_handle_id = #{alarmHandleId}
+    </select>
+
+    <insert id="insertAlarmHandle" parameterType="AlarmHandle">
+        insert into alarm_handle
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="alarmHandleId != null">alarm_handle_id,</if>
+            <if test="alarmId != null">alarm_id,</if>
+            <if test="handlerId != null and handlerId != ''">handler_id,</if>
+
+            <if test="handleStatus != null and handleStatus != ''">handle_status,</if>
+            <if test="delFlag != null and delFlag != ''">del_flag,</if>
+            <if test="identify != null">identify,</if>
+            <if test="opinion != null">opinion,</if>
+            <if test="createTime != null">create_time,</if>
+            <if test="createBy != null">create_by,</if>
+            <if test="updateTime != null">update_time,</if>
+            <if test="updateBy != null">update_by,</if>
+            <if test="handleTime != null">handle_time,</if>
+            <if test="alarmBegintime != null">alarm_beginTime,</if>
+
+            <if test="confirmUserId != null">confirm_user_id,</if>
+            <if test="apparatusId != null and apparatusId != ''">apparatus_id,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+            <if test="alarmHandleId != null">#{alarmHandleId},</if>
+            <if test="alarmId != null">#{alarmId},</if>
+            <if test="handlerId != null and handlerId != ''">#{handlerId},</if>
+
+            <if test="handleStatus != null and handleStatus != ''">#{handleStatus},</if>
+            <if test="delFlag != null and delFlag != ''">#{delFlag},</if>
+            <if test="identify != null">#{identify},</if>
+            <if test="opinion != null">#{opinion},</if>
+            <if test="createTime != null">#{createTime},</if>
+            <if test="createBy != null">#{createBy},</if>
+            <if test="updateTime != null">#{updateTime},</if>
+            <if test="updateBy != null">#{updateBy},</if>
+            <if test="handleTime != null">#{handleTime},</if>
+            <if test="alarmBegintime != null">#{alarmBegintime},</if>
+
+            <if test="confirmUserId != null">#{confirmUserId},</if>
+            <if test="apparatusId != null and apparatusId != ''">#{apparatusId},</if>
+        </trim>
+    </insert>
+
+    <insert id="insertAlarmHandelList" parameterType="java.util.List">
+        insert into alarm_handle
+        (alarm_id, alarm_beginTime, create_time)
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+            #{item.alarmId},
+            #{item.alarmBegintime},
+            #{item.createTime}
+            )
+        </foreach>
+    </insert>
+
+    <update id="updateAlarmHandle" parameterType="AlarmHandle">
+        update alarm_handle
+        <trim prefix="SET" suffixOverrides=",">
+
+            <if test="handlerId != null and handlerId != ''">handler_id = #{handlerId},</if>
+
+            <if test="handleStatus != null and handleStatus != ''">handle_status = #{handleStatus},</if>
+            <if test="delFlag != null and delFlag != ''">del_flag = #{delFlag},</if>
+            <if test="identify != null">identify = #{identify},</if>
+            <if test="opinion != null">opinion = #{opinion},</if>
+            <if test="createTime != null">create_time = #{createTime},</if>
+            <if test="createBy != null">create_by = #{createBy},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+            <if test="updateBy != null">update_by = #{updateBy},</if>
+            <if test="handlePicture != null">handle_picture = #{handlePicture},</if>
+            <if test="handleTime != null">handle_time = #{handleTime},</if>
+            <if test="confirmUserId == -1">confirm_user_id = NULL,</if>
+            <if test="confirmUserId != null and confirmUserId != -1">confirm_user_id = #{confirmUserId},</if>
+            <if test="apparatusId != null">apparatus_id = #{apparatusId},</if>
+            <if test="handlerName != null and handlerName != ''">handler_name = #{handlerName},</if>
+        </trim>
+        where
+        <choose>
+            <when test="alarmIds !=null ">
+                alarm_id in
+                <foreach item="alarmIdItem" collection="alarmIds" open="(" separator="," close=")">
+                    #{alarmIdItem}
+                </foreach>
+            </when>
+            <otherwise>alarm_id = #{alarmId}</otherwise>
+        </choose>
+    </update>
+
+    <delete id="deleteAlarmHandleById" parameterType="Long">
+        update  alarm_handle set del_flag = '2' where alarm_id = #{alarmHandleId}
+    </delete>
+
+    <delete id="deleteAlarmHandleByIds" parameterType="String">
+        update alarm_handle set del_flag=2 where alarm_handle_id in
+        <foreach item="alarmHandleId" collection="array" open="(" separator="," close=")">
+            #{alarmHandleId}
+        </foreach>
+    </delete>
+
+    <delete id="deleteAlarmHandelByAlarmIdReale" parameterType="Long">
+        delete from alarm_handle where alarm_id = #{alarmId}
+    </delete>
+</mapper>

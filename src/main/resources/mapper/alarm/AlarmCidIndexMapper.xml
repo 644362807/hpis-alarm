@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmCidIndexMapper">
+
+    <resultMap id="AlarmCidRouteResult" type="com.hpis.alarm.domain.AlarmCidRoute">
+        <id property="id" column="id"/>
+        <result property="alarmCid" column="alarm_cid"/>
+        <result property="alarmId" column="alarm_id"/>
+        <result property="alarmBegintime" column="alarm_beginTime"/>
+        <result property="alarmEndtime" column="alarm_endTime"/>
+        <result property="tableSuffix" column="table_suffix"/>
+        <result property="deviceSn" column="device_sn"/>
+        <result property="irmsSn" column="irms_sn"/>
+        <result property="alarmType" column="alarm_type"/>
+        <result property="routeStatus" column="route_status"/>
+        <result property="deleteAfter" column="delete_after"/>
+        <result property="staleTime" column="stale_time"/>
+        <result property="expireTime" column="expire_time"/>
+        <result property="indexSource" column="index_source"/>
+    </resultMap>
+
+    <insert id="upsertHotActive" parameterType="com.hpis.alarm.domain.AlarmCidRoute">
+        insert into alarm_cid_index
+        (alarm_cid, alarm_id, alarm_beginTime, alarm_endTime, table_suffix, device_sn, irms_sn,
+         alarm_type, route_status, delete_after, created_time, updated_time)
+        values
+        (#{alarmCid}, #{alarmId}, #{alarmBegintime}, #{alarmEndtime}, #{tableSuffix}, #{deviceSn}, #{irmsSn},
+         #{alarmType}, 'ACTIVE', null, now(), now())
+        on duplicate key update
+            alarm_id = values(alarm_id),
+            alarm_beginTime = values(alarm_beginTime),
+            alarm_endTime = values(alarm_endTime),
+            table_suffix = values(table_suffix),
+            device_sn = values(device_sn),
+            irms_sn = values(irms_sn),
+            alarm_type = values(alarm_type),
+            route_status = 'ACTIVE',
+            delete_after = null,
+            updated_time = now()
+    </insert>
+
+    <insert id="upsertStaleActive" parameterType="com.hpis.alarm.domain.AlarmCidRoute">
+        insert into alarm_cid_stale_index
+        (alarm_cid, alarm_id, alarm_beginTime, alarm_endTime, table_suffix, device_sn, irms_sn,
+         alarm_type, route_status, stale_time, expire_time, delete_after, created_time, updated_time)
+        values
+        (#{alarmCid}, #{alarmId}, #{alarmBegintime}, #{alarmEndtime}, #{tableSuffix}, #{deviceSn}, #{irmsSn},
+         #{alarmType}, 'ACTIVE', #{staleTime}, #{expireTime}, null, now(), now())
+        on duplicate key update
+            alarm_id = values(alarm_id),
+            alarm_beginTime = values(alarm_beginTime),
+            alarm_endTime = values(alarm_endTime),
+            table_suffix = values(table_suffix),
+            device_sn = values(device_sn),
+            irms_sn = values(irms_sn),
+            alarm_type = values(alarm_type),
+            route_status = 'ACTIVE',
+            expire_time = values(expire_time),
+            delete_after = null,
+            updated_time = now()
+    </insert>
+
+    <select id="selectHotByCid" resultMap="AlarmCidRouteResult">
+        select h.*, 'HOT' as index_source
+        from alarm_cid_index h
+        where h.alarm_cid = #{alarmCid}
+        limit 1
+    </select>
+
+    <select id="selectStaleByCid" resultMap="AlarmCidRouteResult">
+        select s.*, 'STALE' as index_source
+        from alarm_cid_stale_index s
+        where s.alarm_cid = #{alarmCid}
+        limit 1
+    </select>
+
+    <select id="selectActiveHotByDeviceSn" resultMap="AlarmCidRouteResult">
+        select h.*, 'HOT' as index_source
+        from alarm_cid_index h
+        where h.device_sn = #{deviceSn}
+          and h.route_status = 'ACTIVE'
+        <if test="excludeAlarmType != null and excludeAlarmType != ''">
+          and (h.alarm_type is null or h.alarm_type != #{excludeAlarmType})
+        </if>
+    </select>
+
+    <select id="selectActiveStaleByDeviceSn" resultMap="AlarmCidRouteResult">
+        select s.*, 'STALE' as index_source
+        from alarm_cid_stale_index s
+        where s.device_sn = #{deviceSn}
+          and s.route_status = 'ACTIVE'
+        <if test="excludeAlarmType != null and excludeAlarmType != ''">
+          and (s.alarm_type is null or s.alarm_type != #{excludeAlarmType})
+        </if>
+    </select>
+
+    <select id="selectActiveHotByIrmsSn" resultMap="AlarmCidRouteResult">
+        select h.*, 'HOT' as index_source
+        from alarm_cid_index h
+        where h.irms_sn = #{irmsSn}
+          and h.route_status = 'ACTIVE'
+    </select>
+
+    <select id="selectActiveStaleByIrmsSn" resultMap="AlarmCidRouteResult">
+        select s.*, 'STALE' as index_source
+        from alarm_cid_stale_index s
+        where s.irms_sn = #{irmsSn}
+          and s.route_status = 'ACTIVE'
+    </select>
+
+    <update id="closeHotByAlarmId">
+        update alarm_cid_index
+        set route_status = 'CLOSED',
+            alarm_endTime = #{alarmEndtime},
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where alarm_id = #{alarmId}
+    </update>
+
+    <update id="closeStaleByAlarmId">
+        update alarm_cid_stale_index
+        set route_status = 'CLOSED',
+            alarm_endTime = #{alarmEndtime},
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where alarm_id = #{alarmId}
+    </update>
+
+    <select id="selectHotTransferCandidates" resultMap="AlarmCidRouteResult">
+        select h.*, 'HOT' as index_source
+        from alarm_cid_index h
+        where h.route_status = 'ACTIVE'
+          and h.alarm_beginTime &lt; #{cutoffTime}
+        order by h.alarm_beginTime
+        limit #{limit}
+    </select>
+
+    <delete id="deleteHotActiveByAlarmId">
+        delete from alarm_cid_index
+        where alarm_id = #{alarmId}
+          and route_status = 'ACTIVE'
+    </delete>
+
+    <delete id="deleteClosedHot">
+        delete from alarm_cid_index
+        where route_status = 'CLOSED'
+          and delete_after is not null
+          and delete_after &lt;= #{now}
+        limit #{limit}
+    </delete>
+
+    <delete id="deleteClosedStale">
+        delete from alarm_cid_stale_index
+        where route_status = 'CLOSED'
+          and delete_after is not null
+          and delete_after &lt;= #{now}
+        limit #{limit}
+    </delete>
+
+    <select id="selectExpiredActiveStale" resultMap="AlarmCidRouteResult">
+        select s.*, 'STALE' as index_source
+        from alarm_cid_stale_index s
+        where s.route_status = 'ACTIVE'
+          and s.expire_time &lt;= #{now}
+        order by s.expire_time
+        limit #{limit}
+    </select>
+</mapper>
