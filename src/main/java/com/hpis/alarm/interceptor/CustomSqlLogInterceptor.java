@@ -52,7 +52,15 @@ public class CustomSqlLogInterceptor implements Interceptor {
 	 * true  = 打印 Params 和 Full SQL
 	 * false = 只打印 Logic SQL 和 Execute Time
 	 */
-	private static final boolean PRINT_SQL_PARAM_VALUE = true;
+	private final boolean printSqlParamValue;
+
+	public CustomSqlLogInterceptor() {
+		this(false);
+	}
+
+	public CustomSqlLogInterceptor(boolean printSqlParamValue) {
+		this.printSqlParamValue = printSqlParamValue;
+	}
 
 	@Override
 	public Object intercept(Invocation invocation) throws Throwable {
@@ -103,7 +111,7 @@ public class CustomSqlLogInterceptor implements Interceptor {
 					.append("\n");
 		}
 
-		if (PRINT_SQL_PARAM_VALUE && mappedStatement != null && boundSql != null) {
+		if (printSqlParamValue && mappedStatement != null && boundSql != null) {
 			sqlBuilder.append("Params:\n")
 					.append(buildParamLog(mappedStatement, boundSql))
 					.append("\n");
