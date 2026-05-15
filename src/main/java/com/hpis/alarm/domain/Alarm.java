@@ -63,12 +63,12 @@ public class Alarm extends BaseEntity
     private String delFlag;
 
     /** 开始时间 */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     @Excel(name = "报警开始时间", width = 30, dateFormat = "yyyy-MM-dd")
     private Date alarmBegintime;
 
     /** 结束时间 */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     @Excel(name = "报警结束时间", width = 30, dateFormat = "yyyy-MM-dd")
     private Date alarmEndtime;
 

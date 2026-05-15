@@ -17,7 +17,7 @@ public class RepeatAlarmDto {
 
 
     /** 处理时间**/
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date handleTime;
 
     /** 报警处理人id */

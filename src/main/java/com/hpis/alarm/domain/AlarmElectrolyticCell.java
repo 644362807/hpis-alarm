@@ -31,7 +31,7 @@ public class AlarmElectrolyticCell extends BaseEntity
      * alarm_electrolytic_cell 与 alarm 使用同一个 table_suffix，因此写入时同步保存
      * alarm_beginTime。</p>
      */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date alarmBegintime;
 
     /** 序列唯一标识 */
@@ -67,12 +67,12 @@ public class AlarmElectrolyticCell extends BaseEntity
 
     /** 开始时间 */
     @Transient
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date startDate;
 
     /** 结束时间 */
     @Transient
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date endDate;
 
     /** 极板号 */

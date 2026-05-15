@@ -59,17 +59,17 @@ public class AlarmHandle extends BaseEntity
 
 
     /** 开始时间 */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     @Excel(name = "报警开始时间", width = 30, dateFormat = "yyyy-MM-dd")
     private Date alarmBegintime;
 
     /** 结束时间 */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     @Excel(name = "报警结束时间", width = 30, dateFormat = "yyyy-MM-dd")
     private Date alarmEndtime;
 
     /** 处理时间 */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date handleTime;
 
     /** 逻辑删除0存在，2删除 */
