@@ -1081,8 +1081,10 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					log.info("deviceSn={},断线报警结束", alarm.getDeviceSn());
 				}
 			/***********——————————————————————————————————————————————————*************/
-				//24.5.15 删除电解槽副表
-				iAlarmElectrolyticCellService.deleteAlarmElectrolyticCellEctypeById(alarm.getAlarmId());
+				// 只有电解槽行业才存在电解槽扩展清理语义，避免一般行业停止报警时误触发 EC 清理。
+				if (StringUtils.equals(alarm.getSceneType(), SceneTypeEnums.SCENE_TYPE_2.getKey() + "")) {
+					iAlarmElectrolyticCellService.deleteAlarmElectrolyticCellEctypeById(alarm.getAlarmId());
+				}
 			} catch (Exception e) {
 				if (e instanceof MySQLQueryInterruptedException) {
 					throw new CustomException("Database operation interrupted", e);

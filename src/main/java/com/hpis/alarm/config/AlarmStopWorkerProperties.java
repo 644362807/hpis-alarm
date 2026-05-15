@@ -57,4 +57,12 @@ public class AlarmStopWorkerProperties {
 
     /** 单个 stop event 连续异常达到该次数后转 FAILED，避免永久热重试同一坏数据。 */
     private int maxRetry = 5;
+
+    /**
+     * 是否打印定时 worker 的普通完成日志。
+     *
+     * <p>生产高流量时 worker 会频繁调度，默认打印每轮日志会放大 IO 压力。
+     * 因此默认关闭，只保留异常日志；需要观察处理节奏时可在 Nacos 临时打开。</p>
+     */
+    private boolean logEnabled = false;
 }

@@ -55,6 +55,18 @@
         where id = #{id}
     </update>
 
+    <update id="markAppliedBatch">
+        update alarm_stop_event
+        set event_status = 'APPLIED',
+            applied_time = now(),
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
     <update id="markRetry">
         update alarm_stop_event
         set retry_count = retry_count + 1,

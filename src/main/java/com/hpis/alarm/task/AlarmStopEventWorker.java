@@ -43,7 +43,7 @@ public class AlarmStopEventWorker {
                 break;
             }
         }
-        if (total > 0) {
+        if (properties.isLogEnabled() && total > 0) {
             log.info("批量消警 worker 完成，本轮 applied={}, highTraffic={}", total, stopEventService.isHighTraffic());
         }
     }
@@ -54,7 +54,7 @@ public class AlarmStopEventWorker {
             return;
         }
         int done = sideEffectService.processPendingBatch();
-        if (done > 0) {
+        if (properties.isLogEnabled() && done > 0) {
             log.info("消警副作用 worker 完成，本轮 done={}", done);
         }
     }
@@ -62,7 +62,7 @@ public class AlarmStopEventWorker {
     @Scheduled(fixedDelayString = "${alarm.stop-worker.cleanupIntervalMs:60000}")
     public void cleanupAppliedEvents() {
         int deleted = stopEventService.cleanupAppliedIfAllowed();
-        if (deleted > 0) {
+        if (properties.isLogEnabled() && deleted > 0) {
             log.info("低流量清理 alarm_stop_event APPLIED 记录完成，deleted={}", deleted);
         }
     }

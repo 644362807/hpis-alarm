@@ -1,6 +1,7 @@
 package com.hpis.alarm.mapper;
 
 import com.hpis.alarm.domain.AlarmCidRoute;
+import com.hpis.alarm.dto.AlarmStopApplyItem;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.Date;
@@ -36,9 +37,27 @@ public interface AlarmCidIndexMapper {
                           @Param("alarmEndtime") Date alarmEndtime,
                           @Param("deleteAfter") Date deleteAfter);
 
+    /**
+     * 批量关闭 hot 路由。
+     *
+     * <p>每个 item 保留自己的 stopTime，XML 中使用 CASE 写入 alarm_endTime，
+     * 避免批量 SQL 把同一批报警统一成同一个结束时间。</p>
+     */
+    int closeHotBatch(@Param("items") List<AlarmStopApplyItem> items,
+                      @Param("deleteAfter") Date deleteAfter);
+
     int closeStaleByAlarmId(@Param("alarmId") Long alarmId,
                             @Param("alarmEndtime") Date alarmEndtime,
                             @Param("deleteAfter") Date deleteAfter);
+
+    /**
+     * 批量关闭 stale 路由。
+     *
+     * <p>stale 表只保存长时间未关闭但仍需 cid 定位的报警；关闭后同样转为 CLOSED，
+     * 后续由低流量清理任务按 deleteAfter 物理删除。</p>
+     */
+    int closeStaleBatch(@Param("items") List<AlarmStopApplyItem> items,
+                        @Param("deleteAfter") Date deleteAfter);
 
     List<AlarmCidRoute> selectHotTransferCandidates(@Param("cutoffTime") Date cutoffTime,
                                                     @Param("limit") int limit);

@@ -6,6 +6,7 @@ import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
 import com.hpis.alarm.domain.AlarmStopSideEffectEvent;
 import com.hpis.alarm.enums.AlarmTypeEnums;
+import com.hpis.alarm.enums.SceneTypeEnums;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
 import com.hpis.alarm.mapper.AlarmStopSideEffectMapper;
 import com.hpis.common.core.enums.IrTypeEnums;
@@ -17,6 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -54,6 +56,11 @@ public class AlarmStopSideEffectService {
     }
 
     public void createEvents(Alarm alarm, AlarmCidRoute route) {
+        /*
+         * 这里只负责把需要执行的副作用写成事件，不直接执行远程调用。
+         * 核心消警 worker 在业务表和 cid route 已关闭后调用本方法，因此即使后续副作用失败，
+         * 也不会影响 stop event 从 PENDING 进入 APPLIED。
+         */
         if (!properties.isSideEffectEnabled() || alarm == null || route == null || alarm.getAlarmId() == null) {
             return;
         }
@@ -62,24 +69,34 @@ public class AlarmStopSideEffectService {
     }
 
     public int processPendingBatch() {
+        /*
+         * 副作用执行动作仍逐条处理，因为不同 effectType 可能调用不同远程服务或本地清理逻辑。
+         * 但成功后的状态更新可以合并成 markDoneBatch，避免大批量电解槽消警时产生大量单条 UPDATE。
+         */
         if (!properties.isSideEffectEnabled()) {
             return 0;
         }
         int pendingStopCount = stopEventMapper.countPending();
         if (pendingStopCount >= properties.getHighWatermark()) {
-            log.info("消警高流量模式下暂停执行副作用事件，pendingStopCount={}", pendingStopCount);
+            if (properties.isLogEnabled()) {
+                log.info("消警高流量模式下暂停执行副作用事件，pendingStopCount={}", pendingStopCount);
+            }
             return 0;
         }
         List<AlarmStopSideEffectEvent> events = sideEffectMapper.selectPendingBatch(properties.getNormalBatchSize());
         int done = 0;
+        List<Long> doneIds = new ArrayList<>();
         for (AlarmStopSideEffectEvent event : events) {
             try {
                 execute(event);
-                sideEffectMapper.markDone(event.getId());
+                doneIds.add(event.getId());
                 done++;
             } catch (Exception ex) {
                 markRetryOrFailed(event, ex);
             }
+        }
+        if (!doneIds.isEmpty()) {
+            sideEffectMapper.markDoneBatch(doneIds);
         }
         return done;
     }
@@ -107,6 +124,13 @@ public class AlarmStopSideEffectService {
     }
 
     private void createEcCleanupEvent(Alarm alarm, AlarmCidRoute route) {
+        /*
+         * EC 扩展清理只属于电解槽行业。一般行业也可能有温度/断线报警，
+         * 如果不校验 sceneType，会误删或误触发电解槽扩展清理事件。
+         */
+        if (!StringUtils.equals(String.valueOf(SceneTypeEnums.SCENE_TYPE_2.getKey()), alarm.getSceneType())) {
+            return;
+        }
         JSONObject payload = new JSONObject();
         payload.put("alarmId", alarm.getAlarmId());
         upsertEvent(alarm, route, AlarmStopSideEffectEvent.EFFECT_EC_ECTYPE_DELETE, payload);
@@ -123,6 +147,10 @@ public class AlarmStopSideEffectService {
     }
 
     private void execute(AlarmStopSideEffectEvent event) {
+        /*
+         * 执行阶段只处理已经持久化的副作用事件。
+         * 失败会进入 retry/failed，不反向影响 alarm_endTime 和 route CLOSED 状态。
+         */
         JSONObject payload = JSONObject.parseObject(event.getPayloadJson());
         if (AlarmStopSideEffectEvent.EFFECT_IR_OFFLINE_RECOVER.equals(event.getEffectType())) {
             remoteIrChannelService.alarmIrOffLine(payload);

@@ -47,6 +47,16 @@
         where id = #{id}
     </update>
 
+    <update id="markDoneBatch">
+        update alarm_stop_side_effect_event
+        set effect_status = 'DONE',
+            updated_time = now()
+        where id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
     <update id="markRetry">
         update alarm_stop_side_effect_event
         set retry_count = retry_count + 1,

@@ -2,6 +2,7 @@ package com.hpis.alarm.config.sharding;
 
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
+import com.hpis.alarm.dto.AlarmStopApplyItem;
 import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.mapper.AlarmCidIndexMapper;
 import com.hpis.common.core.utils.DateUtils;
@@ -115,6 +116,25 @@ public class AlarmCidIndexService {
         }
         for (AlarmCidRoute route : routes) {
             closeRoute(route, alarmEndTime);
+        }
+    }
+
+    /**
+     * 批量关闭 hot/stale cid 路由。
+     *
+     * <p>stop worker 已经按业务表 suffix 分组，这里只按 route 来源再拆成 hot/stale 两批，
+     * 避免 2 万级消警时每条报警各执行一次 closeRoute。deleteAfter 对同一批统一计算即可，
+     * 因为它只控制路由表后续低流量物理清理时间，不参与业务结束时间判断。</p>
+     */
+    public void closeRoutesByItems(List<AlarmStopApplyItem> hotItems,
+                                   List<AlarmStopApplyItem> staleItems,
+                                   Date deleteAfter) {
+        Date actualDeleteAfter = deleteAfter == null ? DateUtils.getNowDate() : deleteAfter;
+        if (hotItems != null && !hotItems.isEmpty()) {
+            cidIndexMapper.closeHotBatch(hotItems, actualDeleteAfter);
+        }
+        if (staleItems != null && !staleItems.isEmpty()) {
+            cidIndexMapper.closeStaleBatch(staleItems, actualDeleteAfter);
         }
     }
 

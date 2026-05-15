@@ -107,16 +107,31 @@ public class AlarmStopEventService {
             return 0;
         }
 
+        /*
+         * 先只做路由和分组，不立即更新业务表。
+         *
+         * stop event 是按 cid 写入的，但真正更新 alarm 表必须命中具体物理分片。
+         * 因此这里先双读 hot/stale active route，拿到 table_suffix 后再按 suffix 聚合，
+         * 后面每个分组只设置一次 AlarmShardContext 并批量关闭，避免每条 stop 单独路由和更新。
+         */
         Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
+        List<Long> alreadyClosedEventIds = new ArrayList<>();
         int applied = 0;
         for (AlarmStopEvent event : events) {
             AlarmCidRoute route = alarmCidIndexService.findActiveRouteByCid(event.getAlarmCid());
             if (route == null) {
-                applied += markAppliedIfRouteAlreadyClosed(event);
+                if (isRouteAlreadyClosed(event)) {
+                    alreadyClosedEventIds.add(event.getId());
+                }
                 continue;
             }
             StopRouteContext context = buildContext(event, route);
             grouped.computeIfAbsent(route.getTableSuffix(), key -> new ArrayList<>()).add(context);
+        }
+
+        if (!alreadyClosedEventIds.isEmpty()) {
+            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            applied += alreadyClosedEventIds.size();
         }
 
         for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
@@ -127,7 +142,9 @@ public class AlarmStopEventService {
 
     public int cleanupAppliedIfAllowed() {
         if (properties.isCleanupOnlyLowTraffic() && !isLowTraffic()) {
-            log.info("当前不是低流量模式，暂停清理 alarm_stop_event APPLIED 记录，pending={}", countPending());
+            if (properties.isLogEnabled()) {
+                log.info("当前不是低流量模式，暂停清理 alarm_stop_event APPLIED 记录，pending={}", countPending());
+            }
             return 0;
         }
         return stopEventMapper.deleteApplied(DateUtils.getNowDate(), properties.getCleanupBatchSize());
@@ -155,6 +172,11 @@ public class AlarmStopEventService {
             return 0;
         }
         try {
+            /*
+             * 同一个 tableSuffix 下的报警会落在同一组物理表，可以安全批量更新。
+             * 顺序保持为：先写业务 alarm_endTime，再关闭 cid route，最后标记 stop event APPLIED。
+             * 如果业务表更新或 route 关闭失败，事务会回滚，stop event 继续保持 PENDING 等待重试。
+             */
             AlarmShardContext.setTableSuffix(tableSuffix);
             List<AlarmStopApplyItem> items = contexts.stream()
                     .map(StopRouteContext::getItem)
@@ -167,7 +189,12 @@ public class AlarmStopEventService {
             Map<Long, Alarm> alarmMap = alarmMapper.selectAlarmByIdsForStop(alarmIds).stream()
                     .collect(Collectors.toMap(Alarm::getAlarmId, alarm -> alarm, (left, right) -> left));
 
-            int applied = 0;
+            /*
+             * 批量更新后再补查业务报警，是为了拿到 sceneType、targetName 等生成 side effect
+             * 所需字段。缺失业务报警的 event 不标记 APPLIED，而是进入 retry/failed，
+             * 避免 route 关闭了但业务数据并未真正确认的情况。
+             */
+            List<StopRouteContext> validContexts = new ArrayList<>();
             for (StopRouteContext context : contexts) {
                 Alarm alarm = alarmMap.get(context.getRoute().getAlarmId());
                 if (alarm == null) {
@@ -175,10 +202,38 @@ public class AlarmStopEventService {
                             "业务分片未查询到报警，alarmId=" + context.getRoute().getAlarmId()));
                     continue;
                 }
-                applyRouteAndEvent(context, alarm);
-                applied++;
+                context.setAlarm(alarm);
+                validContexts.add(context);
             }
-            return applied;
+            Date deleteAfter = buildDeleteAfter();
+            List<AlarmStopApplyItem> hotItems = new ArrayList<>();
+            List<AlarmStopApplyItem> staleItems = new ArrayList<>();
+            List<Long> eventIds = new ArrayList<>();
+            for (StopRouteContext context : validContexts) {
+                if (AlarmCidRoute.SOURCE_STALE.equals(context.getRoute().getIndexSource())) {
+                    staleItems.add(context.getItem());
+                } else {
+                    hotItems.add(context.getItem());
+                }
+                eventIds.add(context.getEvent().getId());
+            }
+            if (!validContexts.isEmpty()) {
+                alarmCidIndexService.closeRoutesByItems(hotItems, staleItems, deleteAfter);
+                stopEventMapper.markAppliedBatch(eventIds, deleteAfter);
+            }
+            /*
+             * side effect 只生成事件，不参与核心消警成功判定。
+             * 这样远程设备恢复、电解槽扩展清理、推送等慢动作不会拖住 alarm_endTime 写入。
+             */
+            for (StopRouteContext context : validContexts) {
+                try {
+                    sideEffectService.createEvents(context.getAlarm(), context.getRoute());
+                } catch (Exception ex) {
+                    log.error("生成消警副作用事件失败，不影响核心消警结果，alarmId={}, alarmCid={}, error={}",
+                            context.getRoute().getAlarmId(), context.getRoute().getAlarmCid(), ex.getMessage(), ex);
+                }
+            }
+            return validContexts.size();
         } finally {
             AlarmShardContext.clear();
         }
@@ -207,14 +262,18 @@ public class AlarmStopEventService {
         }
     }
 
-    private int markAppliedIfRouteAlreadyClosed(AlarmStopEvent event) {
+    private boolean isRouteAlreadyClosed(AlarmStopEvent event) {
+        /*
+         * 重复 stop 或接口重试时，active route 可能已经不存在。
+         * 如果还能在 hot/stale 中查到 CLOSED route，说明核心消警已完成，此时直接把 event
+         * 批量标记 APPLIED 即可；如果完全查不到，则不扫历史分片，继续保留 PENDING 等 start 补偿。
+         */
         AlarmCidRoute existingRoute = alarmCidIndexService.findRouteByCid(event.getAlarmCid());
         if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
-            stopEventMapper.markApplied(event.getId(), buildDeleteAfter());
-            return 1;
+            return true;
         }
         log.debug("stop event 暂未找到 ACTIVE 路由，保留 PENDING 等待 start 补偿，alarmCid={}", event.getAlarmCid());
-        return 0;
+        return false;
     }
 
     private StopRouteContext buildContext(AlarmStopEvent event, AlarmCidRoute route) {
@@ -274,5 +333,6 @@ public class AlarmStopEventService {
         private AlarmStopEvent event;
         private AlarmCidRoute route;
         private AlarmStopApplyItem item;
+        private Alarm alarm;
     }
 }

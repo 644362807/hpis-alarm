@@ -320,6 +320,7 @@
                a.create_time,
                a.create_by,
                a.update_by,
+               a.scene_type,
                a.alarm_cid,
                a.irms_sn,
                a.target_name

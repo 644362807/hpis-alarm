@@ -2,6 +2,7 @@ package com.hpis.alarm.task;
 
 import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
+import com.hpis.alarm.config.sharding.AlarmShardProperties;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
 import com.hpis.alarm.enums.AlarmStatusEnums;
@@ -32,15 +33,20 @@ public class AlarmCidIndexLifecycleJob {
 
     private final AlarmMapper alarmMapper;
 
-    public AlarmCidIndexLifecycleJob(AlarmCidIndexService alarmCidIndexService, AlarmMapper alarmMapper) {
+    private final AlarmShardProperties alarmShardProperties;
+
+    public AlarmCidIndexLifecycleJob(AlarmCidIndexService alarmCidIndexService,
+                                     AlarmMapper alarmMapper,
+                                     AlarmShardProperties alarmShardProperties) {
         this.alarmCidIndexService = alarmCidIndexService;
         this.alarmMapper = alarmMapper;
+        this.alarmShardProperties = alarmShardProperties;
     }
 
     @Scheduled(cron = "${alarm.sharding.cid-index.cleanup-cron:0 0 2 * * ?}")
     public void cleanupClosedRoutes() {
         int deleted = alarmCidIndexService.cleanupClosedRoutes();
-        if (deleted > 0) {
+        if (alarmShardProperties.getCidIndex().isLogEnabled() && deleted > 0) {
             log.info("已清理关闭状态 cid 路由 {} 条", deleted);
         }
     }
@@ -48,7 +54,7 @@ public class AlarmCidIndexLifecycleJob {
     @Scheduled(cron = "${alarm.sharding.cid-index.transfer-cron:0 10 2 * * ?}")
     public void transferHotToStale() {
         int transferred = alarmCidIndexService.transferHotToStale();
-        if (transferred > 0) {
+        if (alarmShardProperties.getCidIndex().isLogEnabled() && transferred > 0) {
             log.info("已将热点 cid 路由转入 stale {} 条", transferred);
         }
     }
@@ -72,7 +78,7 @@ public class AlarmCidIndexLifecycleJob {
                 AlarmShardContext.clear();
             }
         }
-        if (!routes.isEmpty()) {
+        if (alarmShardProperties.getCidIndex().isLogEnabled() && !routes.isEmpty()) {
             log.info("已超时关闭 stale cid 路由 {} 条", routes.size());
         }
     }

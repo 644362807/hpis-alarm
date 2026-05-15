@@ -96,6 +96,14 @@ public class AlarmShardProperties {
         private String transferCron = "0 10 2 * * ?";
 
         private String staleTimeoutCron = "0 20 2 * * ?";
+
+        /**
+         * 是否打印 cid 路由生命周期定时任务的普通完成日志。
+         *
+         * <p>默认关闭，避免低流量维护任务在生产长期刷屏；需要观察清理、hot 转 stale、
+         * stale 超时关闭进度时，可在 Nacos 临时打开。</p>
+         */
+        private boolean logEnabled = false;
     }
 
     @Data

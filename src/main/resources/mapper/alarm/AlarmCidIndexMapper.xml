@@ -119,6 +119,22 @@
         where alarm_id = #{alarmId}
     </update>
 
+    <update id="closeHotBatch">
+        update alarm_cid_index
+        set route_status = 'CLOSED',
+            alarm_endTime = case alarm_id
+            <foreach collection="items" item="item">
+                when #{item.alarmId} then #{item.stopTime}
+            </foreach>
+            end,
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where alarm_id in
+        <foreach collection="items" item="item" open="(" separator="," close=")">
+            #{item.alarmId}
+        </foreach>
+    </update>
+
     <update id="closeStaleByAlarmId">
         update alarm_cid_stale_index
         set route_status = 'CLOSED',
@@ -126,6 +142,22 @@
             delete_after = #{deleteAfter},
             updated_time = now()
         where alarm_id = #{alarmId}
+    </update>
+
+    <update id="closeStaleBatch">
+        update alarm_cid_stale_index
+        set route_status = 'CLOSED',
+            alarm_endTime = case alarm_id
+            <foreach collection="items" item="item">
+                when #{item.alarmId} then #{item.stopTime}
+            </foreach>
+            end,
+            delete_after = #{deleteAfter},
+            updated_time = now()
+        where alarm_id in
+        <foreach collection="items" item="item" open="(" separator="," close=")">
+            #{item.alarmId}
+        </foreach>
     </update>
 
     <select id="selectHotTransferCandidates" resultMap="AlarmCidRouteResult">
