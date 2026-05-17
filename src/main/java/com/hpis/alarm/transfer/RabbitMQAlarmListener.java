@@ -1,6 +1,7 @@
 package com.hpis.alarm.transfer;
 
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmColorService;
 import com.hpis.alarm.service.IAlarmService;
@@ -115,6 +116,10 @@ public class RabbitMQAlarmListener {
             } else if (OperCodeEnums.SYNC_COLOR_SETTING.getKey().intValue() == operCode.intValue()) {
                 alarmColorService.insertOrUpdateAlarmColor(rawData);
             }
+            ack(channel, deliveryTag);
+        } catch (AlarmDeviceCacheMissingException ex) {
+            log.warn("[hpis-alarm]-rabbitmq 设备缓存缺失，记录并丢弃消息，alarmCid={}, deviceSn={}, sceneType={}, cameraType={}, error={}",
+                    ex.getAlarmCid(), ex.getDeviceSn(), ex.getSceneType(), ex.getCameraType(), ex.getMessage());
             ack(channel, deliveryTag);
         } catch (Exception ex) {
             log.error("[hpis-alarm]-rabbitmq 数据处理失败，消息重新入队，errorMsg={}", ex.getMessage(), ex);

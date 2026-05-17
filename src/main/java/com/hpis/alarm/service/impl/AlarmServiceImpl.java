@@ -15,6 +15,7 @@ import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmMonthlySliceTableManager;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
 import com.hpis.alarm.domain.*;
+import com.hpis.alarm.dto.AlarmInsertCommand;
 import com.hpis.alarm.dto.AlarmPartialDischargeDto;
 import com.hpis.alarm.dto.AlarmQueryParameter;
 import com.hpis.alarm.dto.RepeatAlarmDto;
@@ -22,6 +23,9 @@ import com.hpis.alarm.enums.*;
 import com.hpis.alarm.mapper.AlarmHandleMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.service.*;
+import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmDeviceResolver;
+import com.hpis.alarm.service.support.DisconnectAlarmDeduplicator;
 import com.hpis.alarm.transfer.RabbitMQAlarmPushProducer;
 
 import com.hpis.common.core.constant.Constants;
@@ -83,7 +87,6 @@ import java.text.SimpleDateFormat;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 
@@ -168,7 +171,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	@Autowired(required = false)
 	private AlarmStopEventService alarmStopEventService;
 
-	private static ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+	@Autowired
+	private AlarmDeviceResolver alarmDeviceResolver;
+
+	@Autowired
+	private DisconnectAlarmDeduplicator disconnectAlarmDeduplicator;
 
 //	private static HashMap<String, Integer> handleSceneMap = new HashMap<>();
 //	private static HashMap<String, Integer> ecSceneMap = new HashMap<>();
@@ -338,16 +345,27 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	}
 
 	/**
-	 * 新增【请填写功能名称】
+	 * 新增报警主流程。
 	 *
-	 * @param jsonObject 【请填写功能名称】
-	 * @return 结果
+	 * <p>外部入口继续保持 {@code JSONObject} 不变，避免影响 Controller、MQ listener 和旧调用方。
+	 * 第一阶段只把关键步骤显式化：生成 traceId、解析设备缓存、断线报警 Redis 去重、组装 Alarm、调用旧持久化链路。</p>
+	 *
+	 * <p>异常边界：</p>
+	 * <ul>
+	 *     <li>设备缓存缺失：抛出专用异常，由 MQ listener 记录后 ack 丢弃。</li>
+	 *     <li>断线 Redis 去重异常：继续入库，不能因为 Redis 故障丢失报警。</li>
+	 *     <li>DB/组装异常：继续抛出，让 MQ listener requeue 或上层事务回滚。</li>
+	 * </ul>
+	 *
+	 * @param jsonObject MQ/接口传入的原始报警 JSON，字段结构和 push 兼容性保持不变
 	 */
-
 	@Override
 	@Transactional(rollbackFor = {Exception.class})
 	public void insertAlarm(JSONObject jsonObject) {
-		String guardedAlarmCid = null;
+		String traceId = buildAlarmInsertTraceId(jsonObject);
+		long insertStartMs = System.currentTimeMillis();
+		DisconnectAlarmDeduplicator.DedupResult dedupResult = null;
+		boolean insertCompleted = false;
 		try {
 			Alarm alarm = new Alarm();
 			//雪花主键
@@ -361,99 +379,16 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 			String deviceSn = jsonObject.getString("deviceSn");
 			alarm.setAlarmCid(jsonObject.getString("alarmId"));
-
-			/** 测试代码---------------------------------------------------------**/
-//			JSONObject pdData = jsonObject.getJSONObject("pdData");
-//			Random random = new Random();
-//
-//			// 生成三个随机数
-//			double sum = 0.0;
-//			double[] numbers = new double[4];
-//
-//			for (int i = 0; i < 4; i++) {
-//				numbers[i] = Math.round(random.nextDouble() * (10.0-sum*10)) / 10.0; // 生成0-1之间的随机数并保留一位小数
-//				sum += numbers[i];
-//			}
-//
-//			// 最后一个数让其补充至1
-////			numbers[3] = Math.round((1.0 - sum) * 10.0) / 10.0;
-//
-////			// 确保总和为1并且每个数都大于等于0
-//			StringBuilder s = new StringBuilder();
-//			for (int i = 0; i < 4; i++) {
-//				if (i<3) {
-//					s.append(numbers[i] + ",");
-//				}else {
-//					s.append(numbers[i] );
-//				}
-//			}
-//			pdData.put("pdType",s.toString());
-//
-//
-//			File imageFile = new File("C:\\Users\\PC\\Desktop\\picture\\112.png");
-//			FileInputStream fileInputStream = new FileInputStream(imageFile);
-//
-//			// 读取文件内容并转换为字节数组
-//			byte[] fileContent = new byte[(int) imageFile.length()];
-//			fileInputStream.read(fileContent);
-//
-//			// 使用 Base64 编码
-//			String base64String = Base64.getEncoder().encodeToString(fileContent);
-//
-//			// 关闭文件流
-//			fileInputStream.close();
-//			pdData.put("prpdData",base64String);
-			/**----------------------------------------------------------- **/
+			AlarmInsertCommand command = AlarmInsertCommand.from(jsonObject);
+			logAlarmInsertStage(traceId, "START", "BEGIN", insertStartMs, jsonObject, alarm, null);
 
 			//获取设备信息
-			DeviceKeyInfoDTO device;
-//			/*** 调试代码***/
-			//不为局放 也就是不为设备直连类报警
-			if (jsonObject.getIntValue("sceneType") != SceneTypeEnums.SCENE_TYPE_6.getKey()) {
-				if (IrTypeEnums.ITEMS_10.getKey().equals(jsonObject.getString("cameraType"))||IrTypeEnums.ITEMS_500.getKey().equals(jsonObject.getString("cameraType"))) {
-					//温度传感器 直接通过sn获取
-					if (jsonObject.containsKey("srcSceneType") && SceneTypeEnums.SCENE_TYPE_11.getKey() == jsonObject.getIntValue("srcSceneType")) {
-						String[] split = deviceSn.split(",");
-						device = redisService.getCacheObject(Constants.DEVICE_SN_KEY + split[0]);
-					}else {
-						device = redisService.getCacheObject(Constants.DEVICE_SN_KEY + deviceSn);
-					}
-				} else {
-					if(!jsonObject.containsKey("cameraType") ||  StringUtils.isBlank(jsonObject.getString("cameraType"))){
-						jsonObject.put("cameraType",IrTypeEnums.ITEMS_0.getKey());
-					}
-					//红外可见需要拼接摄像头类型
-					//25.11.10修改 通过设备sn直接获取设备缓存
-					device = redisService.getCacheObject(Constants.DEVICE_SN_KEY + deviceSn + jsonObject.getString("cameraType"));
-					if (device == null) {
-						device = redisService.getCacheObject(Constants.DEVICE_SN_KEY + deviceSn);
-					}
-				}
-			} else {
-				device = redisService.getCacheObject(Constants.DEVICE_SN_KEY + deviceSn + jsonObject.getJSONObject("pdData").getString("sensorId"));
+			DeviceKeyInfoDTO device = alarmDeviceResolver.resolve(command);
+			if (StringUtils.isNotBlank(command.getCameraType())) {
+				jsonObject.put("cameraType", command.getCameraType());
 			}
+			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "SUCCESS", insertStartMs, jsonObject, alarm, null);
 
-			if (device == null) {
-				device=new DeviceKeyInfoDTO();
-				device.setDeviceName("测试设备");
-				device.setTenantId(123L);
-				device.setDeviceSn("HM-TD2068T-5/Q20250724AACHEA4925334");
-				 redisService.setCacheObject(Constants.DEVICE_SN_KEY + deviceSn,device);
-				log.error("redis未找到该设备，设备为 null，deviceSn: {}", deviceSn);
-			} else {
-
-				if (device.getTenantId()==null){
-					DeviceKeyInfoDTO device1 = redisService.getCacheObject(Constants.DEVICE_ID_KEY + device.getDeviceId());
-					device.setTenantId(device1.getTenantId());
-					if (device == null || device.getTenantId() == null) {
-						log.error("未绑定设备报警，设备 ID: {}，deviceSn: {}", device.getDeviceId(), deviceSn);
-					}
-				}
-			}
-
-			/**测试数据 **/
-			device.setDeviceName("测试设备");
-			/**测试数据 **/
 			alarm.setTargetName(device.getDeviceName());
 			//deviceSn 维耶里温度报警的时候 使用原始sn
 			if (jsonObject.containsKey("srcSceneType") && SceneTypeEnums.SCENE_TYPE_11.getKey() == jsonObject.getIntValue("srcSceneType")&& jsonObject.getString("alarmType").equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_1.getKey())) {
@@ -463,10 +398,6 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			}
 
 
-			/**测试数据 **/
-//			device.setDeviceSn("HM-TD2068T-5/Q20250724AACHEA4925334");
-			device.setTenantId(123L);
-			/**测试数据 **/
 			alarm.setTenantId(device.getTenantId());
 			//参数 --字典匹配
 			String alarmType = jsonObject.getString("alarmType");
@@ -478,11 +409,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					//断线报警
 				} else if (alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())) {
 
-					if (map.putIfAbsent(alarm.getAlarmCid(),1) != null){
-						log.warn("短线报警正在处理或重复上报，本次跳过，alarmCid={}", alarm.getAlarmCid());
+					dedupResult = disconnectAlarmDeduplicator.tryAcquire(command, traceId);
+					if (dedupResult.isDuplicate()){
+						logAlarmInsertStage(traceId, "DISCONNECT_DEDUP", "SKIP_DUPLICATE", insertStartMs, jsonObject, alarm, null);
+						log.warn("断线报警正在处理或重复上报，本次跳过，alarmCid={}", alarm.getAlarmCid());
 						return;
 					}
-					guardedAlarmCid = alarm.getAlarmCid();
 					//由于网关掉线会全部停止 然后全部推送可能有cid重复 因此取消该查询
 //					Alarm alarmId1 = alarmMapper.selectAlarmByCid(jsonObject.getString("alarmId"));
 //					if (alarmId1 != null) {
@@ -509,6 +441,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 			}
 			jsonTransformJava(jsonObject,alarm);
+			logAlarmInsertStage(traceId, "BUILD_ALARM", "SUCCESS", insertStartMs, jsonObject, alarm, null);
 			//添加报警处理列表
 			try {
 			if (jsonObject.getIntValue("sceneType") != SceneTypeEnums.SCENE_TYPE_6.getKey()) {
@@ -534,7 +467,13 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			}
 
 			insertSql(alarmType,jsonObject ,alarm,alarmElectrolyticCell);
+			insertCompleted = true;
+			logAlarmInsertStage(traceId, "PERSIST", "SUCCESS", insertStartMs, jsonObject, alarm, null);
+		} catch (AlarmDeviceCacheMissingException e) {
+			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "DROP_DEVICE_CACHE_MISS", insertStartMs, jsonObject, null, e.getMessage());
+			throw e;
 		} catch (Exception e) {
+			logAlarmInsertStage(traceId, "INSERT_ALARM", "FAIL", insertStartMs, jsonObject, null, e.getMessage());
 			log.error("报警插入异常:{}", e.getMessage());
 			if (e instanceof MySQLQueryInterruptedException) {
 				throw new CustomException("Database operation interrupted");
@@ -542,10 +481,45 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				throw new RuntimeException(e);
 			}
 		} finally {
-			if (guardedAlarmCid != null) {
-				map.remove(guardedAlarmCid);
+			if (!insertCompleted) {
+				disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
 			}
 		}
+	}
+
+	/**
+	 * 获取或生成报警链路 traceId。
+	 *
+	 * <p>如果上游已经传入 traceId，则沿用上游值；否则本服务生成一个本地 traceId，
+	 * 用于串起 MQ 消费、设备解析、断线去重、入库等阶段日志。</p>
+	 */
+	private String buildAlarmInsertTraceId(JSONObject jsonObject) {
+		String traceId = jsonObject == null ? null : jsonObject.getString("traceId");
+		if (StringUtils.isBlank(traceId)) {
+			traceId = UUID.randomUUID().toString().replace("-", "");
+		}
+		return traceId;
+	}
+
+	/**
+	 * 记录报警新增阶段日志。
+	 *
+	 * <p>日志字段必须包含 traceId、alarmCid、deviceSn、sceneType、alarmType、tenantId、耗时和错误信息，
+	 * 这样 MQ 重复消费、Redis 异常、设备缓存缺失、DB 失败都可以按同一条链路追踪。</p>
+	 */
+	private void logAlarmInsertStage(String traceId, String stage, String result, long startMs,
+									 JSONObject jsonObject, Alarm alarm, String errorMsg) {
+		log.info("alarm insert stage={}, result={}, traceId={}, alarmCid={}, deviceSn={}, sceneType={}, alarmType={}, tenantId={}, costMs={}, error={}",
+				stage,
+				result,
+				traceId,
+				jsonObject == null ? null : jsonObject.getString("alarmId"),
+				jsonObject == null ? null : jsonObject.getString("deviceSn"),
+				jsonObject == null ? null : jsonObject.getString("sceneType"),
+				jsonObject == null ? null : jsonObject.getString("alarmType"),
+				alarm == null ? null : alarm.getTenantId(),
+				System.currentTimeMillis() - startMs,
+				errorMsg);
 	}
 
 	@Transactional(rollbackFor = {Exception.class})
@@ -617,7 +591,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			if (i > 0 && alarm.getSceneType().equals(SceneTypeEnums.SCENE_TYPE_2.getKey()+"")) {
 				//断线报警触发
 				if (alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())) {
-					map.remove(alarm.getAlarmCid());
+					// Redis dedup key is kept until TTL to guard MQ redelivery.
 				}
 				// 触发逻辑
 				jsonObject.put("tenantId",alarm.getTenantId());
