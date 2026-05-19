@@ -59,6 +59,20 @@ public class AlarmStopWorkerProperties {
     private int maxRetry = 5;
 
     /**
+     * 是否在连续空轮次后暂停 stop worker 的数据库轮询。
+     *
+     * <p>开启后 @Scheduled 入口仍会触发，但空闲状态只做内存判断并直接返回；
+     * 收到新的 stop 消息或低频兜底扫描命中后再恢复查库处理。</p>
+     */
+    private boolean idlePauseEnabled = true;
+
+    /** 连续空轮次数达到该值后进入 idle pause。 */
+    private int idleConfirmCount = 3;
+
+    /** idle pause 后的低频兜底查库间隔，单位毫秒。 */
+    private long idleProbeIntervalMs = 60000L;
+
+    /**
      * 是否打印定时 worker 的普通完成日志。
      *
      * <p>生产高流量时 worker 会频繁调度，默认打印每轮日志会放大 IO 压力。

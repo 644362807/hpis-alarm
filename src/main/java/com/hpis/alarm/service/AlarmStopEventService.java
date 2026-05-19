@@ -12,6 +12,7 @@ import com.hpis.alarm.dto.AlarmStopApplyItem;
 import com.hpis.alarm.enums.AlarmStatusEnums;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
+import com.hpis.alarm.task.AlarmStopWorkerSignal;
 import com.hpis.common.core.utils.DateUtils;
 import com.hpis.common.core.utils.StringUtils;
 import lombok.Data;
@@ -19,6 +20,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationAdapter;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -47,17 +50,20 @@ public class AlarmStopEventService {
     private final AlarmCidIndexService alarmCidIndexService;
     private final AlarmStopSideEffectService sideEffectService;
     private final AlarmStopWorkerProperties properties;
+    private final AlarmStopWorkerSignal workerSignal;
 
     public AlarmStopEventService(AlarmStopEventMapper stopEventMapper,
                                  AlarmMapper alarmMapper,
                                  AlarmCidIndexService alarmCidIndexService,
                                  AlarmStopSideEffectService sideEffectService,
-                                 AlarmStopWorkerProperties properties) {
+                                 AlarmStopWorkerProperties properties,
+                                 AlarmStopWorkerSignal workerSignal) {
         this.stopEventMapper = stopEventMapper;
         this.alarmMapper = alarmMapper;
         this.alarmCidIndexService = alarmCidIndexService;
         this.sideEffectService = sideEffectService;
         this.properties = properties;
+        this.workerSignal = workerSignal;
     }
 
     public void recordStop(JSONObject rawData) {
@@ -67,6 +73,20 @@ public class AlarmStopEventService {
         }
         Date stopTime = parseStopTime(rawData.getString("time"));
         stopEventMapper.upsertPending(alarmCid, stopTime);
+        wakeWorkerAfterCommit("recordStop", alarmCid);
+    }
+
+    private void wakeWorkerAfterCommit(final String reason, final String alarmCid) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+                @Override
+                public void afterCommit() {
+                    workerSignal.wakeUp(reason, alarmCid);
+                }
+            });
+            return;
+        }
+        workerSignal.wakeUp(reason, alarmCid);
     }
 
     /**
@@ -87,6 +107,7 @@ public class AlarmStopEventService {
         StopRouteContext context = buildContext(event, route);
         try {
             applySingleContext(context, alarm);
+            wakeWorkerAfterCommit("applyPendingStopForNewAlarm", alarm.getAlarmCid());
             return true;
         } catch (Exception ex) {
             markRetryOrFailed(event, ex);

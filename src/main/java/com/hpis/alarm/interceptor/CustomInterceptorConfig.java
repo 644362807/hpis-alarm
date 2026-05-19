@@ -1,6 +1,6 @@
 package com.hpis.alarm.interceptor;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.hpis.alarm.config.AlarmSqlLogProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -14,8 +14,7 @@ public class CustomInterceptorConfig {
 
     @Bean
     @Primary  // 优先使用此 Bean
-    public CustomSqlLogInterceptor customSqlInterceptor(
-            @Value("${alarm.sql-log.printParam:false}") boolean printSqlParamValue) {
-        return new CustomSqlLogInterceptor(printSqlParamValue);
+    public CustomSqlLogInterceptor customSqlInterceptor(AlarmSqlLogProperties properties) {
+        return new CustomSqlLogInterceptor(properties);
     }
 }

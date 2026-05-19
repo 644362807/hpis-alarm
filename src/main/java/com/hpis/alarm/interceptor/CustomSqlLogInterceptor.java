@@ -3,6 +3,7 @@ package com.hpis.alarm.interceptor;
 import com.baomidou.mybatisplus.core.toolkit.CollectionUtils;
 import com.baomidou.mybatisplus.core.toolkit.PluginUtils;
 import com.baomidou.mybatisplus.core.toolkit.SystemClock;
+import com.hpis.alarm.config.AlarmSqlLogProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
@@ -46,51 +47,116 @@ import java.util.regex.Matcher;
 })
 public class CustomSqlLogInterceptor implements Interceptor {
 
-	/**
-	 * 是否打印 SQL 参数值和完整 SQL。
-	 *
-	 * true  = 打印 Params 和 Full SQL
-	 * false = 只打印 Logic SQL 和 Execute Time
-	 */
-	private final boolean printSqlParamValue;
+	private final AlarmSqlLogProperties properties;
 
 	public CustomSqlLogInterceptor() {
-		this(false);
+		this(buildLegacyProperties(false));
 	}
 
 	public CustomSqlLogInterceptor(boolean printSqlParamValue) {
-		this.printSqlParamValue = printSqlParamValue;
+		this(buildLegacyProperties(printSqlParamValue));
+	}
+
+	public CustomSqlLogInterceptor(AlarmSqlLogProperties properties) {
+		this.properties = properties == null ? new AlarmSqlLogProperties() : properties;
+	}
+
+	private static AlarmSqlLogProperties buildLegacyProperties(boolean printSqlParamValue) {
+		AlarmSqlLogProperties legacyProperties = new AlarmSqlLogProperties();
+		legacyProperties.setEnabled(true);
+		legacyProperties.setMode(AlarmSqlLogProperties.MODE_ALL);
+		legacyProperties.setPrintParam(printSqlParamValue);
+		return legacyProperties;
 	}
 
 	@Override
 	public Object intercept(Invocation invocation) throws Throwable {
 		Statement statement = unwrapStatement(invocation.getArgs()[0]);
-
 		Object target = PluginUtils.realTarget(invocation.getTarget());
 		StatementHandler statementHandler = (StatementHandler) target;
 		MetaObject metaObject = SystemMetaObject.forObject(statementHandler);
 
 		MappedStatement mappedStatement = null;
 		BoundSql boundSql = null;
-
 		try {
 			mappedStatement = (MappedStatement) metaObject.getValue("delegate.mappedStatement");
 		} catch (Exception e) {
 			log.warn("Get MappedStatement failed", e);
 		}
-
 		try {
 			boundSql = statementHandler.getBoundSql();
 		} catch (Exception e) {
 			log.warn("Get BoundSql failed", e);
 		}
-
 		String mappedStatementId = mappedStatement != null ? mappedStatement.getId() : "Unknown";
 
+		long start = SystemClock.now();
+		Object result = invocation.proceed();
+		long timing = SystemClock.now() - start;
+
+		if (!shouldLog(mappedStatementId, timing)) {
+			return result;
+		}
+
+		String sqlLogger = "\n\n==============  Sql Start  ==============" +
+				"\nExecute ID  : {}" +
+				"\n{}" +
+				"\nExecute Time: {} ms" +
+				"\n==============  Sql  End   ==============\n";
+
+		log.info(sqlLogger, mappedStatementId, buildSqlLog(statement, mappedStatement, boundSql), timing);
+
+		return result;
+	}
+
+	boolean shouldLog(String mappedStatementId, long timing) {
+		if (!properties.isEnabled()) {
+			return false;
+		}
+		String mode = properties.normalizedMode();
+		if (AlarmSqlLogProperties.MODE_ALL.equals(mode)) {
+			return true;
+		}
+		boolean slowSql = properties.isSlowEnabled()
+				&& properties.getSlowMs() >= 0
+				&& timing >= properties.getSlowMs()
+				&& !isStopWorkerSql(mappedStatementId);
+		if (AlarmSqlLogProperties.MODE_SLOW.equals(mode)) {
+			return slowSql;
+		}
+		return isAlarmWriteSql(mappedStatementId) || slowSql;
+	}
+
+	private boolean isAlarmWriteSql(String mappedStatementId) {
+		if (mappedStatementId == null || !mappedStatementId.startsWith("com.hpis.alarm.mapper.AlarmMapper.")) {
+			return false;
+		}
+		String methodName = mappedStatementId.substring("com.hpis.alarm.mapper.AlarmMapper.".length());
+		return "insert".equals(methodName)
+				|| "insertAlarm".equals(methodName)
+				|| "insertAl1armList".equals(methodName)
+				|| "updateById".equals(methodName)
+				|| "updateAlarm".equals(methodName)
+				|| "alarmStop".equals(methodName)
+				|| "alarmStopByDeviceId".equals(methodName)
+				|| "alarmAllStopByIrmsSn".equals(methodName);
+	}
+
+	private boolean isStopWorkerSql(String mappedStatementId) {
+		if (mappedStatementId == null) {
+			return false;
+		}
+		return mappedStatementId.contains(".AlarmStopEventMapper.")
+				|| mappedStatementId.contains(".AlarmStopSideEffectMapper.")
+				|| mappedStatementId.endsWith(".AlarmMapper.batchStopByAlarmIds")
+				|| mappedStatementId.endsWith(".AlarmMapper.selectAlarmByIdsForStop")
+				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.closeHotBatch")
+				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.closeStaleBatch");
+	}
+
+	private String buildSqlLog(Statement statement, MappedStatement mappedStatement, BoundSql boundSql) {
 		StringBuilder sqlBuilder = new StringBuilder();
-
 		String logicSql = null;
-
 		try {
 			logicSql = extractLogicSql(statement);
 		} catch (Exception e) {
@@ -111,7 +177,7 @@ public class CustomSqlLogInterceptor implements Interceptor {
 					.append("\n");
 		}
 
-		if (printSqlParamValue && mappedStatement != null && boundSql != null) {
+		if (properties.isPrintParam() && mappedStatement != null && boundSql != null) {
 			sqlBuilder.append("Params:\n")
 					.append(buildParamLog(mappedStatement, boundSql))
 					.append("\n");
@@ -121,21 +187,7 @@ public class CustomSqlLogInterceptor implements Interceptor {
 					.append("\n");
 		}
 
-		String originalSql = sqlBuilder.toString().trim();
-
-		long start = SystemClock.now();
-		Object result = invocation.proceed();
-		long timing = SystemClock.now() - start;
-
-		String sqlLogger = "\n\n==============  Sql Start  ==============" +
-				"\nExecute ID  : {}" +
-				"\n{}" +
-				"\nExecute Time: {} ms" +
-				"\n==============  Sql  End   ==============\n";
-
-		log.info(sqlLogger, mappedStatementId, originalSql, timing);
-
-		return result;
+		return sqlBuilder.toString().trim();
 	}
 
 	/**
