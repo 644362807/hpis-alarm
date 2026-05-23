@@ -13,8 +13,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 外部 cid 生命周期路由服务。
@@ -63,6 +67,33 @@ public class AlarmCidIndexService {
         return route;
     }
 
+    public void saveActiveHotRoutes(List<AlarmCidRoute> routes, int batchSize) {
+        if (routes == null || routes.isEmpty()) {
+            return;
+        }
+        /*
+         * 批量 upsert hot route 时必须按配置分片。
+         * route 表是 stop 链路的兜底索引，一次写太大可能拖长 insert 事务，也会放大失败后拆单成本。
+         */
+        for (List<AlarmCidRoute> chunk : chunk(routes, batchSize)) {
+            cidIndexMapper.upsertHotActiveBatch(chunk);
+        }
+    }
+
+    public List<AlarmCidRoute> saveActiveHotRoutes(List<Alarm> alarms, String tableSuffix, int batchSize) {
+        if (alarms == null || alarms.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<AlarmCidRoute> routes = new ArrayList<>();
+        for (Alarm alarm : alarms) {
+            if (alarm != null && alarm.getAlarmCid() != null && !"".equals(alarm.getAlarmCid().trim())) {
+                routes.add(buildRoute(alarm, tableSuffix));
+            }
+        }
+        saveActiveHotRoutes(routes, batchSize);
+        return routes;
+    }
+
     public AlarmCidRoute findActiveRouteByCid(String alarmCid) {
         AlarmCidRoute hot = cidIndexMapper.selectHotByCid(alarmCid);
         if (isActive(hot)) {
@@ -81,6 +112,52 @@ public class AlarmCidIndexService {
             return hot;
         }
         return cidIndexMapper.selectStaleByCid(alarmCid);
+    }
+
+    public Map<String, AlarmCidRoute> findActiveRoutesByCids(Collection<String> alarmCids, int batchSize) {
+        List<String> cids = normalizeCids(alarmCids);
+        if (cids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        /*
+         * stop worker 批量消警的核心查询：按 cid IN 查询 hot/stale ACTIVE route。
+         * 这里禁止在外层 events 循环里每条单查，必须按 batchSize 分片，避免 2000 条 stop 触发 2000 次 DB 往返。
+         */
+        Map<String, AlarmCidRoute> result = new LinkedHashMap<>();
+        for (List<String> chunk : chunk(cids, batchSize)) {
+            for (AlarmCidRoute route : cidIndexMapper.selectHotByCids(chunk)) {
+                if (isActive(route)) {
+                    result.putIfAbsent(route.getAlarmCid(), route);
+                }
+            }
+            for (AlarmCidRoute route : cidIndexMapper.selectStaleByCids(chunk)) {
+                if (isActive(route)) {
+                    result.putIfAbsent(route.getAlarmCid(), route);
+                }
+            }
+        }
+        return result;
+    }
+
+    public Map<String, AlarmCidRoute> findRoutesByCids(Collection<String> alarmCids, int batchSize) {
+        List<String> cids = normalizeCids(alarmCids);
+        if (cids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        /*
+         * 第二次 route 查询会包含 CLOSED route，用于区分“重复 stop 已经消警完成”和“真正 route 缺失”。
+         * 真正缺失会在 stop event 中标记 FAILED/ROUTE_MISSING，这是本轮明确接受的业务变化。
+         */
+        Map<String, AlarmCidRoute> result = new LinkedHashMap<>();
+        for (List<String> chunk : chunk(cids, batchSize)) {
+            for (AlarmCidRoute route : cidIndexMapper.selectHotByCids(chunk)) {
+                result.putIfAbsent(route.getAlarmCid(), route);
+            }
+            for (AlarmCidRoute route : cidIndexMapper.selectStaleByCids(chunk)) {
+                result.putIfAbsent(route.getAlarmCid(), route);
+            }
+        }
+        return result;
     }
 
     public List<AlarmCidRoute> findActiveRoutesByDeviceSn(String deviceSn) {
@@ -195,5 +272,27 @@ public class AlarmCidIndexService {
         calendar.setTime(source);
         calendar.add(Calendar.DAY_OF_MONTH, days);
         return calendar.getTime();
+    }
+
+    private List<String> normalizeCids(Collection<String> alarmCids) {
+        if (alarmCids == null || alarmCids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> cids = new ArrayList<>();
+        for (String alarmCid : alarmCids) {
+            if (alarmCid != null && !"".equals(alarmCid.trim()) && !cids.contains(alarmCid)) {
+                cids.add(alarmCid);
+            }
+        }
+        return cids;
+    }
+
+    private <T> List<List<T>> chunk(List<T> values, int batchSize) {
+        int size = batchSize <= 0 ? 500 : batchSize;
+        List<List<T>> chunks = new ArrayList<>();
+        for (int start = 0; start < values.size(); start += size) {
+            chunks.add(values.subList(start, Math.min(start + size, values.size())));
+        }
+        return chunks;
     }
 }

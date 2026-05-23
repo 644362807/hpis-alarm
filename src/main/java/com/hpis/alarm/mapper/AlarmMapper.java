@@ -79,6 +79,14 @@ public interface AlarmMapper  extends BaseMapper<Alarm>
      */
     public int insertAlarm(Alarm alarm);
 
+    /**
+     * 批量插入主报警表。
+     *
+     * <p>只用于 prepared context 批量持久化，字段集合必须和旧 `insertAlarm` 保持兼容。
+     * 不复用旧 `insertAl1armList`，避免历史命名和字段不完整问题影响生产 insert 链路。</p>
+     */
+    int insertAlarmBatch(@Param("alarms") List<Alarm> alarms);
+
 
     /**
      * 批量插入

@@ -11,6 +11,7 @@ import javax.annotation.Nullable;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmMonthlySliceTableManager;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
@@ -59,6 +60,7 @@ import com.hpis.system.api.domain.SysFile;
 import com.hpis.tmAnalysis.api.RemoteTmActionService;
 import com.hpis.tmAnalysis.api.domian.TmActionDto;
 import com.mysql.cj.jdbc.exceptions.MySQLQueryInterruptedException;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -68,11 +70,14 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionSynchronizationAdapter;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
@@ -176,6 +181,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Autowired
 	private DisconnectAlarmDeduplicator disconnectAlarmDeduplicator;
+
+	@Autowired
+	private AlarmBatchProperties batchProperties;
+
+	@Autowired
+	private PlatformTransactionManager transactionManager;
 
 //	private static HashMap<String, Integer> handleSceneMap = new HashMap<>();
 //	private static HashMap<String, Integer> ecSceneMap = new HashMap<>();
@@ -362,6 +373,38 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	@Override
 	@Transactional(rollbackFor = {Exception.class})
 	public void insertAlarm(JSONObject jsonObject) {
+		insertAlarmSingle(jsonObject);
+	}
+
+	@Override
+	public void insertAlarms(List<JSONObject> jsonObjects) {
+		/*
+		 * 内部批量入口，不改变 Controller/MQ 原有单条入口。
+		 * 批量开关关闭或只有一条数据时，仍走单条事务，作为生产快速回滚路径。
+		 */
+		if (jsonObjects == null || jsonObjects.isEmpty()) {
+			return;
+		}
+		if (!batchProperties.isInsertEnabled() || jsonObjects.size() == 1) {
+			for (JSONObject jsonObject : jsonObjects) {
+				executeAlarmBatchTransaction(() -> insertAlarmSingle(jsonObject));
+			}
+			return;
+		}
+		insertAlarmsBatch(jsonObjects);
+	}
+
+	private void executeAlarmBatchTransaction(Runnable action) {
+		/*
+		 * 批量/兜底持久化都使用 REQUIRES_NEW。
+		 * 这样 MQ listener 或上层调用方不需要感知内部批量事务边界；批量失败后拆单也能逐条独立提交。
+		 */
+		TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+		transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+		transactionTemplate.executeWithoutResult(status -> action.run());
+	}
+
+	private void insertAlarmSingle(JSONObject jsonObject) {
 		String traceId = buildAlarmInsertTraceId(jsonObject);
 		long insertStartMs = System.currentTimeMillis();
 		DisconnectAlarmDeduplicator.DedupResult dedupResult = null;
@@ -369,9 +412,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		try {
 			Alarm alarm = new Alarm();
 			//雪花主键
-			long alarmId = snowflake.nextId();
-
-			alarm.setAlarmId(alarmId);
+//			long alarmId = snowflake.nextId();
+//
+//			alarm.setAlarmId(alarmId);
 			alarm.setSceneType(jsonObject.getString("sceneType"));
 
 			//出现真实行业和 逻辑行业（目前仅仅维也里有）
@@ -488,11 +531,404 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	}
 
 	/**
-	 * 获取或生成报警链路 traceId。
+	 * 内部批量新增报警主流程。
 	 *
-	 * <p>如果上游已经传入 traceId，则沿用上游值；否则本服务生成一个本地 traceId，
-	 * 用于串起 MQ 消费、设备解析、断线去重、入库等阶段日志。</p>
+	 * <p>本方法先逐条构建 {@link AlarmInsertContext}，再按分片 suffix 批量入库。
+	 * 逐条 prepare 是为了保持设备缓存解析、断线 Redis 去重、远程状态同步的旧语义；
+	 * 批量收益主要来自主表、处理表、扩展表和 cid route 的批量持久化。</p>
+	 *
+	 * <p>失败边界：批量事务任一环节失败会整体回滚；如果开启
+	 * {@code fallbackSingleOnBatchError}，后续逐条复用已构建 context 单条入库，不能重新 prepare，
+	 * 避免 Redis 去重和远程副作用重复执行。</p>
 	 */
+	private void insertAlarmsBatch(List<JSONObject> jsonObjects) {
+		String batchId = UUID.randomUUID().toString().replace("-", "");
+		long startMs = System.currentTimeMillis();
+		List<AlarmInsertContext> contexts = new ArrayList<>();
+		boolean persistAttempted = false;
+		try {
+			for (JSONObject jsonObject : jsonObjects) {
+				AlarmInsertContext context = prepareAlarmInsertContext(jsonObject);
+				if (context != null && !context.isSkipped()) {
+					contexts.add(context);
+				}
+			}
+			persistAttempted = true;
+			persistPreparedAlarmBatch(batchId, contexts);
+			log.info("alarm insert batch stage=INSERT_BATCH_PERSIST batchId={}, batchSize={}, persistedCount={}, sampleAlarmCids={}, costMs={}",
+					batchId, jsonObjects.size(), contexts.size(), sampleAlarmInsertCids(jsonObjects),
+					System.currentTimeMillis() - startMs);
+		} catch (Exception ex) {
+			if (!batchProperties.isFallbackSingleOnBatchError()) {
+				throw new RuntimeException(ex);
+			}
+			log.warn("alarm insert batch stage=FALLBACK_SINGLE batchId={}, batchSize={}, preparedCount={}, sampleAlarmCids={}, error={}",
+					batchId, jsonObjects.size(), contexts.size(), sampleAlarmInsertCids(jsonObjects), ex.getMessage(), ex);
+			RuntimeException firstFailure = null;
+			for (AlarmInsertContext context : contexts) {
+				try {
+					// 批量回滚后的单条兜底必须复用 prepared context，不能再次执行 Redis 去重和远程组装副作用。
+					persistPreparedAlarmSingle(batchId, context);
+				} catch (Exception singleEx) {
+					releasePreparedAlarmOnFailure(context);
+					if (firstFailure == null) {
+						firstFailure = singleEx instanceof RuntimeException
+								? (RuntimeException) singleEx : new RuntimeException(singleEx);
+					}
+				}
+			}
+			if (firstFailure != null) {
+				throw firstFailure;
+			}
+			if (!persistAttempted) {
+				throw ex instanceof RuntimeException ? (RuntimeException) ex : new RuntimeException(ex);
+			}
+		} finally {
+			for (AlarmInsertContext context : contexts) {
+				releasePreparedAlarmOnFailure(context);
+			}
+		}
+	}
+
+	/**
+	 * 构建可复用的报警插入上下文。
+	 *
+	 * <p>该方法会执行设备解析、断线 Redis 去重、报警对象组装和部分远程状态同步。
+	 * 对同一条 MQ 消息只能调用一次；批量回滚后的单条兜底必须复用返回的 context，
+	 * 否则会重复抢占 Redis 去重 key 或重复触发远程状态同步。</p>
+	 */
+	public AlarmInsertContext prepareAlarmInsertContext(JSONObject jsonObject) {
+		return buildAlarmInsertContext(jsonObject);
+	}
+
+	/**
+	 * 在一个事务中持久化一批 prepared context。
+	 *
+	 * <p>completion 标记只有在 {@link TransactionTemplate} 成功返回后才设置。
+	 * 如果事务提交失败，调用方仍可以释放已抢占的断线 Redis 去重 key，或者继续拆单兜底。</p>
+	 */
+	public void persistPreparedAlarmBatch(String batchId, List<AlarmInsertContext> contexts) {
+		if (contexts == null || contexts.isEmpty()) {
+			return;
+		}
+		executeAlarmBatchTransaction(() -> persistAlarmInsertContexts(batchId, contexts));
+		for (AlarmInsertContext context : contexts) {
+			context.setInsertCompleted(true);
+			logAlarmInsertStage(context.getTraceId(), "PERSIST", "SUCCESS", context.getInsertStartMs(),
+					context.getJsonObject(), context.getAlarm(), null);
+		}
+	}
+
+	/**
+	 * 持久化单个 prepared context，且不重新构建报警对象。
+	 *
+	 * <p>这是 consumer batch/内部批量 insert 的回滚兜底入口。它保持 push payload 和 afterCommit 时机与旧单条插入一致，
+	 * 同时避免第二次执行 Redis tryAcquire。</p>
+	 */
+	public void persistPreparedAlarmSingle(String batchId, AlarmInsertContext context) {
+		if (context == null || context.isSkipped()) {
+			return;
+		}
+		executeAlarmBatchTransaction(() -> persistPreparedAlarmSingleInTransaction(batchId, context));
+		context.setInsertCompleted(true);
+		logAlarmInsertStage(context.getTraceId(), "PERSIST", "SUCCESS", context.getInsertStartMs(),
+				context.getJsonObject(), context.getAlarm(), null);
+	}
+
+	/** 只有 prepared context 最终没有成功提交时才释放断线去重 key，避免成功入库后被重复报警再次抢占。 */
+	public void releasePreparedAlarmOnFailure(AlarmInsertContext context) {
+		if (context == null || context.isInsertCompleted()) {
+			return;
+		}
+		disconnectAlarmDeduplicator.releaseOnFailure(context.getDedupResult(), context.getTraceId(),
+				context.getJsonObject() == null ? null : context.getJsonObject().getString("alarmId"));
+	}
+
+	private AlarmInsertContext buildAlarmInsertContext(JSONObject jsonObject) {
+		/*
+		 * 该方法是内部批量链路和 Spring AMQP consumer batch 的 prepare 阶段。
+		 * 任何会产生副作用的动作都集中在这里执行一次，后续只允许持久化 context。
+		 */
+		String traceId = buildAlarmInsertTraceId(jsonObject);
+		long insertStartMs = System.currentTimeMillis();
+		DisconnectAlarmDeduplicator.DedupResult dedupResult = null;
+		try {
+			Alarm alarm = new Alarm();
+			alarm.setSceneType(jsonObject.getString("sceneType"));
+			sceneTypeDataHandle(jsonObject, alarm);
+			String deviceSn = jsonObject.getString("deviceSn");
+			alarm.setAlarmCid(jsonObject.getString("alarmId"));
+			AlarmInsertCommand command = AlarmInsertCommand.from(jsonObject);
+			logAlarmInsertStage(traceId, "START", "BEGIN", insertStartMs, jsonObject, alarm, null);
+
+			DeviceKeyInfoDTO device = alarmDeviceResolver.resolve(command);
+			if (StringUtils.isNotBlank(command.getCameraType())) {
+				jsonObject.put("cameraType", command.getCameraType());
+			}
+			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "SUCCESS", insertStartMs, jsonObject, alarm, null);
+
+			alarm.setTargetName(device.getDeviceName());
+			alarm.setDeviceSn(deviceSn);
+			alarm.setTenantId(device.getTenantId());
+			String alarmType = jsonObject.getString("alarmType");
+			if (StringUtils.isNotBlank(alarmType)) {
+				if (alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_1.getKey())) {
+					alarm.setAlarmType(AlarmTypeEnums.ALARM_TYPE_ENUMS_1.getDescription());
+				} else if (alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())) {
+					dedupResult = disconnectAlarmDeduplicator.tryAcquire(command, traceId);
+					if (dedupResult.isDuplicate()) {
+						// 重复断线报警直接返回 skipped context，调用方应 ack/SKIP，不再进入持久化。
+						logAlarmInsertStage(traceId, "DISCONNECT_DEDUP", "SKIP_DUPLICATE", insertStartMs, jsonObject, alarm, null);
+						log.warn("断线报警正在处理或重复上报，本次跳过，alarmCid={}", alarm.getAlarmCid());
+						AlarmInsertContext skipped = new AlarmInsertContext();
+						skipped.setTraceId(traceId);
+						skipped.setInsertStartMs(insertStartMs);
+						skipped.setJsonObject(jsonObject);
+						skipped.setAlarm(alarm);
+						skipped.setAlarmType(alarmType);
+						skipped.setDedupResult(dedupResult);
+						skipped.setSkipped(true);
+						return skipped;
+					}
+					alarm.setAlarmType(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getDescription());
+					breakLine(jsonObject.getString("cameraType"), device, alarm);
+					alarm.setTargetName(IrTypeEnums.getValue(jsonObject.getString("cameraType")));
+					if (jsonObject.containsKey("srcSceneType") && SceneTypeEnums.SCENE_TYPE_11.getKey() == jsonObject.getIntValue("srcSceneType")
+							&& !IrTypeEnums.ITEMS_10.getKey().equals(jsonObject.getString("cameraType"))) {
+						breakLineUnitAction(jsonObject.getString("deviceSn"));
+					}
+				} else {
+					alarm.setAlarmType(alarmType);
+				}
+			}
+			jsonTransformJava(jsonObject, alarm);
+			logAlarmInsertStage(traceId, "BUILD_ALARM", "SUCCESS", insertStartMs, jsonObject, alarm, null);
+			if (jsonObject.getIntValue("sceneType") != SceneTypeEnums.SCENE_TYPE_6.getKey()) {
+				alarm = insetAlarmHandle(alarm, jsonObject, device);
+			}
+
+			AlarmElectrolyticCell alarmElectrolyticCell = new AlarmElectrolyticCell();
+			if (!alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
+					&& jsonObject.getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
+				alarmElectrolyticCell = insetElectrolyticCell(jsonObject, alarm);
+			}
+
+			AlarmInsertContext context = new AlarmInsertContext();
+			context.setTraceId(traceId);
+			context.setInsertStartMs(insertStartMs);
+			context.setDedupResult(dedupResult);
+			context.setJsonObject(jsonObject);
+			context.setAlarm(alarm);
+			context.setAlarmType(alarmType);
+			context.setAlarmElectrolyticCell(alarmElectrolyticCell);
+			return context;
+		} catch (AlarmDeviceCacheMissingException e) {
+			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "DROP_DEVICE_CACHE_MISS", insertStartMs, jsonObject, null, e.getMessage());
+			disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
+			throw e;
+		} catch (Exception e) {
+			logAlarmInsertStage(traceId, "INSERT_ALARM", "FAIL", insertStartMs, jsonObject, null, e.getMessage());
+			disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
+			throw new RuntimeException(e);
+		}
+	}
+
+	private void persistAlarmInsertContexts(String batchId, List<AlarmInsertContext> contexts) {
+		if (contexts.isEmpty()) {
+			return;
+		}
+		/*
+		 * 先为每条报警分配分片，再按 suffix 聚合。
+		 * AlarmShardContext 是线程本地上下文，分组前后必须 clear，避免同一线程处理下一批时串分片。
+		 */
+		Map<String, List<AlarmInsertContext>> grouped = new LinkedHashMap<>();
+		for (AlarmInsertContext context : contexts) {
+			String shardSuffix = prepareAlarmShard(context.getAlarm());
+			context.setShardSuffix(shardSuffix);
+			AlarmShardContext.clear();
+			grouped.computeIfAbsent(shardSuffix, key -> new ArrayList<>()).add(context);
+		}
+		for (Map.Entry<String, List<AlarmInsertContext>> entry : grouped.entrySet()) {
+			persistAlarmInsertGroup(batchId, entry.getKey(), entry.getValue());
+		}
+	}
+
+	private void persistAlarmInsertGroup(String batchId, String shardSuffix, List<AlarmInsertContext> contexts) {
+		try {
+			/*
+			 * 同一个 suffix 下可以安全批量写主表、处理表、扩展表和 cid route。
+			 * 整个 group 处于同一事务内，任一表写失败会回滚，避免只写主表不写 route 或扩展表的半成品。
+			 */
+			if (shardSuffix != null) {
+				AlarmShardContext.setTableSuffix(shardSuffix);
+			}
+			List<Alarm> alarms = new ArrayList<>();
+			List<AlarmHandle> handles = new ArrayList<>();
+			List<AlarmElectrolyticCell> ecItems = new ArrayList<>();
+			List<AlarmElectrolyticCell> ecEctypeItems = new ArrayList<>();
+			List<AlarmPartialDischarge> pdItems = new ArrayList<>();
+			for (AlarmInsertContext context : contexts) {
+				Alarm alarm = context.getAlarm();
+				alarm.setCreateTime(DateUtils.getNowDate());
+				alarms.add(alarm);
+				if (context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_1.getKey()
+						|| context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
+					AlarmHandle alarmHandle = new AlarmHandle();
+					alarmHandle.setAlarmId(alarm.getAlarmId());
+					alarmHandle.setAlarmBegintime(alarm.getAlarmBegintime());
+					alarmHandle.setCreateTime(DateUtils.getNowDate());
+					handles.add(alarmHandle);
+				}
+				if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
+						&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
+					AlarmElectrolyticCell ec = context.getAlarmElectrolyticCell();
+					ec.setAlarmBegintime(alarm.getAlarmBegintime());
+					ec.setCreateTime(DateUtils.getNowDate());
+					ecItems.add(ec);
+					ec.setIrmsSn(context.getJsonObject().getString("irmsSn"));
+					ecEctypeItems.add(ec);
+					context.getJsonObject().put("alarmElectrolyticCell", ec);
+				}
+				if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
+						&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_6.getKey()) {
+					AlarmPartialDischarge pd = context.getAlarmPartialDischarge();
+					if (pd == null) {
+						pd = buildPartialDischargeForInsert(context.getJsonObject(), alarm);
+						context.setAlarmPartialDischarge(pd);
+					}
+					pdItems.add(pd);
+				}
+			}
+			if (!handles.isEmpty()) {
+				alarmHandleMapper.insertAlarmHandelList(handles);
+			}
+			if (!ecItems.isEmpty()) {
+				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellList(ecItems);
+			}
+			if (!ecEctypeItems.isEmpty()) {
+				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellEctypeList(ecEctypeItems);
+			}
+			if (!pdItems.isEmpty()) {
+				iAlarmPartialDischargeService.insertAlarmPartialDischargeList(pdItems);
+			}
+			int inserted = alarmMapper.insertAlarmBatch(alarms);
+			if (inserted <= 0) {
+				throw new CustomException("报警主表批量插入返回 0");
+			}
+			Map<String, AlarmCidRoute> routeByCid = new LinkedHashMap<>();
+			if (shardSuffix != null && alarmCidIndexService != null) {
+				List<AlarmCidRoute> routes = alarmCidIndexService.saveActiveHotRoutes(alarms, shardSuffix, batchProperties.safeInLimit());
+				for (AlarmCidRoute route : routes) {
+					routeByCid.put(route.getAlarmCid(), route);
+				}
+				if (alarmStopEventService != null) {
+					// start 批量入库后立即批量补偿 stop 早到消息，避免 stop 已落库但新报警没有 endTime。
+					alarmStopEventService.applyPendingStopsForNewAlarms(alarms, routeByCid);
+				}
+			}
+			for (AlarmInsertContext context : contexts) {
+				// push 仍保持旧格式逐条 afterCommit 发布，不能为了批量入库改变旧消费者协议。
+				JSONObject clonedJsonObject = JSON.parseObject(JSON.toJSONString(context.getJsonObject()));
+				clonedJsonObject.put("alarmOBJ", context.getAlarm());
+				publishAlarmAfterCommit(clonedJsonObject);
+				if (context.getAlarm().getSceneType().equals(SceneTypeEnums.SCENE_TYPE_2.getKey() + "")) {
+					context.getJsonObject().put("tenantId", context.getAlarm().getTenantId());
+					triggerLogicAfterInsertAfterCommit(context.getJsonObject());
+				}
+			}
+		} finally {
+			AlarmShardContext.clear();
+		}
+	}
+
+	private void persistPreparedAlarmSingleInTransaction(String batchId, AlarmInsertContext context) {
+		Alarm alarm = context.getAlarm();
+		String shardSuffix = context.getShardSuffix();
+		try {
+			/*
+			 * 单条兜底优先复用批量 prepare 时已经分配的 shardSuffix。
+			 * 如果批量事务在分片分配前失败，才重新分配，确保兜底仍能独立完成。
+			 */
+			if (shardSuffix != null) {
+				AlarmShardContext.setTableSuffix(shardSuffix);
+			} else {
+				shardSuffix = prepareAlarmShard(alarm);
+				context.setShardSuffix(shardSuffix);
+			}
+			if (context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_1.getKey()
+					|| context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
+				AlarmHandle alarmHandle = new AlarmHandle();
+				alarmHandle.setAlarmId(alarm.getAlarmId());
+				alarmHandle.setAlarmBegintime(alarm.getAlarmBegintime());
+				alarmHandle.setCreateTime(DateUtils.getNowDate());
+				alarmHandleMapper.insertAlarmHandle(alarmHandle);
+			}
+			if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
+					&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
+				AlarmElectrolyticCell ec = context.getAlarmElectrolyticCell();
+				ec.setAlarmBegintime(alarm.getAlarmBegintime());
+				ec.setCreateTime(DateUtils.getNowDate());
+				iAlarmElectrolyticCellService.insertAlarmElectrolyticCell(ec);
+				ec.setIrmsSn(context.getJsonObject().getString("irmsSn"));
+				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellEctype(ec);
+				context.getJsonObject().put("alarmElectrolyticCell", ec);
+			}
+			if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
+					&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_6.getKey()) {
+				AlarmPartialDischarge pd = context.getAlarmPartialDischarge();
+				if (pd == null) {
+					pd = buildPartialDischargeForInsert(context.getJsonObject(), alarm);
+					context.setAlarmPartialDischarge(pd);
+				}
+				iAlarmPartialDischargeService.insertAlarmPartialDischarge(pd);
+			}
+			alarm.setCreateTime(DateUtils.getNowDate());
+			int inserted = alarmMapper.insertAlarm(alarm);
+			if (inserted <= 0) {
+				throw new CustomException("鎶ヨ涓昏〃鎻掑叆杩斿洖 0锛宎larmCid=" + alarm.getAlarmCid());
+			}
+			if (shardSuffix != null && alarmCidIndexService != null) {
+				AlarmCidRoute route = alarmCidIndexService.saveActiveHotRoute(alarm, shardSuffix);
+				if (alarmStopEventService != null) {
+					// 单条兜底同样要处理 stop 早到，保持和批量路径一致的数据一致性边界。
+					alarmStopEventService.applyPendingStopForNewAlarm(alarm, route);
+				}
+			}
+			// 单条兜底也必须保持旧 push payload 与 afterCommit 时机。
+			JSONObject clonedJsonObject = JSON.parseObject(JSON.toJSONString(context.getJsonObject()));
+			clonedJsonObject.put("alarmOBJ", alarm);
+			publishAlarmAfterCommit(clonedJsonObject);
+			if (alarm.getSceneType().equals(SceneTypeEnums.SCENE_TYPE_2.getKey() + "")) {
+				context.getJsonObject().put("tenantId", alarm.getTenantId());
+				triggerLogicAfterInsertAfterCommit(context.getJsonObject());
+			}
+		} finally {
+			AlarmShardContext.clear();
+		}
+	}
+
+	private AlarmPartialDischarge buildPartialDischargeForInsert(JSONObject jsonObject, Alarm alarm) {
+		AlarmPartialDischarge alarmPartialDischarge = jsonObject.getJSONObject("pdData").toJavaObject(AlarmPartialDischarge.class);
+		alarmPartialDischarge.setAlarmId(alarm.getAlarmId());
+		alarmPartialDischarge.setMaxAmplitude(alarmPartialDischarge.getMaxAmplitude() / 100);
+		if (StringUtils.isNotBlank(alarmPartialDischarge.getPrpdData())) {
+			byte[] decodedBytes = Base64.getDecoder().decode(alarmPartialDischarge.getPrpdData());
+			String filePath = uploadFile(decodedBytes, alarm.getDeviceSn() + alarmPartialDischarge.getSensorId() + ".dat");
+			alarm.setPicturePath(filePath);
+		}
+		alarm.setAlarmType(AlarmTypeEnums.ALARM_TYPE_ENUMS_2.getDescription());
+		return alarmPartialDischarge;
+	}
+
+	private List<String> sampleAlarmInsertCids(List<JSONObject> jsonObjects) {
+		return jsonObjects.stream()
+				.filter(Objects::nonNull)
+				.map(jsonObject -> jsonObject.getString("alarmId"))
+				.filter(StringUtils::isNotBlank)
+				.limit(5)
+				.collect(Collectors.toList());
+	}
+
 	private String buildAlarmInsertTraceId(JSONObject jsonObject) {
 		String traceId = jsonObject == null ? null : jsonObject.getString("traceId");
 		if (StringUtils.isBlank(traceId)) {
@@ -1767,5 +2203,37 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		pushMessage.put("time",jsonObject.getString("time"));
 		pushMessage.put("deviceSn",alarmOBJ1.getDeviceSn());
 		rabbitMQAlarmPushProducer.sendCustomPushMessage(pushMessage);
+	}
+
+	/**
+	 * 报警插入 prepared context。
+	 *
+	 * <p>该对象把 prepare 阶段已经完成的设备解析、报警组装、Redis 断线去重结果、分片后缀和扩展表对象保存下来。
+	 * 批量事务失败后拆单兜底必须复用它，不能重新解析 rawData，否则会重复执行去重和远程副作用。</p>
+	 */
+	@Data
+	public static class AlarmInsertContext {
+		/** 单条报警链路日志 traceId，用于串起 prepare、persist、fallback 阶段。 */
+		private String traceId;
+		/** insert 开始时间，用于阶段耗时日志，不参与业务判断。 */
+		private long insertStartMs;
+		/** 原始 MQ/接口 JSON；push payload 仍基于该结构保持旧消费者兼容。 */
+		private JSONObject jsonObject;
+		/** 已组装好的主报警对象，批量/单条兜底都复用该对象。 */
+		private Alarm alarm;
+		/** 原始 alarmType key，用于判断断线、温度、电解槽扩展等分支。 */
+		private String alarmType;
+		/** 电解槽扩展表对象；只有电解槽非断线报警需要。 */
+		private AlarmElectrolyticCell alarmElectrolyticCell;
+		/** 局放扩展表对象；局放场景需要在主表外同步写入。 */
+		private AlarmPartialDischarge alarmPartialDischarge;
+		/** 断线 Redis 去重结果；只有最终没有成功提交时才允许 release。 */
+		private DisconnectAlarmDeduplicator.DedupResult dedupResult;
+		/** 已分配的分片后缀；拆单兜底优先复用，避免同一报警落到不同分片。 */
+		private String shardSuffix;
+		/** 标记该 context 是否已成功提交，用于控制是否释放 Redis 去重 key。 */
+		private boolean insertCompleted;
+		/** 重复断线报警会被标记 skipped，调用方应返回 SKIP/ack，不进入持久化。 */
+		private boolean skipped;
 	}
 }

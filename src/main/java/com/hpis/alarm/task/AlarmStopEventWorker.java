@@ -37,6 +37,10 @@ public class AlarmStopEventWorker {
 
     @Scheduled(fixedDelayString = "${alarm.stop-worker.normalIntervalMs:1000}")
     public void processStopEvents() {
+        /*
+         * 空闲暂停只在进入数据库前短路。
+         * 一旦 shouldRunCycle 返回 true，本轮仍按原可靠 worker 语义处理 PENDING、side effect 和 idle 状态回写。
+         */
         if (!workerSignal.shouldRunCycle()) {
             return;
         }
@@ -70,6 +74,10 @@ public class AlarmStopEventWorker {
 
     @Scheduled(fixedDelayString = "${alarm.stop-worker.normalIntervalMs:1000}")
     public void processSideEffects() {
+        /*
+         * idlePauseEnabled=true 时，副作用跟随核心 stop worker 在同一轮里低频执行，
+         * 避免单独 scheduled 在无任务时持续查 side effect 表。
+         */
         if (properties.isIdlePauseEnabled()) {
             return;
         }

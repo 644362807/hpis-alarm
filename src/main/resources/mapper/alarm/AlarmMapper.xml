@@ -189,6 +189,21 @@
         </trim>
     </insert>
 
+    <insert id="insertAlarmBatch">
+        insert into alarm
+        (alarm_id, device_sn, alarm_type, alarm_rank, alarm_status, del_flag, alarm_beginTime,
+         alarm_endTime, picture_path, video_path, create_time, update_time, create_by, update_by,
+         alarm_cid, irms_sn, area_sn, scene_type, maxTemp, minTemp, target_name, tenant_id, remark_data)
+        values
+        <foreach collection="alarms" item="item" separator=",">
+            (#{item.alarmId}, #{item.deviceSn}, #{item.alarmType}, #{item.alarmRank}, #{item.alarmStatus},
+             #{item.delFlag}, #{item.alarmBegintime}, #{item.alarmEndtime}, #{item.picturePath},
+             #{item.videoPath}, #{item.createTime}, #{item.updateTime}, #{item.createBy},
+             #{item.updateBy}, #{item.alarmCid}, #{item.irmsSn}, #{item.areaSn}, #{item.sceneType},
+             #{item.maxTemp}, #{item.minTemp}, #{item.targetName}, #{item.tenantId}, #{item.remarkData})
+        </foreach>
+    </insert>
+
     <insert id="insertAlarmList" parameterType="java.util.List">
         insert into alarm
         <!-- 字段列表：先判断集合是否为空，避免空指针 -->

@@ -38,6 +38,16 @@
         limit 1
     </select>
 
+    <select id="selectPendingByCids" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where event_status = 'PENDING'
+          and alarm_cid in
+        <foreach collection="alarmCids" item="alarmCid" open="(" separator="," close=")">
+            #{alarmCid}
+        </foreach>
+    </select>
+
     <select id="selectPendingBatch" resultMap="AlarmStopEventResult">
         select *
         from alarm_stop_event
@@ -84,6 +94,19 @@
             updated_time = now()
         where id = #{id}
           and event_status = 'PENDING'
+    </update>
+
+    <update id="markFailedBatch">
+        update alarm_stop_event
+        set event_status = 'FAILED',
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where event_status = 'PENDING'
+          and id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
     </update>
 
     <delete id="deleteApplied">

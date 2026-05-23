@@ -41,6 +41,29 @@
             updated_time = now()
     </insert>
 
+    <insert id="upsertHotActiveBatch">
+        insert into alarm_cid_index
+        (alarm_cid, alarm_id, alarm_beginTime, alarm_endTime, table_suffix, device_sn, irms_sn,
+         alarm_type, route_status, delete_after, created_time, updated_time)
+        values
+        <foreach collection="routes" item="route" separator=",">
+            (#{route.alarmCid}, #{route.alarmId}, #{route.alarmBegintime}, #{route.alarmEndtime},
+             #{route.tableSuffix}, #{route.deviceSn}, #{route.irmsSn}, #{route.alarmType},
+             'ACTIVE', null, now(), now())
+        </foreach>
+        on duplicate key update
+            alarm_id = values(alarm_id),
+            alarm_beginTime = values(alarm_beginTime),
+            alarm_endTime = values(alarm_endTime),
+            table_suffix = values(table_suffix),
+            device_sn = values(device_sn),
+            irms_sn = values(irms_sn),
+            alarm_type = values(alarm_type),
+            route_status = 'ACTIVE',
+            delete_after = null,
+            updated_time = now()
+    </insert>
+
     <insert id="upsertStaleActive" parameterType="com.hpis.alarm.domain.AlarmCidRoute">
         insert into alarm_cid_stale_index
         (alarm_cid, alarm_id, alarm_beginTime, alarm_endTime, table_suffix, device_sn, irms_sn,
@@ -74,6 +97,24 @@
         from alarm_cid_stale_index s
         where s.alarm_cid = #{alarmCid}
         limit 1
+    </select>
+
+    <select id="selectHotByCids" resultMap="AlarmCidRouteResult">
+        select h.*, 'HOT' as index_source
+        from alarm_cid_index h
+        where h.alarm_cid in
+        <foreach collection="alarmCids" item="alarmCid" open="(" separator="," close=")">
+            #{alarmCid}
+        </foreach>
+    </select>
+
+    <select id="selectStaleByCids" resultMap="AlarmCidRouteResult">
+        select s.*, 'STALE' as index_source
+        from alarm_cid_stale_index s
+        where s.alarm_cid in
+        <foreach collection="alarmCids" item="alarmCid" open="(" separator="," close=")">
+            #{alarmCid}
+        </foreach>
     </select>
 
     <select id="selectActiveHotByDeviceSn" resultMap="AlarmCidRouteResult">

@@ -12,6 +12,14 @@ public interface AlarmStopSideEffectMapper {
 
     int upsertPending(AlarmStopSideEffectEvent event);
 
+    /**
+     * 批量写入待执行副作用事件。
+     *
+     * <p>核心消警事务只负责把副作用可靠落库，不直接执行远程调用；
+     * 后续由 side effect worker 逐条执行并批量标记 DONE。</p>
+     */
+    int upsertPendingBatch(@Param("events") List<AlarmStopSideEffectEvent> events);
+
     List<AlarmStopSideEffectEvent> selectPendingBatch(@Param("limit") int limit);
 
     int markDone(@Param("id") Long id);

@@ -80,7 +80,22 @@ public interface AlarmElectrolyticCellMapper  extends BaseMapper<AlarmElectrolyt
     public int insertAlarmElectrolyticCellEctype(AlarmElectrolyticCell alarmElectrolyticCell);
 
 
+    /**
+     * 批量插入电解槽主扩展表。
+     *
+     * <p>仅用于 insert prepared context 批量持久化，必须和主报警表处于同一事务，
+     * 避免主表成功但电解槽扩展缺失。</p>
+     */
     int insertAlarmElectrolyticCellList(List<AlarmElectrolyticCell> alarmElectrolyticCells);
+
+    /**
+     * 批量插入电解槽 ectype 副表。
+     *
+     * <p>该副表后续会被消警 side effect 清理，批量写入必须保持 alarmId 与主报警一致。</p>
+     */
+    int insertAlarmElectrolyticCellEctypeList(@Param("items") List<AlarmElectrolyticCell> alarmElectrolyticCells);
+
+    int deleteOldAlarmEctypeByItems(@Param("items") List<AlarmElectrolyticCell> alarmElectrolyticCells);
 
     /**
      * 修改电解槽关联报警

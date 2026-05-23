@@ -57,6 +57,15 @@ public interface IAlarmService extends IService<Alarm>
     public void insertAlarm(JSONObject jsonObject);
 
     /**
+     * 内部批量新增报警入口。
+     *
+     * <p>该方法用于 MQ consumer batch 或后续内部批量调用方，外部 Controller 仍保持
+     * {@link #insertAlarm(JSONObject)} 单条入口不变。实现层必须保证批量失败可按配置拆回单条兜底，
+     * 且 push payload、MQ 消息体、断线 Redis 去重语义与旧单条链路兼容。</p>
+     */
+    void insertAlarms(List<JSONObject> jsonObjects);
+
+    /**
      * 报警停止
      * @param object
      */

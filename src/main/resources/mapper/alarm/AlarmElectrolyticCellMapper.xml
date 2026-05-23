@@ -283,6 +283,18 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         </trim>
     </insert>
 
+    <insert id="insertAlarmElectrolyticCellEctypeList">
+        insert into alarm_electrolytic_cell_ectype
+        (alarm_id, sequence_id, row_index, groove_number, subdivide_number, observation_place,
+         temperature_variation, device_sn, irms_sn)
+        values
+        <foreach collection="items" item="item" separator=",">
+            (#{item.alarmId}, #{item.sequenceId}, #{item.rowIndex}, #{item.grooveNumber},
+             #{item.subdivideNumber}, #{item.observationPlace}, #{item.temperatureVariation},
+             #{item.deviceSn}, #{item.irmsSn})
+        </foreach>
+    </insert>
+
     <!-- 在 Mapper XML 文件中定义批量插入语句 -->
     <insert id="insertAlarmElectrolyticCellList" parameterType="java.util.List">
         insert into alarm_electrolytic_cell
@@ -404,6 +416,21 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         <if test="subdivideNumber!=null">
             AND subdivide_number = #{subdivideNumber}
         </if>
+    </delete>
+
+    <delete id="deleteOldAlarmEctypeByItems">
+        delete from alarm_electrolytic_cell_ectype
+        where
+        <foreach collection="items" item="item" separator=" or ">
+            (sequence_id = #{item.sequenceId}
+             and row_index = #{item.rowIndex}
+             and groove_number = #{item.grooveNumber}
+             and observation_place = #{item.observationPlace}
+             and irms_sn = #{item.irmsSn}
+             <if test="item.subdivideNumber != null">
+                 and subdivide_number = #{item.subdivideNumber}
+             </if>)
+        </foreach>
     </delete>
 
     <select id="selectNewAlarmElectrolyticCellList"  resultType="com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO">

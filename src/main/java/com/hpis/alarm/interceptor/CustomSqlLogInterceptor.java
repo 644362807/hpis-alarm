@@ -134,6 +134,7 @@ public class CustomSqlLogInterceptor implements Interceptor {
 		String methodName = mappedStatementId.substring("com.hpis.alarm.mapper.AlarmMapper.".length());
 		return "insert".equals(methodName)
 				|| "insertAlarm".equals(methodName)
+				|| "insertAlarmBatch".equals(methodName)
 				|| "insertAl1armList".equals(methodName)
 				|| "updateById".equals(methodName)
 				|| "updateAlarm".equals(methodName)
@@ -150,6 +151,8 @@ public class CustomSqlLogInterceptor implements Interceptor {
 				|| mappedStatementId.contains(".AlarmStopSideEffectMapper.")
 				|| mappedStatementId.endsWith(".AlarmMapper.batchStopByAlarmIds")
 				|| mappedStatementId.endsWith(".AlarmMapper.selectAlarmByIdsForStop")
+				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.selectHotByCids")
+				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.selectStaleByCids")
 				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.closeHotBatch")
 				|| mappedStatementId.endsWith(".AlarmCidIndexMapper.closeStaleBatch");
 	}

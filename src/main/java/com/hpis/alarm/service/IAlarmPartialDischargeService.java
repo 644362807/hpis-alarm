@@ -60,6 +60,13 @@ public interface IAlarmPartialDischargeService  extends IService<AlarmPartialDis
     public int insertAlarmPartialDischarge(AlarmPartialDischarge alarmPartialDischarge);
 
     /**
+     * 批量插入局放扩展表。
+     *
+     * <p>只供报警 insert 批量持久化使用，调用方必须和主报警表写入保持同一事务边界。</p>
+     */
+    int insertAlarmPartialDischargeList(List<AlarmPartialDischarge> alarmPartialDischarges);
+
+    /**
      * 修改局放报警详情
      * 
      * @param alarmPartialDischarge 局放报警详情

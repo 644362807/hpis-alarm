@@ -1,6 +1,7 @@
 package com.hpis.alarm.service;
 
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.config.AlarmStopWorkerProperties;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 消警副作用服务。
@@ -36,6 +38,7 @@ public class AlarmStopSideEffectService {
 
     private final AlarmStopSideEffectMapper sideEffectMapper;
     private final AlarmStopEventMapper stopEventMapper;
+    private final AlarmBatchProperties batchProperties;
     private final AlarmStopWorkerProperties properties;
     private final RemoteIrChannelService remoteIrChannelService;
     private final RemoteTmService remoteTmService;
@@ -43,12 +46,14 @@ public class AlarmStopSideEffectService {
 
     public AlarmStopSideEffectService(AlarmStopSideEffectMapper sideEffectMapper,
                                       AlarmStopEventMapper stopEventMapper,
+                                      AlarmBatchProperties batchProperties,
                                       AlarmStopWorkerProperties properties,
                                       RemoteIrChannelService remoteIrChannelService,
                                       RemoteTmService remoteTmService,
                                       IAlarmElectrolyticCellService alarmElectrolyticCellService) {
         this.sideEffectMapper = sideEffectMapper;
         this.stopEventMapper = stopEventMapper;
+        this.batchProperties = batchProperties;
         this.properties = properties;
         this.remoteIrChannelService = remoteIrChannelService;
         this.remoteTmService = remoteTmService;
@@ -64,8 +69,39 @@ public class AlarmStopSideEffectService {
         if (!properties.isSideEffectEnabled() || alarm == null || route == null || alarm.getAlarmId() == null) {
             return;
         }
-        createOfflineRecoverEventIfNecessary(alarm, route);
-        createEcCleanupEvent(alarm, route);
+        for (AlarmStopSideEffectEvent event : buildEvents(alarm, route)) {
+            sideEffectMapper.upsertPending(event);
+        }
+    }
+
+    public int createEventsBatch(List<Alarm> alarms, Map<Long, AlarmCidRoute> routeByAlarmId, String batchId) {
+        /*
+         * 批量生成副作用事件只做 upsertPending，不直接执行远程调用。
+         * 这样核心消警事务只需要把“后续要做什么”可靠落库，真正慢调用交给 side effect worker 重试。
+         */
+        if (!properties.isSideEffectEnabled() || alarms == null || alarms.isEmpty()) {
+            return 0;
+        }
+        List<AlarmStopSideEffectEvent> events = new ArrayList<>();
+        for (Alarm alarm : alarms) {
+            if (alarm == null || alarm.getAlarmId() == null) {
+                continue;
+            }
+            AlarmCidRoute route = routeByAlarmId == null ? null : routeByAlarmId.get(alarm.getAlarmId());
+            events.addAll(buildEvents(alarm, route));
+        }
+        if (events.isEmpty()) {
+            return 0;
+        }
+        int inLimit = batchProperties.safeInLimit();
+        // upsert 也按 inLimit 分片，避免一次批量过大影响 stop 核心事务提交时间。
+        for (int start = 0; start < events.size(); start += inLimit) {
+            List<AlarmStopSideEffectEvent> chunk = events.subList(start, Math.min(start + inLimit, events.size()));
+            sideEffectMapper.upsertPendingBatch(chunk);
+        }
+        log.info("alarm stop batch stage=SIDE_EFFECT_BATCH_UPSERT batchId={}, effectCount={}, alarmCount={}",
+                batchId, events.size(), alarms.size());
+        return events.size();
     }
 
     public int processPendingBatch() {
@@ -101,9 +137,25 @@ public class AlarmStopSideEffectService {
         return done;
     }
 
-    private void createOfflineRecoverEventIfNecessary(Alarm alarm, AlarmCidRoute route) {
+    private List<AlarmStopSideEffectEvent> buildEvents(Alarm alarm, AlarmCidRoute route) {
+        List<AlarmStopSideEffectEvent> events = new ArrayList<>();
+        if (alarm == null || route == null || alarm.getAlarmId() == null) {
+            return events;
+        }
+        AlarmStopSideEffectEvent offlineRecoverEvent = buildOfflineRecoverEventIfNecessary(alarm, route);
+        if (offlineRecoverEvent != null) {
+            events.add(offlineRecoverEvent);
+        }
+        AlarmStopSideEffectEvent ecCleanupEvent = buildEcCleanupEvent(alarm, route);
+        if (ecCleanupEvent != null) {
+            events.add(ecCleanupEvent);
+        }
+        return events;
+    }
+
+    private AlarmStopSideEffectEvent buildOfflineRecoverEventIfNecessary(Alarm alarm, AlarmCidRoute route) {
         if (!AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getDescription().equals(alarm.getAlarmType())) {
-            return;
+            return null;
         }
         JSONObject payload = new JSONObject();
         payload.put("deviceSn", alarm.getDeviceSn());
@@ -118,32 +170,30 @@ public class AlarmStopSideEffectService {
         } else if (StringUtils.equals(alarm.getTargetName(), IrTypeEnums.ITEMS_10.getDescription())) {
             effectType = AlarmStopSideEffectEvent.EFFECT_TM_OFFLINE_RECOVER;
         }
-        if (effectType != null) {
-            upsertEvent(alarm, route, effectType, payload);
-        }
+        return effectType == null ? null : buildEvent(alarm, route, effectType, payload);
     }
 
-    private void createEcCleanupEvent(Alarm alarm, AlarmCidRoute route) {
+    private AlarmStopSideEffectEvent buildEcCleanupEvent(Alarm alarm, AlarmCidRoute route) {
         /*
          * EC 扩展清理只属于电解槽行业。一般行业也可能有温度/断线报警，
          * 如果不校验 sceneType，会误删或误触发电解槽扩展清理事件。
-         */
+        */
         if (!StringUtils.equals(String.valueOf(SceneTypeEnums.SCENE_TYPE_2.getKey()), alarm.getSceneType())) {
-            return;
+            return null;
         }
         JSONObject payload = new JSONObject();
         payload.put("alarmId", alarm.getAlarmId());
-        upsertEvent(alarm, route, AlarmStopSideEffectEvent.EFFECT_EC_ECTYPE_DELETE, payload);
+        return buildEvent(alarm, route, AlarmStopSideEffectEvent.EFFECT_EC_ECTYPE_DELETE, payload);
     }
 
-    private void upsertEvent(Alarm alarm, AlarmCidRoute route, String effectType, JSONObject payload) {
+    private AlarmStopSideEffectEvent buildEvent(Alarm alarm, AlarmCidRoute route, String effectType, JSONObject payload) {
         AlarmStopSideEffectEvent event = new AlarmStopSideEffectEvent();
         event.setAlarmId(alarm.getAlarmId());
         event.setAlarmCid(alarm.getAlarmCid());
         event.setTableSuffix(route.getTableSuffix());
         event.setEffectType(effectType);
         event.setPayloadJson(payload.toJSONString());
-        sideEffectMapper.upsertPending(event);
+        return event;
     }
 
     private void execute(AlarmStopSideEffectEvent event) {

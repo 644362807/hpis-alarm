@@ -32,6 +32,22 @@
             updated_time = now()
     </insert>
 
+    <insert id="upsertPendingBatch">
+        insert into alarm_stop_side_effect_event
+        (alarm_id, alarm_cid, table_suffix, effect_type, payload_json, effect_status,
+         retry_count, last_error, created_time, updated_time)
+        values
+        <foreach collection="events" item="event" separator=",">
+            (#{event.alarmId}, #{event.alarmCid}, #{event.tableSuffix}, #{event.effectType},
+             #{event.payloadJson}, 'PENDING', 0, null, now(), now())
+        </foreach>
+        on duplicate key update
+            payload_json = values(payload_json),
+            effect_status = if(effect_status = 'DONE', effect_status, 'PENDING'),
+            last_error = if(effect_status = 'DONE', last_error, null),
+            updated_time = now()
+    </insert>
+
     <select id="selectPendingBatch" resultMap="AlarmStopSideEffectResult">
         select *
         from alarm_stop_side_effect_event

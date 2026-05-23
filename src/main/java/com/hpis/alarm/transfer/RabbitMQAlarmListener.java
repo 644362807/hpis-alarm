@@ -18,6 +18,7 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,6 +35,8 @@ import java.util.Properties;
  */
 @Configuration
 @Slf4j
+// consumer batch 打开时必须关闭旧 listener，避免两个入口同时消费 alarm_queue 导致重复入库和重复 ack。
+@ConditionalOnProperty(prefix = "alarm.batch", name = "insert-consumer-batch-enabled", havingValue = "false", matchIfMissing = true)
 public class RabbitMQAlarmListener {
 
     @Autowired
@@ -70,8 +73,12 @@ public class RabbitMQAlarmListener {
         return null;
     }
 
-    @RabbitListener(queues = RabbitQueueNameConstans.ALARM_QUEUE, ackMode = "MANUAL")
+    @RabbitListener(queues = RabbitQueueNameConstans.ALARM_QUEUE, ackMode = "MANUAL",concurrency="10-36")
     public void listenMessage(Message message, Channel channel) {
+        /*
+         * 旧单条 listener 保留作为默认生产路径和回滚路径。
+         * 所有分支都必须在业务达到终态后再 ack；处理失败统一 nack/requeue，设备缓存缺失按坏业务消息 ack 丢弃。
+         */
         byte[] body = message.getBody();
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
         String msg = NetDataTypeTransform.ByteArraytoString(body, body.length);
@@ -106,9 +113,11 @@ public class RabbitMQAlarmListener {
                 return;
             }
             if (OperCodeConstants.ALARM_PUSH.intValue() == operCode.intValue()) {
+                // 旧单条 listener 现在只保留同步单条 start 语义；批量消费统一由 RabbitMQAlarmBatchListener 接管。
                 alarmService.insertAlarm(rawData);
             } else if (OperCodeConstants.ALARM_STOP.intValue() == operCode.intValue()) {
                 if (alarmStopEventService != null) {
+                    // stop 只要可靠 upsert 到 alarm_stop_event 就可以 ack，真正关闭由后台 worker 批量完成。
                     alarmStopEventService.recordStop(rawData);
                 } else {
                     alarmService.alarmStop(rawData);

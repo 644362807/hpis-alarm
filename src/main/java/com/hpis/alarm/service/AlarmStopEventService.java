@@ -2,6 +2,7 @@ package com.hpis.alarm.service;
 
 import cn.hutool.core.date.DateUtil;
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.config.AlarmStopWorkerProperties;
 import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
@@ -30,6 +31,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -45,10 +47,13 @@ import java.util.stream.Collectors;
 @ConditionalOnProperty(prefix = "alarm.sharding", name = "enabled", havingValue = "true")
 public class AlarmStopEventService {
 
+    private static final String ROUTE_MISSING_ERROR = "ROUTE_MISSING";
+
     private final AlarmStopEventMapper stopEventMapper;
     private final AlarmMapper alarmMapper;
     private final AlarmCidIndexService alarmCidIndexService;
     private final AlarmStopSideEffectService sideEffectService;
+    private final AlarmBatchProperties batchProperties;
     private final AlarmStopWorkerProperties properties;
     private final AlarmStopWorkerSignal workerSignal;
 
@@ -56,17 +61,23 @@ public class AlarmStopEventService {
                                  AlarmMapper alarmMapper,
                                  AlarmCidIndexService alarmCidIndexService,
                                  AlarmStopSideEffectService sideEffectService,
+                                 AlarmBatchProperties batchProperties,
                                  AlarmStopWorkerProperties properties,
                                  AlarmStopWorkerSignal workerSignal) {
         this.stopEventMapper = stopEventMapper;
         this.alarmMapper = alarmMapper;
         this.alarmCidIndexService = alarmCidIndexService;
         this.sideEffectService = sideEffectService;
+        this.batchProperties = batchProperties;
         this.properties = properties;
         this.workerSignal = workerSignal;
     }
 
     public void recordStop(JSONObject rawData) {
+        /*
+         * MQ stop 的可靠入口只做 upsert PENDING。
+         * 只要这里成功，listener 就可以 ack；真正关闭业务表由 worker 重试完成，避免 MQ 消息丢失。
+         */
         String alarmCid = rawData == null ? null : rawData.getString("alarmId");
         if (StringUtils.isBlank(alarmCid)) {
             throw new IllegalArgumentException("stop 消息缺少 alarmId，无法写入 alarm_stop_event");
@@ -77,6 +88,10 @@ public class AlarmStopEventService {
     }
 
     private void wakeWorkerAfterCommit(final String reason, final String alarmCid) {
+        /*
+         * 如果 recordStop 处在事务里，必须 afterCommit 再唤醒。
+         * 否则 worker 可能先扫库但看不到未提交的 PENDING，随后进入 idle，造成额外延迟。
+         */
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
                 @Override
@@ -118,7 +133,51 @@ public class AlarmStopEventService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public int applyPendingStopsForNewAlarms(List<Alarm> alarms, Map<String, AlarmCidRoute> routeByCid) {
+        /*
+         * 批量 insert 成功后处理 stop 早到场景。
+         * 这里复用本次 insert 已经生成的 routeByCid，不再逐条查 route，避免 start 批量落库后立刻出现 N 次 route 查询。
+         */
+        if (alarms == null || alarms.isEmpty() || routeByCid == null || routeByCid.isEmpty()) {
+            return 0;
+        }
+        List<String> alarmCids = alarms.stream()
+                .map(Alarm::getAlarmCid)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList());
+        if (alarmCids.isEmpty()) {
+            return 0;
+        }
+        String batchId = UUID.randomUUID().toString().replace("-", "");
+        int applied = 0;
+        for (List<String> chunk : chunkStrings(alarmCids, batchProperties.safeInLimit())) {
+            List<AlarmStopEvent> events = stopEventMapper.selectPendingByCids(chunk);
+            Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
+            for (AlarmStopEvent event : events) {
+                AlarmCidRoute route = routeByCid.get(event.getAlarmCid());
+                if (route != null) {
+                    grouped.computeIfAbsent(route.getTableSuffix(), key -> new ArrayList<>())
+                            .add(buildContext(event, route));
+                }
+            }
+            for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
+                applied += applyRouteGroup(batchId, entry.getKey(), entry.getValue());
+            }
+        }
+        if (applied > 0) {
+            log.info("alarm insert batch stage=BATCH_PENDING_STOP_APPLY batchId={}, appliedCount={}, sampleAlarmCids={}",
+                    batchId, applied, alarmCids.stream().limit(5).collect(Collectors.toList()));
+            wakeWorkerAfterCommit("applyPendingStopsForNewAlarms", null);
+        }
+        return applied;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public int processPendingBatch() {
+        /*
+         * worker 每轮只取一批 PENDING。
+         * 高水位时自动放大 batchSize，低水位时保持较小批量，避免空闲期占用过多 DB 资源。
+         */
         int pendingCount = countPending();
         int batchSize = pendingCount >= properties.getHighWatermark()
                 ? properties.getHighBatchSize()
@@ -126,6 +185,9 @@ public class AlarmStopEventService {
         List<AlarmStopEvent> events = stopEventMapper.selectPendingBatch(batchSize);
         if (events.isEmpty()) {
             return 0;
+        }
+        if (batchProperties.isStopEnabled()) {
+            return processPendingBatchBulk(events);
         }
 
         /*
@@ -156,12 +218,140 @@ public class AlarmStopEventService {
         }
 
         for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
-            applied += applyRouteGroup(entry.getKey(), entry.getValue());
+            applied += applyRouteGroup("legacy", entry.getKey(), entry.getValue());
         }
         return applied;
     }
 
+    private int processPendingBatchBulk(List<AlarmStopEvent> events) {
+        /*
+         * 批量链路按 alarm.batch.inLimit 切 chunk。
+         * route 查询异常属于批量查询层异常，可以按配置拆回单条；但 route 真缺失会直接 FAILED，不再回到旧 PENDING 等待。
+         */
+        String batchId = UUID.randomUUID().toString().replace("-", "");
+        int processed = 0;
+        int inLimit = batchProperties.safeInLimit();
+        for (List<AlarmStopEvent> chunk : chunk(events, inLimit)) {
+            long startMs = System.currentTimeMillis();
+            try {
+                processed += processPendingChunk(batchId, events.size(), chunk);
+            } catch (RouteLookupFailedException ex) {
+                if (!batchProperties.isFallbackSingleOnBatchError()) {
+                    throw ex;
+                }
+                log.warn("alarm stop batch stage=FALLBACK_SINGLE batchId={}, chunkSize={}, sampleAlarmCids={}, costMs={}, error={}",
+                        batchId, chunk.size(), sampleCids(chunk), System.currentTimeMillis() - startMs, ex.getMessage(), ex);
+                processed += processPendingChunkSingleFallback(batchId, chunk);
+            }
+        }
+        return processed;
+    }
+
+    private int processPendingChunk(String batchId, int batchSize, List<AlarmStopEvent> events) {
+        /*
+         * 单个 chunk 的处理顺序：
+         * 1. 批量查询 ACTIVE route；
+         * 2. 对未命中 ACTIVE 的 cid 再查 hot/stale 全状态 route；
+         * 3. ACTIVE 按 suffix 分组批量关闭；
+         * 4. CLOSED 视为重复 stop 幂等成功；
+         * 5. 完全查不到 route 的 event 标记 FAILED/ROUTE_MISSING。
+         */
+        long startMs = System.currentTimeMillis();
+        List<String> alarmCids = events.stream()
+                .map(AlarmStopEvent::getAlarmCid)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList());
+        RouteLookupResult routeLookup = findRoutesForChunk(alarmCids);
+        Map<String, AlarmCidRoute> activeRouteMap = routeLookup.getActiveRouteMap();
+        Map<String, AlarmCidRoute> existingRouteMap = routeLookup.getExistingRouteMap();
+        log.info("alarm stop batch stage=BATCH_ROUTE_QUERY batchId={}, batchSize={}, chunkSize={}, activeRouteCount={}, routeCheckCount={}, sampleAlarmCids={}, costMs={}",
+                batchId, batchSize, events.size(), activeRouteMap.size(), existingRouteMap.size(),
+                sampleCids(events), System.currentTimeMillis() - startMs);
+
+        Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
+        List<Long> alreadyClosedEventIds = new ArrayList<>();
+        List<Long> missingRouteEventIds = new ArrayList<>();
+        for (AlarmStopEvent event : events) {
+            AlarmCidRoute activeRoute = activeRouteMap.get(event.getAlarmCid());
+            if (activeRoute != null) {
+                StopRouteContext context = buildContext(event, activeRoute);
+                grouped.computeIfAbsent(activeRoute.getTableSuffix(), key -> new ArrayList<>()).add(context);
+                continue;
+            }
+            AlarmCidRoute existingRoute = existingRouteMap.get(event.getAlarmCid());
+            if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
+                alreadyClosedEventIds.add(event.getId());
+            } else {
+                missingRouteEventIds.add(event.getId());
+            }
+        }
+
+        int processed = 0;
+        if (!alreadyClosedEventIds.isEmpty()) {
+            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            processed += alreadyClosedEventIds.size();
+        }
+        if (!missingRouteEventIds.isEmpty()) {
+            stopEventMapper.markFailedBatch(missingRouteEventIds, ROUTE_MISSING_ERROR);
+            processed += missingRouteEventIds.size();
+            log.warn("alarm stop batch stage=ROUTE_MISSING_FAILED batchId={}, missingRouteCount={}, sampleAlarmCids={}",
+                    batchId, missingRouteEventIds.size(), sampleCids(events));
+        }
+        for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
+            processed += applyRouteGroup(batchId, entry.getKey(), entry.getValue());
+        }
+        return processed;
+    }
+
+    private RouteLookupResult findRoutesForChunk(List<String> alarmCids) {
+        try {
+            // 第一把只查 ACTIVE route，用于真正执行业务分片关闭。
+            Map<String, AlarmCidRoute> activeRouteMap =
+                    alarmCidIndexService.findActiveRoutesByCids(alarmCids, batchProperties.safeInLimit());
+            List<String> inactiveCids = alarmCids.stream()
+                    .filter(alarmCid -> !activeRouteMap.containsKey(alarmCid))
+                    .collect(Collectors.toList());
+            // 第二把查全状态 route，用于识别 CLOSED 幂等成功和 ROUTE_MISSING 真缺失。
+            Map<String, AlarmCidRoute> existingRouteMap =
+                    alarmCidIndexService.findRoutesByCids(inactiveCids, batchProperties.safeInLimit());
+            RouteLookupResult result = new RouteLookupResult();
+            result.setActiveRouteMap(activeRouteMap);
+            result.setExistingRouteMap(existingRouteMap);
+            return result;
+        } catch (Exception ex) {
+            throw new RouteLookupFailedException(ex);
+        }
+    }
+
+    private int processPendingChunkSingleFallback(String batchId, List<AlarmStopEvent> events) {
+        /*
+         * 只有批量 route 查询异常时才走这里。
+         * 兜底仍保持新语义：查不到 hot/stale route 时标记 FAILED/ROUTE_MISSING，不再永久 PENDING。
+         */
+        int processed = 0;
+        for (AlarmStopEvent event : events) {
+            AlarmCidRoute route = alarmCidIndexService.findActiveRouteByCid(event.getAlarmCid());
+            if (route == null) {
+                AlarmCidRoute existingRoute = alarmCidIndexService.findRouteByCid(event.getAlarmCid());
+                if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
+                    stopEventMapper.markApplied(event.getId(), buildDeleteAfter());
+                } else {
+                    stopEventMapper.markFailed(event.getId(), ROUTE_MISSING_ERROR);
+                }
+                processed++;
+                continue;
+            }
+            processed += applyRouteGroup(batchId, route.getTableSuffix(),
+                    Collections.singletonList(buildContext(event, route)));
+        }
+        return processed;
+    }
+
     public int cleanupAppliedIfAllowed() {
+        /*
+         * APPLIED 清理只影响 stop event 历史表体积，不影响业务报警闭环。
+         * 高流量时暂停清理，避免和核心 PENDING 消警争抢数据库资源。
+         */
         if (properties.isCleanupOnlyLowTraffic() && !isLowTraffic()) {
             if (properties.isLogEnabled()) {
                 log.info("当前不是低流量模式，暂停清理 alarm_stop_event APPLIED 记录，pending={}", countPending());
@@ -188,10 +378,11 @@ public class AlarmStopEventService {
         return isHighTraffic() ? Math.max(1, properties.getMaxParallelism()) : 1;
     }
 
-    private int applyRouteGroup(String tableSuffix, List<StopRouteContext> contexts) {
+    private int applyRouteGroup(String batchId, String tableSuffix, List<StopRouteContext> contexts) {
         if (contexts.isEmpty()) {
             return 0;
         }
+        long startMs = System.currentTimeMillis();
         try {
             /*
              * 同一个 tableSuffix 下的报警会落在同一组物理表，可以安全批量更新。
@@ -242,25 +433,57 @@ public class AlarmStopEventService {
                 alarmCidIndexService.closeRoutesByItems(hotItems, staleItems, deleteAfter);
                 stopEventMapper.markAppliedBatch(eventIds, deleteAfter);
             }
-            /*
-             * side effect 只生成事件，不参与核心消警成功判定。
-             * 这样远程设备恢复、电解槽扩展清理、推送等慢动作不会拖住 alarm_endTime 写入。
-             */
-            for (StopRouteContext context : validContexts) {
-                try {
-                    sideEffectService.createEvents(context.getAlarm(), context.getRoute());
-                } catch (Exception ex) {
-                    log.error("生成消警副作用事件失败，不影响核心消警结果，alarmId={}, alarmCid={}, error={}",
-                            context.getRoute().getAlarmId(), context.getRoute().getAlarmCid(), ex.getMessage(), ex);
+            if (!createSideEffectsBatch(batchId, validContexts)) {
+                /*
+                 * side effect 只生成事件，不参与核心消警成功判定。
+                 * 这样远程设备恢复、电解槽扩展清理、推送等慢动作不会拖住 alarm_endTime 写入。
+                 */
+                for (StopRouteContext context : validContexts) {
+                    try {
+                        sideEffectService.createEvents(context.getAlarm(), context.getRoute());
+                    } catch (Exception ex) {
+                        log.error("生成消警副作用事件失败，不影响核心消警结果，alarmId={}, alarmCid={}, error={}",
+                                context.getRoute().getAlarmId(), context.getRoute().getAlarmCid(), ex.getMessage(), ex);
+                    }
                 }
             }
+            log.info("alarm stop batch stage=BATCH_STOP_APPLY batchId={}, tableSuffix={}, chunkSize={}, appliedCount={}, suffixCount=1, costMs={}",
+                    batchId, tableSuffix, contexts.size(), validContexts.size(), System.currentTimeMillis() - startMs);
             return validContexts.size();
         } finally {
             AlarmShardContext.clear();
         }
     }
 
+    private boolean createSideEffectsBatch(String batchId, List<StopRouteContext> contexts) {
+        /*
+         * side effect 生成失败不能回滚核心消警。
+         * 失败时返回 false，由调用方拆回单条 createEvents 并记录错误，alarm_endTime 和 route CLOSED 仍保留。
+         */
+        if (contexts == null || contexts.isEmpty()) {
+            return true;
+        }
+        try {
+            Map<Long, AlarmCidRoute> routeByAlarmId = contexts.stream()
+                    .collect(Collectors.toMap(context -> context.getRoute().getAlarmId(),
+                            StopRouteContext::getRoute, (left, right) -> left));
+            List<Alarm> alarms = contexts.stream()
+                    .map(StopRouteContext::getAlarm)
+                    .collect(Collectors.toList());
+            sideEffectService.createEventsBatch(alarms, routeByAlarmId, batchId);
+            return true;
+        } catch (Exception ex) {
+            log.warn("alarm stop batch stage=FALLBACK_SINGLE batchId={}, chunkSize={}, error={}",
+                    batchId, contexts.size(), ex.getMessage(), ex);
+            return false;
+        }
+    }
+
     private void applySingleContext(StopRouteContext context, Alarm alarm) {
+        /*
+         * 单条路径只用于 start 后补偿或批量异常兜底。
+         * 仍然设置 AlarmShardContext，确保只更新 route 指向的物理分片。
+         */
         try {
             AlarmShardContext.setTableSuffix(context.getRoute().getTableSuffix());
             alarmMapper.batchStopByAlarmIds(Collections.singletonList(context.getItem()),
@@ -273,6 +496,7 @@ public class AlarmStopEventService {
     }
 
     private void applyRouteAndEvent(StopRouteContext context, Alarm alarm) {
+        // 单条消警顺序同批量链路：先关闭 route，再标记 event APPLIED，副作用失败不反向影响核心结果。
         alarmCidIndexService.closeRoute(context.getRoute(), context.getEvent().getStopTime());
         stopEventMapper.markApplied(context.getEvent().getId(), buildDeleteAfter());
         try {
@@ -349,11 +573,55 @@ public class AlarmStopEventService {
         return message.length() > 1000 ? message.substring(0, 1000) : message;
     }
 
+    private List<List<AlarmStopEvent>> chunk(List<AlarmStopEvent> values, int batchSize) {
+        int size = batchSize <= 0 ? 500 : batchSize;
+        List<List<AlarmStopEvent>> chunks = new ArrayList<>();
+        for (int start = 0; start < values.size(); start += size) {
+            chunks.add(values.subList(start, Math.min(start + size, values.size())));
+        }
+        return chunks;
+    }
+
+    private List<List<String>> chunkStrings(List<String> values, int batchSize) {
+        int size = batchSize <= 0 ? 500 : batchSize;
+        List<List<String>> chunks = new ArrayList<>();
+        for (int start = 0; start < values.size(); start += size) {
+            chunks.add(values.subList(start, Math.min(start + size, values.size())));
+        }
+        return chunks;
+    }
+
+    private List<String> sampleCids(List<AlarmStopEvent> events) {
+        return events.stream()
+                .map(AlarmStopEvent::getAlarmCid)
+                .filter(StringUtils::isNotBlank)
+                .limit(5)
+                .collect(Collectors.toList());
+    }
+
+    @Data
+    private static class RouteLookupResult {
+        /** ACTIVE route：可直接按 suffix 关闭业务报警。 */
+        private Map<String, AlarmCidRoute> activeRouteMap = Collections.emptyMap();
+        /** 全状态 route：用于识别 CLOSED 幂等成功，仍查不到才认定 ROUTE_MISSING。 */
+        private Map<String, AlarmCidRoute> existingRouteMap = Collections.emptyMap();
+    }
+
+    private static class RouteLookupFailedException extends RuntimeException {
+        private RouteLookupFailedException(Throwable cause) {
+            super(cause);
+        }
+    }
+
     @Data
     private static class StopRouteContext {
+        /** 原始 stop event，最终需要从 PENDING 流转到 APPLIED/FAILED。 */
         private AlarmStopEvent event;
+        /** cid route，决定要操作哪个物理分片和 hot/stale route 表。 */
         private AlarmCidRoute route;
+        /** 批量关闭业务分片和 route 表时使用的轻量 DTO。 */
         private AlarmStopApplyItem item;
+        /** 业务报警补查结果，用于生成 side effect 事件。 */
         private Alarm alarm;
     }
 }

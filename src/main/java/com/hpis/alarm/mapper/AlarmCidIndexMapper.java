@@ -17,11 +17,33 @@ public interface AlarmCidIndexMapper {
 
     int upsertHotActive(AlarmCidRoute route);
 
+    /**
+     * 批量写入 ACTIVE hot route。
+     *
+     * <p>insert 批量链路提交主报警后调用，作为后续 stop 按 cid 找分片的核心索引。
+     * 调用方必须按配置分片传入，避免单条 SQL 过大。</p>
+     */
+    int upsertHotActiveBatch(@Param("routes") List<AlarmCidRoute> routes);
+
     int upsertStaleActive(AlarmCidRoute route);
 
     AlarmCidRoute selectHotByCid(@Param("alarmCid") String alarmCid);
 
     AlarmCidRoute selectStaleByCid(@Param("alarmCid") String alarmCid);
+
+    /**
+     * 按 cid 批量查询 hot route。
+     *
+     * <p>用于替代 stop worker 中循环单条 selectHotByCid，入参数量必须由 service 层按 inLimit 控制。</p>
+     */
+    List<AlarmCidRoute> selectHotByCids(@Param("alarmCids") List<String> alarmCids);
+
+    /**
+     * 按 cid 批量查询 stale route。
+     *
+     * <p>hot 未命中时仍需要查 stale，保证长时间未关闭但仍 active 的报警可以被 stop 找到。</p>
+     */
+    List<AlarmCidRoute> selectStaleByCids(@Param("alarmCids") List<String> alarmCids);
 
     List<AlarmCidRoute> selectActiveHotByDeviceSn(@Param("deviceSn") String deviceSn,
                                                   @Param("excludeAlarmType") String excludeAlarmType);

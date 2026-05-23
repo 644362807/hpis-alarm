@@ -440,6 +440,15 @@ return alarmElectrolyticCellDTOList;
         return alarmElectrolyticCellMapper.insertAlarmElectrolyticCellList(alarmElectrolyticCells);
     }
 
+    @Override
+    public int insertAlarmElectrolyticCellEctypeList(List<AlarmElectrolyticCell> alarmElectrolyticCells) {
+        if (alarmElectrolyticCells == null || alarmElectrolyticCells.isEmpty()) {
+            return 0;
+        }
+        alarmElectrolyticCellMapper.deleteOldAlarmEctypeByItems(alarmElectrolyticCells);
+        return alarmElectrolyticCellMapper.insertAlarmElectrolyticCellEctypeList(alarmElectrolyticCells);
+    }
+
     /**
      * 修改电解槽关联报警
      *

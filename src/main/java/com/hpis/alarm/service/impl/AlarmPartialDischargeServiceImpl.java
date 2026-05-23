@@ -388,6 +388,14 @@ public class AlarmPartialDischargeServiceImpl extends ServiceImpl<AlarmPartialDi
         return alarmPartialDischargeMapper.insertAlarmPartialDischarge(alarmPartialDischarge);
     }
 
+    @Override
+    public int insertAlarmPartialDischargeList(List<AlarmPartialDischarge> alarmPartialDischarges) {
+        if (alarmPartialDischarges == null || alarmPartialDischarges.isEmpty()) {
+            return 0;
+        }
+        return alarmPartialDischargeMapper.insertAlarmPartialDischargeList(alarmPartialDischarges);
+    }
+
     /**
      * 修改局放报警详情
      * 

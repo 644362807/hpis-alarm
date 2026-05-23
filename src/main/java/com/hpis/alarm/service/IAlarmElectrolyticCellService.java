@@ -54,7 +54,19 @@ public interface IAlarmElectrolyticCellService
     public int insertAlarmElectrolyticCellEctype(AlarmElectrolyticCell alarmElectrolyticCell);
 
 
+    /**
+     * 批量插入电解槽主扩展表。
+     *
+     * <p>只供报警 insert 批量持久化使用，调用方需要保证和主报警表写入处在同一事务。</p>
+     */
     public int insertAlarmElectrolyticCellList(List<AlarmElectrolyticCell> alarmElectrolyticCell);
+
+    /**
+     * 批量插入电解槽 ectype 副表。
+     *
+     * <p>后续消警副作用会按 alarmId 清理该副表，因此批量写入必须保持 alarmId 与主表一致。</p>
+     */
+    public int insertAlarmElectrolyticCellEctypeList(List<AlarmElectrolyticCell> alarmElectrolyticCell);
     /**
      * 修改电解槽关联报警
      * 

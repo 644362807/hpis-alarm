@@ -80,6 +80,14 @@ public interface AlarmPartialDischargeMapper  extends BaseMapper<AlarmPartialDis
     public int insertAlarmPartialDischarge(AlarmPartialDischarge alarmPartialDischarge);
 
     /**
+     * 批量插入局放扩展表。
+     *
+     * <p>用于 insert 批量链路，必须和主报警批量插入处于同一事务，
+     * 避免局放主报警存在但扩展详情缺失。</p>
+     */
+    int insertAlarmPartialDischargeList(@Param("items") List<AlarmPartialDischarge> alarmPartialDischarges);
+
+    /**
      * 修改局放报警详情
      * 
      * @param alarmPartialDischarge 局放报警详情

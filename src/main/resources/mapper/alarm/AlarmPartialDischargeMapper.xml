@@ -134,6 +134,18 @@
         </trim>
     </insert>
 
+    <insert id="insertAlarmPartialDischargeList">
+        insert into alarm_partial_discharge
+        (alarm_id, sensor_type, channel_index, sensor_id, cycle_unit, alarm_frequency,
+         attention_number, alarm_number, max_amplitude, pd_type)
+        values
+        <foreach collection="items" item="item" separator=",">
+            (#{item.alarmId}, #{item.sensorType}, #{item.channelIndex}, #{item.sensorId},
+             #{item.cycleUnit}, #{item.alarmFrequency}, #{item.attentionNumber},
+             #{item.alarmNumber}, #{item.maxAmplitude}, #{item.pdType})
+        </foreach>
+    </insert>
+
     <update id="updateAlarmPartialDischarge" parameterType="AlarmPartialDischarge">
         update alarm_partial_discharge
         <trim prefix="SET" suffixOverrides=",">
