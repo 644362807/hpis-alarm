@@ -38,10 +38,35 @@
         limit 1
     </select>
 
+    <select id="selectRecoverableByCid" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where alarm_cid = #{alarmCid}
+          and (
+              event_status = 'PENDING'
+              or (event_status = 'FAILED' and last_error = 'ROUTE_MISSING')
+          )
+        order by case when event_status = 'PENDING' then 0 else 1 end, id
+        limit 1
+    </select>
+
     <select id="selectPendingByCids" resultMap="AlarmStopEventResult">
         select *
         from alarm_stop_event
         where event_status = 'PENDING'
+          and alarm_cid in
+        <foreach collection="alarmCids" item="alarmCid" open="(" separator="," close=")">
+            #{alarmCid}
+        </foreach>
+    </select>
+
+    <select id="selectRecoverableByCids" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where (
+              event_status = 'PENDING'
+              or (event_status = 'FAILED' and last_error = 'ROUTE_MISSING')
+          )
           and alarm_cid in
         <foreach collection="alarmCids" item="alarmCid" open="(" separator="," close=")">
             #{alarmCid}
@@ -53,6 +78,16 @@
         from alarm_stop_event
         where event_status = 'PENDING'
         order by created_time, id
+        limit #{limit}
+    </select>
+
+    <select id="selectFailedRouteMissingBatch" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where event_status = 'FAILED'
+          and last_error = 'ROUTE_MISSING'
+          and updated_time &lt;= #{recoverAfter}
+        order by updated_time, id
         limit #{limit}
     </select>
 
@@ -94,6 +129,18 @@
             updated_time = now()
         where id = #{id}
           and event_status = 'PENDING'
+    </update>
+
+    <update id="markRetryBatch">
+        update alarm_stop_event
+        set retry_count = retry_count + 1,
+            last_error = #{lastError},
+            updated_time = now()
+        where event_status = 'PENDING'
+          and id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
     </update>
 
     <update id="markFailedBatch">

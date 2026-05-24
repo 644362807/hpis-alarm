@@ -15,9 +15,16 @@ public interface AlarmStopEventMapper {
 
     AlarmStopEvent selectPendingByCid(@Param("alarmCid") String alarmCid);
 
+    AlarmStopEvent selectRecoverableByCid(@Param("alarmCid") String alarmCid);
+
     List<AlarmStopEvent> selectPendingByCids(@Param("alarmCids") List<String> alarmCids);
 
+    List<AlarmStopEvent> selectRecoverableByCids(@Param("alarmCids") List<String> alarmCids);
+
     List<AlarmStopEvent> selectPendingBatch(@Param("limit") int limit);
+
+    List<AlarmStopEvent> selectFailedRouteMissingBatch(@Param("limit") int limit,
+                                                       @Param("recoverAfter") Date recoverAfter);
 
     int markApplied(@Param("id") Long id, @Param("deleteAfter") Date deleteAfter);
 
@@ -31,13 +38,14 @@ public interface AlarmStopEventMapper {
 
     int markRetry(@Param("id") Long id, @Param("lastError") String lastError);
 
+    int markRetryBatch(@Param("ids") List<Long> ids, @Param("lastError") String lastError);
+
     int markFailed(@Param("id") Long id, @Param("lastError") String lastError);
 
     /**
      * 批量标记失败 stop event。
      *
-     * <p>当前主要用于 ROUTE_MISSING：hot/stale 都查不到 route 时，按本轮确认的新语义直接失败，
-     * 不再让 event 长期 PENDING 等待不存在的 start 补偿。</p>
+     * <p>只在达到最大重试次数后调用。ROUTE_MISSING 默认先保持 PENDING，等待 start 后到补偿。</p>
      */
     int markFailedBatch(@Param("ids") List<Long> ids, @Param("lastError") String lastError);
 

@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmService;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.common.core.constant.OperCodeConstants;
 import com.rabbitmq.client.Channel;
 import org.junit.Before;
@@ -70,6 +71,17 @@ public class RabbitMQAlarmListenerTest {
 
         verify(channel).basicAck(103L, false);
         verify(channel, never()).basicNack(103L, false, true);
+    }
+
+    @Test
+    public void electrolyticCellInvalidIsAckDrop() throws Exception {
+        doThrow(new AlarmElectrolyticCellInvalidException("A-106", "D-106", null, null, "missing field irmsSn"))
+                .when(alarmService).insertAlarm(any(JSONObject.class));
+
+        listener.listenMessage(message(OperCodeConstants.ALARM_PUSH, 106L), channel);
+
+        verify(channel).basicAck(106L, false);
+        verify(channel, never()).basicNack(106L, false, true);
     }
 
     @Test

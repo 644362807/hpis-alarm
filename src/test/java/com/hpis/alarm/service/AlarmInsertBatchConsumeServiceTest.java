@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.service.impl.AlarmServiceImpl;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -68,6 +69,23 @@ public class AlarmInsertBatchConsumeServiceTest {
         when(alarmService.prepareAlarmInsertContext(normal)).thenReturn(normalContext);
 
         List<AlarmInsertConsumeResult> results = service.processStartBatch(Arrays.asList(missing, normal));
+
+        assertEquals(Arrays.asList(AlarmInsertConsumeResult.DROP, AlarmInsertConsumeResult.SUCCESS), results);
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(alarmService).persistPreparedAlarmBatch(anyString(), captor.capture());
+        assertEquals(1, captor.getValue().size());
+    }
+
+    @Test
+    public void electrolyticCellInvalidDropsOnlyCurrentItemAndKeepsBatch() {
+        JSONObject invalid = rawData("A-invalid-ec");
+        JSONObject normal = rawData("A-normal");
+        AlarmServiceImpl.AlarmInsertContext normalContext = context(normal);
+        when(alarmService.prepareAlarmInsertContext(invalid))
+                .thenThrow(new AlarmElectrolyticCellInvalidException("A-invalid-ec", "D-invalid", null, null, "missing field irmsSn"));
+        when(alarmService.prepareAlarmInsertContext(normal)).thenReturn(normalContext);
+
+        List<AlarmInsertConsumeResult> results = service.processStartBatch(Arrays.asList(invalid, normal));
 
         assertEquals(Arrays.asList(AlarmInsertConsumeResult.DROP, AlarmInsertConsumeResult.SUCCESS), results);
         ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);

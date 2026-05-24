@@ -125,3 +125,17 @@
 4. start 插入链路继续拆非核心同步逻辑，尤其电解槽扩展表写入。
 5. 如 stop event upsert 仍是瓶颈，再考虑 MQ 批量消费和批量 upsert。
 6. 电解槽 `EC_ECTYPE_DELETE` 可改为按 alarmId 批量执行，减少 side effect worker DB 往返。
+
+## 2026-05-24 压测计时口径修正
+
+`LT-GST-2K-20260524174500` 报告中 `Verify elapsed=1039ms`，但 `Consume elapsed after send=48611ms`，说明 verifier 在发送完成约 47 秒后才开始采样；该轮闭环耗时混入了人工/脚本/Maven 启动空窗，不能用于证明 2000 档真实消费比更大数据量更慢。`LT-GALT-2K-20260524181157-4` 还受到 Windows class 文件锁后手动改直跑 verifier 的影响，同样不采纳性能结论。
+
+本轮新增 `AlarmMqLoadOrchestratorMain`，先启动 verifier 采样，再发送 MQ。后续报告新增以下字段：
+
+- `Verifier startup gap ms`：send 完成到 verifier 启动的空窗。
+- `First observed elapsed after send ms`：发送完成后首次采样时间。
+- `Queue drain elapsed after send ms`：队列 ready 首次为 0 的时间。
+- `DB closed elapsed after send ms`：`closedRows/APPLIED/PENDING/FAILED` 首次满足核心验收的时间。
+- `True closed-loop elapsed ms`：仅当 verifier 启动空窗不超过采样间隔时采纳，否则记为 `-1`。
+
+因此后续 `2000 / 10000 / 50000 / 100000` 性能对比只采纳 orchestrator 生成、`True closed-loop elapsed ms != -1` 且最终 PASS 的 run。当前 `2-4` consumer 下已通过的 start-then-stop 大档闭环约 `295-337 rows/s`，瓶颈主要在 stop worker 与 MySQL route/业务表批量关闭，不建议在修复 `ROUTE_MISSING` 前盲目扩大 MQ consumer 并发。

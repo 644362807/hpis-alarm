@@ -8,6 +8,7 @@ import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmColorService;
 import com.hpis.alarm.service.IAlarmService;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.common.core.constant.OperCodeConstants;
 import com.hpis.common.core.constant.RabbitQueueNameConstans;
 import com.hpis.common.core.enums.OperCodeEnums;
@@ -233,6 +234,10 @@ public class RabbitMQAlarmBatchListener {
         } catch (AlarmDeviceCacheMissingException ex) {
             log.warn("[hpis-alarm]-rabbitmq batch direct message device cache missing, ack drop, deliveryTag={}, alarmCid={}, error={}",
                     mqMessage.deliveryTag, ex.getAlarmCid(), ex.getMessage());
+            ack(channel, mqMessage.deliveryTag);
+        } catch (AlarmElectrolyticCellInvalidException ex) {
+            log.warn("[hpis-alarm]-rabbitmq batch direct message electrolytic cell payload invalid, ack drop, deliveryTag={}, alarmCid={}, irmsSn={}, seq={}, reason={}, error={}",
+                    mqMessage.deliveryTag, ex.getAlarmCid(), ex.getIrmsSn(), ex.getSeq(), ex.getReason(), ex.getMessage());
             ack(channel, mqMessage.deliveryTag);
         } catch (Exception ex) {
             log.error("[hpis-alarm]-rabbitmq batch direct message failed, requeue, deliveryTag={}, operCode={}, error={}",

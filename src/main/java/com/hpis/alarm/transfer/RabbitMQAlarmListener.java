@@ -2,6 +2,7 @@ package com.hpis.alarm.transfer;
 
 import com.alibaba.fastjson.JSONObject;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmColorService;
 import com.hpis.alarm.service.IAlarmService;
@@ -129,6 +130,10 @@ public class RabbitMQAlarmListener {
         } catch (AlarmDeviceCacheMissingException ex) {
             log.warn("[hpis-alarm]-rabbitmq 设备缓存缺失，记录并丢弃消息，alarmCid={}, deviceSn={}, sceneType={}, cameraType={}, error={}",
                     ex.getAlarmCid(), ex.getDeviceSn(), ex.getSceneType(), ex.getCameraType(), ex.getMessage());
+            ack(channel, deliveryTag);
+        } catch (AlarmElectrolyticCellInvalidException ex) {
+            log.warn("[hpis-alarm]-rabbitmq electrolytic cell payload invalid, DROP + ack, alarmCid={}, deviceSn={}, irmsSn={}, seq={}, reason={}, error={}",
+                    ex.getAlarmCid(), ex.getDeviceSn(), ex.getIrmsSn(), ex.getSeq(), ex.getReason(), ex.getMessage());
             ack(channel, deliveryTag);
         } catch (Exception ex) {
             log.error("[hpis-alarm]-rabbitmq 数据处理失败，消息重新入队，errorMsg={}", ex.getMessage(), ex);

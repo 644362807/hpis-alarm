@@ -48,6 +48,9 @@ public class AlarmStopEventWorker {
         int sideEffectDone = 0;
         try {
             int loops = stopEventService.currentBatchLoops();
+            if (properties.isLogEnabled()) {
+                log.info("stop-worker cycle start, loops={}, highTraffic={}", loops, stopEventService.isHighTraffic());
+            }
             for (int i = 0; i < loops; i++) {
                 int applied = stopEventService.processPendingBatch();
                 total += applied;
