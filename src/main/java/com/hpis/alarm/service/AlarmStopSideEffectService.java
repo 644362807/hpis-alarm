@@ -1,6 +1,7 @@
 package com.hpis.alarm.service;
 
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.alarm.config.AlarmInternalTestProperties;
 import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.config.AlarmStopWorkerProperties;
 import com.hpis.alarm.domain.Alarm;
@@ -43,6 +44,7 @@ public class AlarmStopSideEffectService {
     private final RemoteIrChannelService remoteIrChannelService;
     private final RemoteTmService remoteTmService;
     private final IAlarmElectrolyticCellService alarmElectrolyticCellService;
+    private final AlarmInternalTestProperties internalTestProperties;
 
     public AlarmStopSideEffectService(AlarmStopSideEffectMapper sideEffectMapper,
                                       AlarmStopEventMapper stopEventMapper,
@@ -50,7 +52,8 @@ public class AlarmStopSideEffectService {
                                       AlarmStopWorkerProperties properties,
                                       RemoteIrChannelService remoteIrChannelService,
                                       RemoteTmService remoteTmService,
-                                      IAlarmElectrolyticCellService alarmElectrolyticCellService) {
+                                      IAlarmElectrolyticCellService alarmElectrolyticCellService,
+                                      AlarmInternalTestProperties internalTestProperties) {
         this.sideEffectMapper = sideEffectMapper;
         this.stopEventMapper = stopEventMapper;
         this.batchProperties = batchProperties;
@@ -58,6 +61,7 @@ public class AlarmStopSideEffectService {
         this.remoteIrChannelService = remoteIrChannelService;
         this.remoteTmService = remoteTmService;
         this.alarmElectrolyticCellService = alarmElectrolyticCellService;
+        this.internalTestProperties = internalTestProperties;
     }
 
     public void createEvents(Alarm alarm, AlarmCidRoute route) {
@@ -203,14 +207,33 @@ public class AlarmStopSideEffectService {
          */
         JSONObject payload = JSONObject.parseObject(event.getPayloadJson());
         if (AlarmStopSideEffectEvent.EFFECT_IR_OFFLINE_RECOVER.equals(event.getEffectType())) {
+            if (isRemoteCallStubEnabled()) {
+                // stop 副作用在内部压测时只打日志，不真正恢复设备在线状态，避免外部服务不可用导致 effect 反复重试。
+                logRemoteCallStub("RemoteIrChannelService.alarmIrOffLine", event, payload);
+                return;
+            }
             remoteIrChannelService.alarmIrOffLine(payload);
         } else if (AlarmStopSideEffectEvent.EFFECT_TM_OFFLINE_RECOVER.equals(event.getEffectType())) {
+            if (isRemoteCallStubEnabled()) {
+                // 温度传感器断线恢复同样只记录到调用边界，核心 stop 状态机仍按 DONE 推进。
+                logRemoteCallStub("RemoteTmService.alarmTmOffLine", event, payload);
+                return;
+            }
             remoteTmService.alarmTmOffLine(payload);
         } else if (AlarmStopSideEffectEvent.EFFECT_EC_ECTYPE_DELETE.equals(event.getEffectType())) {
             alarmElectrolyticCellService.deleteAlarmElectrolyticCellEctypeById(payload.getLong("alarmId"));
         } else {
             throw new IllegalArgumentException("未知消警副作用类型: " + event.getEffectType());
         }
+    }
+
+    private boolean isRemoteCallStubEnabled() {
+        return internalTestProperties != null && internalTestProperties.isRemoteCallStubEnabled();
+    }
+
+    private void logRemoteCallStub(String target, AlarmStopSideEffectEvent event, JSONObject payload) {
+        log.warn("alarm internal-test remote call stubbed, target={}, eventId={}, alarmCid={}, effectType={}, payload={}",
+                target, event.getId(), event.getAlarmCid(), event.getEffectType(), payload);
     }
 
     private void markRetryOrFailed(AlarmStopSideEffectEvent event, Exception ex) {

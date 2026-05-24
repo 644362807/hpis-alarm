@@ -12,6 +12,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hpis.alarm.config.AlarmBatchProperties;
+import com.hpis.alarm.config.AlarmInternalTestProperties;
 import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmMonthlySliceTableManager;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
@@ -25,6 +26,7 @@ import com.hpis.alarm.mapper.AlarmHandleMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.service.*;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.alarm.service.support.AlarmDeviceResolver;
 import com.hpis.alarm.service.support.DisconnectAlarmDeduplicator;
 import com.hpis.alarm.transfer.RabbitMQAlarmPushProducer;
@@ -181,6 +183,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Autowired
 	private DisconnectAlarmDeduplicator disconnectAlarmDeduplicator;
+
+	@Autowired
+	private AlarmInternalTestProperties internalTestProperties;
 
 	@Autowired
 	private AlarmBatchProperties batchProperties;
@@ -484,6 +489,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 			}
 			jsonTransformJava(jsonObject,alarm);
+			/*
+			 * alarm_id 必须在处理表、电解槽扩展表、cid route 之前生成。
+			 * 这里仍然沿用现有分片分配器，不改变外部 alarmId/alarmCid 语义；只是把内部主键提前到子表组装之前，
+			 * 保证 alarm、alarm_handle、alarm_electrolytic_cell、alarm_cid_index 使用同一个主表 ID。
+			 */
+			prepareAlarmShard(alarm);
 			logAlarmInsertStage(traceId, "BUILD_ALARM", "SUCCESS", insertStartMs, jsonObject, alarm, null);
 			//添加报警处理列表
 			try {
@@ -504,6 +515,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					alarmElectrolyticCell = insetElectrolyticCell(jsonObject, alarm);
 //					jsonObject.put("alarmElectrolyticCell",alarmElectrolyticCell);
 				}
+			} catch (AlarmElectrolyticCellInvalidException e) {
+				throw e;
 			} catch (Exception e) {
 				log.error("电解槽信息组装报警报错:{}", e.getMessage());
 				throw new CustomException(e.getMessage());
@@ -515,6 +528,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		} catch (AlarmDeviceCacheMissingException e) {
 			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "DROP_DEVICE_CACHE_MISS", insertStartMs, jsonObject, null, e.getMessage());
 			throw e;
+		} catch (AlarmElectrolyticCellInvalidException e) {
+			logAlarmInsertStage(traceId, "BUILD_ELECTROLYTIC_CELL", "DROP_INVALID_ELECTROLYTIC_CELL", insertStartMs, jsonObject, null, e.getMessage());
+			throw e;
 		} catch (Exception e) {
 			logAlarmInsertStage(traceId, "INSERT_ALARM", "FAIL", insertStartMs, jsonObject, null, e.getMessage());
 			log.error("报警插入异常:{}", e.getMessage());
@@ -525,6 +541,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			}
 		} finally {
 			if (!insertCompleted) {
+				AlarmShardContext.clear();
 				disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
 			}
 		}
@@ -702,6 +719,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				}
 			}
 			jsonTransformJava(jsonObject, alarm);
+			/*
+			 * 批量链路在 prepare 阶段先生成内部 alarm_id，并把分片 suffix 保存到 context。
+			 * 后续批量事务只复用这个 ID/suffix，不重新执行 Redis 去重和扩展信息组装，避免批量失败拆单时子表 alarm_id 漂移。
+			 */
+			String preparedShardSuffix = prepareAlarmShard(alarm);
+			AlarmShardContext.clear();
 			logAlarmInsertStage(traceId, "BUILD_ALARM", "SUCCESS", insertStartMs, jsonObject, alarm, null);
 			if (jsonObject.getIntValue("sceneType") != SceneTypeEnums.SCENE_TYPE_6.getKey()) {
 				alarm = insetAlarmHandle(alarm, jsonObject, device);
@@ -721,9 +744,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			context.setAlarm(alarm);
 			context.setAlarmType(alarmType);
 			context.setAlarmElectrolyticCell(alarmElectrolyticCell);
+			context.setShardSuffix(preparedShardSuffix);
 			return context;
 		} catch (AlarmDeviceCacheMissingException e) {
 			logAlarmInsertStage(traceId, "RESOLVE_DEVICE", "DROP_DEVICE_CACHE_MISS", insertStartMs, jsonObject, null, e.getMessage());
+			disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
+			throw e;
+		} catch (AlarmElectrolyticCellInvalidException e) {
+			logAlarmInsertStage(traceId, "BUILD_ELECTROLYTIC_CELL", "DROP_INVALID_ELECTROLYTIC_CELL", insertStartMs, jsonObject, null, e.getMessage());
 			disconnectAlarmDeduplicator.releaseOnFailure(dedupResult, traceId, jsonObject.getString("alarmId"));
 			throw e;
 		} catch (Exception e) {
@@ -743,9 +771,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		 */
 		Map<String, List<AlarmInsertContext>> grouped = new LinkedHashMap<>();
 		for (AlarmInsertContext context : contexts) {
-			String shardSuffix = prepareAlarmShard(context.getAlarm());
-			context.setShardSuffix(shardSuffix);
-			AlarmShardContext.clear();
+			String shardSuffix = context.getShardSuffix();
+			if (StringUtils.isBlank(shardSuffix) || context.getAlarm().getAlarmId() == null) {
+				shardSuffix = prepareAlarmShard(context.getAlarm());
+				context.setShardSuffix(shardSuffix);
+				AlarmShardContext.clear();
+			}
 			grouped.computeIfAbsent(shardSuffix, key -> new ArrayList<>()).add(context);
 		}
 		for (Map.Entry<String, List<AlarmInsertContext>> entry : grouped.entrySet()) {
@@ -782,10 +813,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
 						&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
 					AlarmElectrolyticCell ec = context.getAlarmElectrolyticCell();
-					ec.setAlarmBegintime(alarm.getAlarmBegintime());
-					ec.setCreateTime(DateUtils.getNowDate());
+					bindElectrolyticCellToAlarm(ec, alarm, context.getJsonObject());
 					ecItems.add(ec);
-					ec.setIrmsSn(context.getJsonObject().getString("irmsSn"));
 					ecEctypeItems.add(ec);
 					context.getJsonObject().put("alarmElectrolyticCell", ec);
 				}
@@ -866,10 +895,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			if (!context.getAlarmType().equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey())
 					&& context.getJsonObject().getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
 				AlarmElectrolyticCell ec = context.getAlarmElectrolyticCell();
-				ec.setAlarmBegintime(alarm.getAlarmBegintime());
-				ec.setCreateTime(DateUtils.getNowDate());
+				bindElectrolyticCellToAlarm(ec, alarm, context.getJsonObject());
 				iAlarmElectrolyticCellService.insertAlarmElectrolyticCell(ec);
-				ec.setIrmsSn(context.getJsonObject().getString("irmsSn"));
 				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellEctype(ec);
 				context.getJsonObject().put("alarmElectrolyticCell", ec);
 			}
@@ -960,7 +987,10 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Transactional(rollbackFor = {Exception.class})
 	public void insertSql(String alarmType,JSONObject jsonObject ,Alarm alarm,AlarmElectrolyticCell alarmElectrolyticCell){
-		String shardSuffix = prepareAlarmShard(alarm);
+		String shardSuffix = AlarmShardContext.getTableSuffix();
+		if (StringUtils.isBlank(shardSuffix) || alarm.getAlarmId() == null) {
+			shardSuffix = prepareAlarmShard(alarm);
+		}
 		try {
 			try {
 				if (jsonObject.getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_1.getKey() || jsonObject.getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
@@ -980,10 +1010,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			try {
 				if (!alarmType.equals(AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey()) &&
 						jsonObject.getIntValue("sceneType") == SceneTypeEnums.SCENE_TYPE_2.getKey()) {
-					alarmElectrolyticCell.setAlarmBegintime(alarm.getAlarmBegintime());
-					alarmElectrolyticCell.setCreateTime(DateUtils.getNowDate());
+					bindElectrolyticCellToAlarm(alarmElectrolyticCell, alarm, jsonObject);
 					iAlarmElectrolyticCellService.insertAlarmElectrolyticCell(alarmElectrolyticCell);
-					alarmElectrolyticCell.setIrmsSn(jsonObject.getString("irmsSn"));
 					iAlarmElectrolyticCellService.insertAlarmElectrolyticCellEctype(alarmElectrolyticCell);
 					jsonObject.put("alarmElectrolyticCell",alarmElectrolyticCell);
 				}
@@ -1072,6 +1100,45 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		return shardSuffix;
 	}
 
+	/**
+	 * 将电解槽扩展表记录重新绑定到主报警记录。
+	 *
+	 * <p>电解槽信息在设备/Redis 解析阶段已经组装，但真正可作为数据库外键和分片键的
+	 * alarm_id 必须以 alarm 主表生成的内部 ID 为准。批量、单条、批量失败拆单三条链路都会在入库前
+	 * 调用这里做最后一次覆盖，边界是只同步主表身份字段和本次上报的 irmsSn，不重新读取 Redis，
+	 * 也不改变 MQ 消息体、push payload 或电解槽业务字段。</p>
+	 */
+	private void bindElectrolyticCellToAlarm(AlarmElectrolyticCell alarmElectrolyticCell, Alarm alarm, JSONObject jsonObject) {
+		if (alarmElectrolyticCell == null || alarm == null) {
+			throw new IllegalStateException("Electrolytic cell alarm binding is missing alarm or extension object, alarmCid="
+					+ (jsonObject == null ? null : jsonObject.getString("alarmId")));
+		}
+		alarmElectrolyticCell.setAlarmId(alarm.getAlarmId());
+		alarmElectrolyticCell.setAlarmBegintime(alarm.getAlarmBegintime());
+		alarmElectrolyticCell.setCreateTime(DateUtils.getNowDate());
+		if (jsonObject != null && StringUtils.isNotBlank(jsonObject.getString("irmsSn"))) {
+			alarmElectrolyticCell.setIrmsSn(jsonObject.getString("irmsSn"));
+		}
+		assertAlarmShardKeys(alarm, alarmElectrolyticCell, jsonObject);
+	}
+
+	private void assertAlarmShardKeys(Alarm alarm, AlarmElectrolyticCell alarmElectrolyticCell, JSONObject jsonObject) {
+		if (alarm == null || alarm.getAlarmId() == null || alarm.getAlarmBegintime() == null) {
+			throw new IllegalStateException("Alarm shard keys must be present before insert, alarmCid="
+					+ (jsonObject == null ? null : jsonObject.getString("alarmId"))
+					+ ", alarmId=" + (alarm == null ? null : alarm.getAlarmId())
+					+ ", alarmBegintime=" + (alarm == null ? null : alarm.getAlarmBegintime()));
+		}
+		if (alarmElectrolyticCell == null
+				|| alarmElectrolyticCell.getAlarmId() == null
+				|| alarmElectrolyticCell.getAlarmBegintime() == null) {
+			throw new IllegalStateException("Electrolytic cell shard keys must be present before insert, alarmCid="
+					+ (jsonObject == null ? null : jsonObject.getString("alarmId"))
+					+ ", alarmId=" + (alarmElectrolyticCell == null ? null : alarmElectrolyticCell.getAlarmId())
+					+ ", alarmBegintime=" + (alarmElectrolyticCell == null ? null : alarmElectrolyticCell.getAlarmBegintime()));
+		}
+	}
+
 
 	void jsonTransformJava (JSONObject jsonObject,Alarm alarm) throws ParseException {
 		StringBuilder sb = new StringBuilder();
@@ -1111,6 +1178,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	public void breakLineUnitAction(String deviceSn){
 		TmActionDto tmActionDto = new TmActionDto();
 		tmActionDto.setDeviceSn(deviceSn);
+		if (isRemoteCallStubEnabled()) {
+			// 本地压测只验证 alarm 内部入库链路，跨服务联动到调用点即停止，避免 hpis-tmAnalysis 未启动导致 MQ 重投。
+			logRemoteCallStub("RemoteTmActionService.unitAction", tmActionDto);
+			return;
+		}
 		remoteTmActionService.unitAction(tmActionDto);
 	}
 
@@ -1128,6 +1200,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			JSONObject jsonObject = new JSONObject();
 			jsonObject.put("deviceSn", device.getDeviceSn());
 			jsonObject.put("isActive", UserStatus.DISABLE.getCode());
+			if (isRemoteCallStubEnabled()) {
+				// 断线 start 只打印设备离线同步 payload，不真正请求设备服务，保障本地 MQ->DB 压测不依赖 hpis-device。
+				logRemoteCallStub("RemoteTmService.alarmTmOffLine", jsonObject);
+				return alarm;
+			}
 			remoteTmService.alarmTmOffLine(jsonObject);
 		} else {
 			//红外通道sn规则（deviceSn）
@@ -1136,6 +1213,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			jsonObject.put("isActive", UserStatus.DISABLE.getCode());
 			//26.3.25将视频类型传过去
 			jsonObject.put("cameraType", cameraType);
+			if (isRemoteCallStubEnabled()) {
+				// 断线 start 的红外通道离线同步只打日志；真实状态同步留给完整联调环境验证。
+				logRemoteCallStub("RemoteIrChannelService.alarmIrOffLine", jsonObject);
+				return alarm;
+			}
 			remoteIrChannelService.alarmIrOffLine(jsonObject);
 		}
 		return alarm;
@@ -1171,6 +1253,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					DUnitInfoDto dUnitInfoDto = new DUnitInfoDto();
 					String[] split = jsonObject.getString("deviceSn").split(",");
 					dUnitInfoDto.setTmSns(split[0]);
+					if (isRemoteCallStubEnabled()) {
+						// 单独压测 alarm 时不查询单元服务，使用设备缓存名称兜底，保证处理表仍能落库。
+						logRemoteCallStub("RemoteDUnitInfoService.unitInfo", dUnitInfoDto);
+						alarm.setTargetName(device.getDeviceName());
+						return alarm;
+					}
 					R<DUnitInfoDto> dUnitInfoDtoR = remoteDUnitInfoService.unitInfo(dUnitInfoDto);
 					if (R.FAIL == dUnitInfoDtoR.getCode()) {
 						throw new BaseException(dUnitInfoDtoR.getMsg());
@@ -1185,6 +1273,23 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				}
 
 			}else {
+				if (isRemoteCallStubEnabled()) {
+					/*
+					 * 这里是当前 smoke 阻断点：非断线报警需要 hpis-device 查询 area/irms 关系。
+					 * 测试模式下不请求远程服务，按设备缓存名称和 areaSn 组装一个可入库的目标名；
+					 * 该兜底值只服务 MQ、分片和 DB 压测，不代表生产业务展示名称。
+					 */
+					JSONObject payload = new JSONObject();
+					payload.put("deviceSn", jsonObject.getString("deviceSn"));
+					payload.put("areaSn", jsonObject.getString("areaSn"));
+					payload.put("irmsSn", jsonObject.getString("irmsSn"));
+					logRemoteCallStub("RemoteDeviceAreaService.selectDeviceAreaByAreaSnAndIrmsSn", payload);
+					String areaName = StringUtils.isNotBlank(jsonObject.getString("areaSn"))
+							? jsonObject.getString("areaSn")
+							: "stub-area";
+					alarm.setTargetName(device.getDeviceName() + "_" + areaName);
+					return alarm;
+				}
 				R<List<DeviceAreaKeyInfoDTO>> listR = remoteDeviceAreaService.selectDeviceAreaByAreaSnAndIrmsSn(jsonObject.getString("deviceSn"), jsonObject.getString("areaSn"), jsonObject.getString("irmsSn"));
 				if (R.FAIL == listR.getCode()) {
 					throw new BaseException(listR.getMsg());
@@ -1209,44 +1314,86 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	 * @throws InterruptedException
 	 */
 	AlarmElectrolyticCell insetElectrolyticCell(JSONObject jsonObject,Alarm alarm) {
+		validateElectrolyticCellStartPayload(jsonObject);
 		//观察位置
 		String type = jsonObject.getString("type");
 		int subdivideIndex = jsonObject.getIntValue("subdivideIndex");
 		AlarmElectrolyticCell alarmElectrolyticCell = new AlarmElectrolyticCell();
 		//系列关键信息缓存 irmsn+seqName
-		String sequenceStr = redisService.getCacheObject(Constants.ELE_CELL_SEQUENCE_KEY + jsonObject.getString("irmsSn") + jsonObject.getString("seq"));
-		if (StringUtils.isNotBlank(sequenceStr)) {
-			JSONObject sequenceJson = JSONObject.parseObject(sequenceStr);
-			//系列查不到则不添加
-			if (sequenceJson.containsKey("sequenceId") && StringUtils.isNotBlank(sequenceJson.getString("sequenceId"))) {
-				if (type.equals(ObservationPlaceEnum.PLACE_ENUM_2.getKey())) {
-					alarmElectrolyticCell.setBusBarsNumber(subdivideIndex);
-				} else if (type.equals(ObservationPlaceEnum.PLACE_ENUM_1.getKey())) {
-					alarmElectrolyticCell.setElectrodesNumber(subdivideIndex);
-				}
-				alarmElectrolyticCell.setSequenceId(sequenceJson.getString("sequenceId"));
-				alarmElectrolyticCell.setAlarmId(alarm.getAlarmId());
-				alarmElectrolyticCell.setRowIndex(jsonObject.getInteger("kua"));
-				alarmElectrolyticCell.setGrooveNumber(jsonObject.getInteger("grooveIndex"));
-				alarmElectrolyticCell.setObservationPlace(type);
-				alarmElectrolyticCell.setSubdivideNumber(subdivideIndex);
-				if (StringUtils.isNotBlank(jsonObject.getString("maxTemp"))) {
-					alarmElectrolyticCell.setTemperatureVariation(new BigDecimal(String.valueOf(jsonObject.getDouble("maxTemp"))));
-				}
-				String electrodesPolarity = ElecCellPackMerNameUtil.estimateElectrodesPolarity(sequenceJson.getString("firstElectrodesPolarity"), subdivideIndex);
-				alarm.setTargetName(ElecCellPackMerNameUtil.packMerName(jsonObject.getString("seq"), subdivideIndex, type,
-						alarmElectrolyticCell.getGrooveNumber(), alarmElectrolyticCell.getRowIndex(), electrodesPolarity));
-				//24.5.13插入电解槽点位副表
-				//24.7.1新增设备id字段
-				alarmElectrolyticCell.setDeviceSn(alarm.getDeviceSn());
-				alarmElectrolyticCell.setIrmsSn(jsonObject.getString("irmsSn"));
-			} else {
-				log.error("未查询到电解槽信息：irmsSn=" + jsonObject.getString("irmsSn") + "seq=" + jsonObject.getString("seq"));
-			}
-		} else {
-			log.error("未查询到电解槽缓存信息：irmsSn=" + jsonObject.getString("irmsSn") + "seq=" + jsonObject.getString("seq"));
+		String sequenceKey = Constants.ELE_CELL_SEQUENCE_KEY + jsonObject.getString("irmsSn") + jsonObject.getString("seq");
+		String sequenceStr = redisService.getCacheObject(sequenceKey);
+		if (StringUtils.isBlank(sequenceStr)) {
+			throw invalidElectrolyticCell(jsonObject, "missing redis sequence cache, key=" + sequenceKey);
 		}
+		JSONObject sequenceJson;
+		try {
+			sequenceJson = JSONObject.parseObject(sequenceStr);
+		} catch (Exception ex) {
+			throw invalidElectrolyticCell(jsonObject, "invalid redis sequence cache json, key=" + sequenceKey);
+		}
+		if (sequenceJson == null || StringUtils.isBlank(sequenceJson.getString("sequenceId"))) {
+			throw invalidElectrolyticCell(jsonObject, "missing sequenceId in redis sequence cache, key=" + sequenceKey);
+		}
+		if (StringUtils.isBlank(sequenceJson.getString("firstElectrodesPolarity"))) {
+			throw invalidElectrolyticCell(jsonObject, "missing firstElectrodesPolarity in redis sequence cache, key=" + sequenceKey);
+		}
+		if (type.equals(ObservationPlaceEnum.PLACE_ENUM_2.getKey())) {
+			alarmElectrolyticCell.setBusBarsNumber(subdivideIndex);
+		} else if (type.equals(ObservationPlaceEnum.PLACE_ENUM_1.getKey())) {
+			alarmElectrolyticCell.setElectrodesNumber(subdivideIndex);
+		}
+		alarmElectrolyticCell.setSequenceId(sequenceJson.getString("sequenceId"));
+		// 这里读取到的 alarm_id 已经由 prepareAlarmShard 提前生成；入库前还会再次绑定，防止未来调用方漏掉前置生成。
+		alarmElectrolyticCell.setAlarmId(alarm.getAlarmId());
+		alarmElectrolyticCell.setRowIndex(jsonObject.getInteger("kua"));
+		alarmElectrolyticCell.setGrooveNumber(jsonObject.getInteger("grooveIndex"));
+		alarmElectrolyticCell.setObservationPlace(type);
+		alarmElectrolyticCell.setSubdivideNumber(subdivideIndex);
+		alarmElectrolyticCell.setTemperatureVariation(new BigDecimal(jsonObject.getString("maxTemp")));
+		String electrodesPolarity = ElecCellPackMerNameUtil.estimateElectrodesPolarity(sequenceJson.getString("firstElectrodesPolarity"), subdivideIndex);
+		alarm.setTargetName(ElecCellPackMerNameUtil.packMerName(jsonObject.getString("seq"), subdivideIndex, type,
+				alarmElectrolyticCell.getGrooveNumber(), alarmElectrolyticCell.getRowIndex(), electrodesPolarity));
+		//24.5.13插入电解槽点位副表
+		//24.7.1新增设备id字段
+		alarmElectrolyticCell.setDeviceSn(alarm.getDeviceSn());
+		alarmElectrolyticCell.setIrmsSn(jsonObject.getString("irmsSn"));
 		return alarmElectrolyticCell;
+	}
+
+	private void validateElectrolyticCellStartPayload(JSONObject jsonObject) {
+		if (jsonObject == null) {
+			throw new AlarmElectrolyticCellInvalidException(null, null, null, null, "payload is null");
+		}
+		requireElectrolyticField(jsonObject, "irmsSn");
+		requireElectrolyticField(jsonObject, "seq");
+		requireElectrolyticField(jsonObject, "type");
+		requireElectrolyticField(jsonObject, "subdivideIndex");
+		requireElectrolyticField(jsonObject, "kua");
+		requireElectrolyticField(jsonObject, "grooveIndex");
+		requireElectrolyticField(jsonObject, "maxTemp");
+		try {
+			new BigDecimal(jsonObject.getString("maxTemp"));
+		} catch (NumberFormatException ex) {
+			throw invalidElectrolyticCell(jsonObject, "maxTemp is not a number");
+		}
+	}
+
+	private void requireElectrolyticField(JSONObject jsonObject, String fieldName) {
+		if (!jsonObject.containsKey(fieldName) || StringUtils.isBlank(jsonObject.getString(fieldName))) {
+			throw invalidElectrolyticCell(jsonObject, "missing field " + fieldName);
+		}
+	}
+
+	private AlarmElectrolyticCellInvalidException invalidElectrolyticCell(JSONObject jsonObject, String reason) {
+		if (jsonObject == null) {
+			return new AlarmElectrolyticCellInvalidException(null, null, null, null, reason);
+		}
+		return new AlarmElectrolyticCellInvalidException(
+				jsonObject.getString("alarmId"),
+				jsonObject.getString("deviceSn"),
+				jsonObject.getString("irmsSn"),
+				jsonObject.getString("seq"),
+				reason);
 	}
 
 	/**
@@ -1474,19 +1621,34 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 						jsonObject.put("deviceSn", alarm.getDeviceSn());
 						jsonObject.put("cameraType", IrTypeEnums.ITEMS_0.getKey());
 						jsonObject.put("isActive", UserStatus.OK.getCode());
-						remoteIrChannelService.alarmIrOffLine(jsonObject);
+						if (isRemoteCallStubEnabled()) {
+							// 断线 stop 的设备在线恢复只记录到调用边界，避免内部压测依赖 hpis-device。
+							logRemoteCallStub("RemoteIrChannelService.alarmIrOffLine", jsonObject);
+						} else {
+							remoteIrChannelService.alarmIrOffLine(jsonObject);
+						}
 					} else if (StringUtils.equals(alarm.getTargetName(), IrTypeEnums.ITEMS_1.getDescription())) {
 						JSONObject jsonObject = new JSONObject();
 						jsonObject.put("deviceSn", alarm.getDeviceSn());
 						jsonObject.put("cameraType", IrTypeEnums.ITEMS_1.getKey());
 						jsonObject.put("isActive", UserStatus.OK.getCode());
-						remoteIrChannelService.alarmIrOffLine(jsonObject);
+						if (isRemoteCallStubEnabled()) {
+							// 断线 stop 的设备在线恢复只记录到调用边界，避免内部压测依赖 hpis-device。
+							logRemoteCallStub("RemoteIrChannelService.alarmIrOffLine", jsonObject);
+						} else {
+							remoteIrChannelService.alarmIrOffLine(jsonObject);
+						}
 					} else if (StringUtils.equals(alarm.getTargetName(), IrTypeEnums.ITEMS_10.getDescription())) {
 						//温度传感器掉线
 						JSONObject jsonObject = new JSONObject();
 						jsonObject.put("deviceSn", alarm.getDeviceSn());
 						jsonObject.put("isActive", UserStatus.OK.getCode());
-						remoteTmService.alarmTmOffLine(jsonObject);
+						if (isRemoteCallStubEnabled()) {
+							// 温度传感器断线恢复同样只打日志，不真正调用外部服务。
+							logRemoteCallStub("RemoteTmService.alarmTmOffLine", jsonObject);
+						} else {
+							remoteTmService.alarmTmOffLine(jsonObject);
+						}
 					}
 					log.info("deviceSn={},断线报警结束", alarm.getDeviceSn());
 				}
@@ -1657,6 +1819,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 //		TransferCommandObject obj = TransferCommandObject.initializeByDevOperate(cmdSeq, dPdConfig.getDeviceSn(),
 //				DeviceTypeCodeEnums.TYPE_3.getKey(), OperCodeConstants.PD_CONFIG_SET, jsonObject);
 //		webSocketClient.sendMessage(obj);
+		if (isRemoteCallStubEnabled()) {
+			// 图片查询依赖 WebSocket 和文件服务，本地压测只验证 alarm 内部数据链路，直接返回空图片路径。
+			logRemoteCallStub("WebSocketKeepAliveClient.getDataByExcptMessage(GET_ALARM_PICTURE)", jsonObject);
+			return null;
+		}
 		JSONObject returnJson =webSocketClient.getDataByExcptMessage(nacosDiscoveryProperties.getService(), cmdSeq);
 		if (returnJson.getInteger("error") == WebsocketStatus.SUCCESS) {
 			StringBuilder pathList = new StringBuilder();
@@ -1755,6 +1922,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Override
 	public String uploadFile(byte[] byteArray, String fileName) {
+		if (isRemoteCallStubEnabled()) {
+			// 文件上传属于跨服务副作用，测试模式只返回稳定占位路径，避免 hpis-file 未启动影响报警入库。
+			JSONObject payload = new JSONObject();
+			payload.put("fileName", fileName);
+			payload.put("byteLength", byteArray == null ? 0 : byteArray.length);
+			logRemoteCallStub("RemoteFileService.upload", payload);
+			return "stub://alarm-file/" + fileName;
+		}
 		String filePath = localFilePath + fileName;
 		//对于非常大的文件写入，FileChannel 是一个非常高效的方式。它使用了直接内存访问，可以实现较高的性能，尤其是在处理大文件时
 		try (FileChannel channel = new FileOutputStream(filePath).getChannel()) {
@@ -1931,6 +2106,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		int cmdSeq = CommonTranferUtil.getCmdSeq(nacosDiscoveryProperties.getService());
 		TransferCommandObject obj = TransferCommandObject.initializeByDevOperate(cmdSeq, alarm.getIrmsSn(), DeviceTypeCodeEnums.TYPE_1.getKey(), OperCodeConstants.IRMS_PICTURE, object);
 
+		if (isRemoteCallStubEnabled()) {
+			// 查询图片属于外部 WebSocket 链路，内部压测模式不请求设备侧，直接返回空内容。
+			logRemoteCallStub("WebSocketKeepAliveClient.getPictureByPath", object);
+			return null;
+		}
 		webSocketClient.sendMessage(obj);
 		JSONObject returnJson = webSocketClient.getDataByExcptMessage(nacosDiscoveryProperties.getService(), cmdSeq);
 		String picture = returnJson.getString("file");
@@ -2186,6 +2366,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		if (!pushOpen){
 			return;
 		}
+		if (isRemoteCallStubEnabled()) {
+			// push 最终会被其他服务消费；内部压测只记录 payload，不投递到跨服务推送链路。
+			logRemoteCallStub("RabbitMQAlarmPushProducer.sendCustomPushMessage", jsonObject);
+			return;
+		}
 		// 异步执行耗时操作
 		//发送json-报警 报警类型 租户 设备sn 报警区域名称 报警时间 -附加jsonObject（报警原信息）
 		JSONObject pushMessage = new JSONObject();
@@ -2203,6 +2388,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		pushMessage.put("time",jsonObject.getString("time"));
 		pushMessage.put("deviceSn",alarmOBJ1.getDeviceSn());
 		rabbitMQAlarmPushProducer.sendCustomPushMessage(pushMessage);
+	}
+
+	private boolean isRemoteCallStubEnabled() {
+		return internalTestProperties != null && internalTestProperties.isRemoteCallStubEnabled();
+	}
+
+	private void logRemoteCallStub(String target, Object payload) {
+		log.warn("alarm internal-test remote call stubbed, target={}, payload={}", target, JSON.toJSONString(payload));
 	}
 
 	/**

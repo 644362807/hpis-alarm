@@ -57,3 +57,21 @@
 1. 默认只提交 `src/` 和 `doc/` 下与本轮任务相关的文件。
 2. 不提交 `target/`、`logs/`、本地压测运行产物、IDE 临时文件。
 3. 如果工作区已有他人修改，不允许回滚；需要在最终说明中标明本轮实际修改范围。
+
+## Maven 测试与打包规则
+
+1. 本模块是父子工程的一部分，执行编译、测试或打包时必须从上层父工程目录 `D:\studyProject\hpis2.0\hpis` 发起。
+2. 默认命令使用 `mvn -pl hpis-alarm -am ...`，让 Maven 从父工程解析并构建 `hpis-alarm` 所需的本地模块依赖。
+3. 当前任务的测试边界只验收 `hpis-alarm` 模块；其它模块只作为依赖参与编译，不把其它模块的测试结果作为本轮通过条件。
+4. 父工程依赖模块没有测试类时，允许使用 `-DfailIfNoTests=false` 避免空测试模块导致构建失败。
+5. 如果 Windows 文件锁导致 `target/test-classes` 无法覆盖，必须先识别占用进程；不能为了测试随意停止 Nacos、RabbitMQ、MySQL 或正在运行的 `hpis-alarm` 服务。
+
+## Java 8 与 Nacos UTF-8 启动规则
+
+1. 本模块本地服务启动优先使用 Java 8：`C:\Program Files\Java\jdk1.8.0_321\bin\java.exe`。
+2. 通过 `target\hpis-alarm.jar` 启动服务时，必须增加 JVM 参数 `-Dfile.encoding=UTF-8`，标准命令为：
+   ```powershell
+   & "C:\Program Files\Java\jdk1.8.0_321\bin\java.exe" -Dfile.encoding=UTF-8 -jar D:\studyProject\hpis2.0\hpis\hpis-alarm\target\hpis-alarm.jar
+   ```
+3. 该参数用于保证 Java 8 按 UTF-8 解析 Nacos 中的 `application-dev.yml`、`hpis-alarm-dev.yml` 等配置；缺少该参数时可能出现 `MalformedInputException`，进而导致数据源配置被忽略、`sqlSessionFactory/sqlSessionTemplate` 注入失败。
+4. 如果 `target\hpis-alarm.jar` 被占用导致 Spring Boot repackage 失败，必须先确认占用进程是监听 `8806` 的 `hpis-alarm`，不能误杀 Nacos `8848/9848/9849`、RabbitMQ 或 MySQL。

@@ -58,6 +58,12 @@ public class AlarmStopWorkerProperties {
     /** 单个 stop event 连续异常达到该次数后转 FAILED，避免永久热重试同一坏数据。 */
     private int maxRetry = 5;
 
+    /** FAILED/ROUTE_MISSING 恢复扫描批大小，用于修复 route 后到造成的误失败。 */
+    private int routeMissingRecoveryBatchSize = 500;
+
+    /** ROUTE_MISSING 转 FAILED 后至少等待多久再尝试恢复扫描。 */
+    private long routeMissingRecoveryDelayMs = 1000L;
+
     /**
      * 是否在连续空轮次后暂停 stop worker 的数据库轮询。
      *

@@ -115,7 +115,7 @@ public class AlarmStopEventService {
         if (alarm == null || route == null || StringUtils.isBlank(alarm.getAlarmCid())) {
             return false;
         }
-        AlarmStopEvent event = stopEventMapper.selectPendingByCid(alarm.getAlarmCid());
+        AlarmStopEvent event = stopEventMapper.selectRecoverableByCid(alarm.getAlarmCid());
         if (event == null) {
             return false;
         }
@@ -151,7 +151,7 @@ public class AlarmStopEventService {
         String batchId = UUID.randomUUID().toString().replace("-", "");
         int applied = 0;
         for (List<String> chunk : chunkStrings(alarmCids, batchProperties.safeInLimit())) {
-            List<AlarmStopEvent> events = stopEventMapper.selectPendingByCids(chunk);
+            List<AlarmStopEvent> events = stopEventMapper.selectRecoverableByCids(chunk);
             Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
             for (AlarmStopEvent event : events) {
                 AlarmCidRoute route = routeByCid.get(event.getAlarmCid());
@@ -183,8 +183,12 @@ public class AlarmStopEventService {
                 ? properties.getHighBatchSize()
                 : properties.getNormalBatchSize();
         List<AlarmStopEvent> events = stopEventMapper.selectPendingBatch(batchSize);
-        if (events.isEmpty()) {
-            return 0;
+        if (events == null || events.isEmpty()) {
+            return recoverFailedRouteMissingBatch();
+        }
+        if (properties.isLogEnabled()) {
+            log.info("alarm stop worker stage=PENDING_BATCH_PLAN pendingCount={}, batchSize={}, highTraffic={}",
+                    pendingCount, batchSize, pendingCount >= properties.getHighWatermark());
         }
         if (batchProperties.isStopEnabled()) {
             return processPendingBatchBulk(events);
@@ -254,7 +258,7 @@ public class AlarmStopEventService {
          * 2. 对未命中 ACTIVE 的 cid 再查 hot/stale 全状态 route；
          * 3. ACTIVE 按 suffix 分组批量关闭；
          * 4. CLOSED 视为重复 stop 幂等成功；
-         * 5. 完全查不到 route 的 event 标记 FAILED/ROUTE_MISSING。
+         * 5. 完全查不到 route 的 event 先记录 ROUTE_MISSING 并保留 PENDING，超过重试上限才 FAILED。
          */
         long startMs = System.currentTimeMillis();
         List<String> alarmCids = events.stream()
@@ -270,7 +274,7 @@ public class AlarmStopEventService {
 
         Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
         List<Long> alreadyClosedEventIds = new ArrayList<>();
-        List<Long> missingRouteEventIds = new ArrayList<>();
+        List<AlarmStopEvent> missingRouteEvents = new ArrayList<>();
         for (AlarmStopEvent event : events) {
             AlarmCidRoute activeRoute = activeRouteMap.get(event.getAlarmCid());
             if (activeRoute != null) {
@@ -282,7 +286,7 @@ public class AlarmStopEventService {
             if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
                 alreadyClosedEventIds.add(event.getId());
             } else {
-                missingRouteEventIds.add(event.getId());
+                missingRouteEvents.add(event);
             }
         }
 
@@ -291,11 +295,8 @@ public class AlarmStopEventService {
             stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
             processed += alreadyClosedEventIds.size();
         }
-        if (!missingRouteEventIds.isEmpty()) {
-            stopEventMapper.markFailedBatch(missingRouteEventIds, ROUTE_MISSING_ERROR);
-            processed += missingRouteEventIds.size();
-            log.warn("alarm stop batch stage=ROUTE_MISSING_FAILED batchId={}, missingRouteCount={}, sampleAlarmCids={}",
-                    batchId, missingRouteEventIds.size(), sampleCids(events));
+        if (!missingRouteEvents.isEmpty()) {
+            processed += markRouteMissingRetryOrFailed(batchId, missingRouteEvents);
         }
         for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
             processed += applyRouteGroup(batchId, entry.getKey(), entry.getValue());
@@ -326,7 +327,7 @@ public class AlarmStopEventService {
     private int processPendingChunkSingleFallback(String batchId, List<AlarmStopEvent> events) {
         /*
          * 只有批量 route 查询异常时才走这里。
-         * 兜底仍保持新语义：查不到 hot/stale route 时标记 FAILED/ROUTE_MISSING，不再永久 PENDING。
+         * 查不到 hot/stale route 时先记录 ROUTE_MISSING 并保留 PENDING，等待 start 后到补偿。
          */
         int processed = 0;
         for (AlarmStopEvent event : events) {
@@ -335,16 +336,91 @@ public class AlarmStopEventService {
                 AlarmCidRoute existingRoute = alarmCidIndexService.findRouteByCid(event.getAlarmCid());
                 if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
                     stopEventMapper.markApplied(event.getId(), buildDeleteAfter());
+                    processed++;
                 } else {
-                    stopEventMapper.markFailed(event.getId(), ROUTE_MISSING_ERROR);
+                    processed += markRouteMissingRetryOrFailed(batchId, Collections.singletonList(event));
                 }
-                processed++;
                 continue;
             }
             processed += applyRouteGroup(batchId, route.getTableSuffix(),
                     Collections.singletonList(buildContext(event, route)));
         }
         return processed;
+    }
+
+    private int recoverFailedRouteMissingBatch() {
+        /*
+         * 兼容历史误失败：如果 ROUTE_MISSING 已经 FAILED，但 route 后来出现，仍应恢复关闭。
+         * 该扫描只在无 PENDING 时执行，避免高流量主链路额外扫 FAILED 数据。
+         */
+        int limit = Math.max(1, properties.getRouteMissingRecoveryBatchSize());
+        long delayMs = Math.max(0L, properties.getRouteMissingRecoveryDelayMs());
+        Date recoverAfter = new Date(System.currentTimeMillis() - delayMs);
+        List<AlarmStopEvent> events = stopEventMapper.selectFailedRouteMissingBatch(limit, recoverAfter);
+        if (events == null || events.isEmpty()) {
+            return 0;
+        }
+        String batchId = "recover-" + UUID.randomUUID().toString().replace("-", "");
+        long startMs = System.currentTimeMillis();
+        RouteLookupResult routeLookup = findRoutesForChunk(events.stream()
+                .map(AlarmStopEvent::getAlarmCid)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList()));
+        Map<String, List<StopRouteContext>> grouped = new LinkedHashMap<>();
+        List<Long> alreadyClosedEventIds = new ArrayList<>();
+        int missingCount = 0;
+        for (AlarmStopEvent event : events) {
+            AlarmCidRoute activeRoute = routeLookup.getActiveRouteMap().get(event.getAlarmCid());
+            if (activeRoute != null) {
+                grouped.computeIfAbsent(activeRoute.getTableSuffix(), key -> new ArrayList<>())
+                        .add(buildContext(event, activeRoute));
+                continue;
+            }
+            AlarmCidRoute existingRoute = routeLookup.getExistingRouteMap().get(event.getAlarmCid());
+            if (existingRoute != null && AlarmCidRoute.STATUS_CLOSED.equals(existingRoute.getRouteStatus())) {
+                alreadyClosedEventIds.add(event.getId());
+            } else {
+                missingCount++;
+            }
+        }
+
+        int recovered = 0;
+        if (!alreadyClosedEventIds.isEmpty()) {
+            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            recovered += alreadyClosedEventIds.size();
+        }
+        for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
+            recovered += applyRouteGroup(batchId, entry.getKey(), entry.getValue());
+        }
+        if (recovered > 0 || properties.isLogEnabled()) {
+            log.info("alarm stop batch stage=ROUTE_MISSING_RECOVER batchId={}, checkedCount={}, recoveredCount={}, stillMissingCount={}, costMs={}, sampleAlarmCids={}",
+                    batchId, events.size(), recovered, missingCount, System.currentTimeMillis() - startMs, sampleCids(events));
+        }
+        return recovered;
+    }
+
+    private int markRouteMissingRetryOrFailed(String batchId, List<AlarmStopEvent> events) {
+        List<Long> retryIds = new ArrayList<>();
+        List<Long> failedIds = new ArrayList<>();
+        for (AlarmStopEvent event : events) {
+            int retryCount = event.getRetryCount() == null ? 0 : event.getRetryCount();
+            if (retryCount + 1 >= properties.getMaxRetry()) {
+                failedIds.add(event.getId());
+            } else {
+                retryIds.add(event.getId());
+            }
+        }
+        if (!retryIds.isEmpty()) {
+            stopEventMapper.markRetryBatch(retryIds, ROUTE_MISSING_ERROR);
+            log.warn("alarm stop batch stage=ROUTE_MISSING_RETRY batchId={}, retryCount={}, sampleAlarmCids={}",
+                    batchId, retryIds.size(), sampleCids(events));
+        }
+        if (!failedIds.isEmpty()) {
+            stopEventMapper.markFailedBatch(failedIds, ROUTE_MISSING_ERROR);
+            log.error("alarm stop batch stage=ROUTE_MISSING_FAILED batchId={}, failedCount={}, sampleAlarmCids={}",
+                    batchId, failedIds.size(), sampleCids(events));
+        }
+        return failedIds.size();
     }
 
     public int cleanupAppliedIfAllowed() {
@@ -393,13 +469,17 @@ public class AlarmStopEventService {
             List<AlarmStopApplyItem> items = contexts.stream()
                     .map(StopRouteContext::getItem)
                     .collect(Collectors.toList());
+            long stopUpdateStartMs = System.currentTimeMillis();
             alarmMapper.batchStopByAlarmIds(items, AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
+            long stopUpdateMs = System.currentTimeMillis() - stopUpdateStartMs;
 
             List<Long> alarmIds = items.stream()
                     .map(AlarmStopApplyItem::getAlarmId)
                     .collect(Collectors.toList());
+            long selectAlarmStartMs = System.currentTimeMillis();
             Map<Long, Alarm> alarmMap = alarmMapper.selectAlarmByIdsForStop(alarmIds).stream()
                     .collect(Collectors.toMap(Alarm::getAlarmId, alarm -> alarm, (left, right) -> left));
+            long selectAlarmMs = System.currentTimeMillis() - selectAlarmStartMs;
 
             /*
              * 批量更新后再补查业务报警，是为了拿到 sceneType、targetName 等生成 side effect
@@ -430,8 +510,15 @@ public class AlarmStopEventService {
                 eventIds.add(context.getEvent().getId());
             }
             if (!validContexts.isEmpty()) {
+                long closeRouteStartMs = System.currentTimeMillis();
                 alarmCidIndexService.closeRoutesByItems(hotItems, staleItems, deleteAfter);
+                long closeRouteMs = System.currentTimeMillis() - closeRouteStartMs;
+                long markAppliedStartMs = System.currentTimeMillis();
                 stopEventMapper.markAppliedBatch(eventIds, deleteAfter);
+                long markAppliedMs = System.currentTimeMillis() - markAppliedStartMs;
+                log.info("alarm stop batch stage=BATCH_STOP_CORE batchId={}, tableSuffix={}, chunkSize={}, validCount={}, stopUpdateMs={}, selectAlarmMs={}, closeRouteMs={}, markAppliedMs={}",
+                        batchId, tableSuffix, contexts.size(), validContexts.size(),
+                        stopUpdateMs, selectAlarmMs, closeRouteMs, markAppliedMs);
             }
             if (!createSideEffectsBatch(batchId, validContexts)) {
                 /*

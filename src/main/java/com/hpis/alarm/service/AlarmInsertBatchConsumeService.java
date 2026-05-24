@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.service.impl.AlarmServiceImpl;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
+import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -70,6 +71,10 @@ public class AlarmInsertBatchConsumeService {
             } catch (AlarmDeviceCacheMissingException ex) {
                 log.warn("alarm batch listener device cache missing, drop item, batchId={}, alarmCid={}, deviceSn={}, sceneType={}, cameraType={}, error={}",
                         batchId, ex.getAlarmCid(), ex.getDeviceSn(), ex.getSceneType(), ex.getCameraType(), ex.getMessage());
+                results.set(i, AlarmInsertConsumeResult.DROP);
+            } catch (AlarmElectrolyticCellInvalidException ex) {
+                log.warn("alarm batch listener electrolytic cell payload invalid, drop item, batchId={}, alarmCid={}, deviceSn={}, irmsSn={}, seq={}, reason={}, error={}",
+                        batchId, ex.getAlarmCid(), ex.getDeviceSn(), ex.getIrmsSn(), ex.getSeq(), ex.getReason(), ex.getMessage());
                 results.set(i, AlarmInsertConsumeResult.DROP);
             } catch (Exception ex) {
                 log.error("alarm batch listener prepare failed, batchId={}, alarmCid={}, error={}",

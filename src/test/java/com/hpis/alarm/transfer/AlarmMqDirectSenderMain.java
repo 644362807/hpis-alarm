@@ -2,6 +2,7 @@ package com.hpis.alarm.transfer;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.common.core.constant.Constants;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -52,6 +53,7 @@ public class AlarmMqDirectSenderMain {
         List<GeneratedMqMessage> messages = generateMessages(options, alarms);
         validateGeneratedData(options, alarms, messages);
         writeManifest(options, messages);
+        writeRedisSeed(options, alarms);
 
         long sendStartMillis = System.currentTimeMillis();
         long startDoneMillis = 0L;
@@ -119,6 +121,7 @@ public class AlarmMqDirectSenderMain {
 
         System.out.println("send done: runId=" + options.runId
                 + ", queue=" + options.queueName
+                + ", scenario=" + options.scenario
                 + ", alarmCount=" + options.alarmCount
                 + ", stopCount=" + options.getExpectedStopCount()
                 + ", orderMode=" + options.orderMode
@@ -161,7 +164,41 @@ public class AlarmMqDirectSenderMain {
             String deviceSn = options.deviceSns.get(random.nextInt(options.deviceSns.size()));
             String gatewaySn = options.gatewaySns.get(random.nextInt(options.gatewaySns.size()));
             String alarmId = "{" + options.alarmIdPrefix + "-" + toFixedBase36(i, 5) + "}";
-            alarms.add(new GeneratedAlarm(alarmId, deviceSn, gatewaySn, alarmTime));
+            AlarmKind kind = options.kindForIndex(i);
+            GeneratedAlarm.Builder builder = new GeneratedAlarm.Builder()
+                    .alarmId(alarmId)
+                    .deviceSn(deviceSn)
+                    .gatewaySn(gatewaySn)
+                    .alarmTime(alarmTime)
+                    .kind(kind);
+            if (kind == AlarmKind.ELECTROLYTIC) {
+                String irmsSn = options.electrolyticIrmsSns.get(i % options.electrolyticIrmsSns.size());
+                String seq = options.electrolyticSeqs.get(i % options.electrolyticSeqs.size());
+                String type = options.electrolyticTypes.get(i % options.electrolyticTypes.size());
+                int subdivideIndex = (i % options.electrolyticSubdivideMod) + 1;
+                int rowIndex = (i % options.electrolyticKuaMod) + 1;
+                int grooveIndex = (i % options.electrolyticGrooveMod) + 1;
+                builder.sceneType(options.electrolyticSceneType)
+                        .alarmType(options.electrolyticAlarmType)
+                        .irmsSn(irmsSn)
+                        .seq(seq)
+                        .type(type)
+                        .subdivideIndex(subdivideIndex)
+                        .kua(rowIndex)
+                        .grooveIndex(grooveIndex)
+                        .maxTemp(String.format(Locale.ROOT, "%.2f", options.electrolyticMaxTempBase + (i % 100) / 10.0D))
+                        .sequenceId(options.electrolyticSequenceIdPrefix + "-" + seq)
+                        .firstElectrodesPolarity(options.electrolyticFirstElectrodesPolarity);
+            } else if (kind == AlarmKind.DISCONNECT) {
+                builder.sceneType(options.generalSceneType)
+                        .alarmType(options.disconnectAlarmType)
+                        .irmsSn(gatewaySn);
+            } else {
+                builder.sceneType(options.generalSceneType)
+                        .alarmType(options.generalAlarmType)
+                        .irmsSn(gatewaySn);
+            }
+            alarms.add(builder.build());
         }
         return alarms;
     }
@@ -171,7 +208,7 @@ public class AlarmMqDirectSenderMain {
         List<GeneratedMqMessage> messages = new ArrayList<>();
         for (GeneratedAlarm alarm : alarms) {
             messages.add(new GeneratedMqMessage(alarm.alarmTime, OPER_CODE_ALARM_PUSH,
-                    buildAlarmStartMessage(alarm, options), alarm.alarmId, alarm.alarmTime));
+                    buildAlarmStartMessage(alarm, options), alarm.alarmId, alarm.alarmTime, alarm));
         }
         List<GeneratedAlarm> stopCandidates = new ArrayList<>(alarms);
         Collections.shuffle(stopCandidates, random);
@@ -180,7 +217,7 @@ public class AlarmMqDirectSenderMain {
             LocalDateTime stopTime = randomStopTimeAfterAlarm(random, alarm.alarmTime,
                     options.stopStartTime, options.stopEndTime);
             messages.add(new GeneratedMqMessage(stopTime, OPER_CODE_ALARM_STOP,
-                    buildAlarmStopMessage(alarm, stopTime, options), alarm.alarmId, alarm.alarmTime));
+                    buildAlarmStopMessage(alarm, stopTime, options), alarm.alarmId, alarm.alarmTime, alarm));
         }
         return messages;
     }
@@ -207,12 +244,22 @@ public class AlarmMqDirectSenderMain {
         JSONObject rawData = new JSONObject(new LinkedHashMap<String, Object>());
         rawData.put("alarmDegree", options.alarmDegree);
         rawData.put("alarmId", alarm.alarmId);
-        rawData.put("alarmType", options.alarmType);
+        rawData.put("alarmType", alarm.alarmType);
         rawData.put("cameraType", options.cameraType);
         rawData.put("deviceSn", alarm.deviceSn);
         rawData.put("gatewaySn", alarm.gatewaySn);
-        rawData.put("sceneType", options.sceneType);
+        rawData.put("irmsSn", alarm.irmsSn);
+        rawData.put("areaSn", options.areaSn);
+        rawData.put("sceneType", alarm.sceneType);
         rawData.put("time", alarm.alarmTime.format(FORMATTER));
+        if (alarm.kind == AlarmKind.ELECTROLYTIC) {
+            rawData.put("seq", alarm.seq);
+            rawData.put("type", alarm.type);
+            rawData.put("subdivideIndex", alarm.subdivideIndex);
+            rawData.put("kua", alarm.kua);
+            rawData.put("grooveIndex", alarm.grooveIndex);
+            rawData.put("maxTemp", alarm.maxTemp);
+        }
         return buildEnvelope(alarm.gatewaySn, OPER_CODE_ALARM_PUSH, rawData, options);
     }
 
@@ -252,6 +299,12 @@ public class AlarmMqDirectSenderMain {
                         + alarm.alarmId + ", length=" + alarm.alarmId.length()
                         + ", max=" + options.maxAlarmCidLength);
             }
+            if (alarm.kind == AlarmKind.ELECTROLYTIC) {
+                requireGeneratedValue(alarm.alarmId, "irmsSn", alarm.irmsSn);
+                requireGeneratedValue(alarm.alarmId, "seq", alarm.seq);
+                requireGeneratedValue(alarm.alarmId, "type", alarm.type);
+                requireGeneratedValue(alarm.alarmId, "maxTemp", alarm.maxTemp);
+            }
             alarmTimeMap.put(alarm.alarmId, alarm.alarmTime);
         }
         long startCount = messages.stream().filter(message -> message.operCode == OPER_CODE_ALARM_PUSH).count();
@@ -270,6 +323,12 @@ public class AlarmMqDirectSenderMain {
         }
     }
 
+    private static void requireGeneratedValue(String alarmId, String fieldName, String value) {
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalStateException("electrolytic alarm missing " + fieldName + ", alarmId=" + alarmId);
+        }
+    }
+
     private static void writeManifest(SenderOptions options, List<GeneratedMqMessage> messages) throws Exception {
         Files.createDirectories(options.outputDir);
         Path manifestPath = options.outputDir.resolve("manifest.jsonl");
@@ -279,6 +338,12 @@ public class AlarmMqDirectSenderMain {
                 row.put("runId", options.runId);
                 row.put("alarmId", message.alarmId);
                 row.put("operCode", message.operCode);
+                row.put("kind", message.alarm.kind.name());
+                row.put("scenario", options.scenario.name());
+                row.put("sceneType", message.alarm.sceneType);
+                row.put("alarmType", message.alarm.alarmType);
+                row.put("irmsSn", message.alarm.irmsSn);
+                row.put("seq", message.alarm.seq);
                 row.put("sendTime", message.sendTime.format(FORMATTER));
                 row.put("alarmTime", message.alarmTime.format(FORMATTER));
                 writer.write(row.toJSONString());
@@ -287,14 +352,54 @@ public class AlarmMqDirectSenderMain {
         }
     }
 
+    private static void writeRedisSeed(SenderOptions options, List<GeneratedAlarm> alarms) throws Exception {
+        Files.createDirectories(options.outputDir);
+        Path commandPath = options.outputDir.resolve("redis-seed-commands.txt");
+        Path jsonlPath = options.outputDir.resolve("redis-seed.jsonl");
+        try (BufferedWriter commandWriter = Files.newBufferedWriter(commandPath, StandardCharsets.UTF_8);
+             BufferedWriter jsonlWriter = Files.newBufferedWriter(jsonlPath, StandardCharsets.UTF_8)) {
+            Set<String> seenKeys = new HashSet<>();
+            for (GeneratedAlarm alarm : alarms) {
+                if (alarm.kind != AlarmKind.ELECTROLYTIC) {
+                    continue;
+                }
+                String key = Constants.ELE_CELL_SEQUENCE_KEY + alarm.irmsSn + alarm.seq;
+                if (!seenKeys.add(key)) {
+                    continue;
+                }
+                JSONObject value = new JSONObject(new LinkedHashMap<String, Object>());
+                value.put("sequenceId", alarm.sequenceId);
+                value.put("firstElectrodesPolarity", alarm.firstElectrodesPolarity);
+                JSONObject row = new JSONObject(new LinkedHashMap<String, Object>());
+                row.put("key", key);
+                row.put("value", value);
+                jsonlWriter.write(row.toJSONString());
+                jsonlWriter.newLine();
+                commandWriter.write("SET " + redisCliQuote(key) + " " + redisCliQuote(value.toJSONString()));
+                commandWriter.newLine();
+            }
+        }
+    }
+
+    private static String redisCliQuote(String text) {
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
     private static void writeSummary(SenderOptions options, long sendStartMillis, long startDoneMillis,
                                      long stopStartMillis, long sendDoneMillis, long sent) throws Exception {
         Files.createDirectories(options.outputDir);
         Properties properties = new Properties();
         properties.setProperty("runId", options.runId);
         properties.setProperty("alarmIdPrefix", options.alarmIdPrefix);
+        properties.setProperty("scenario", options.scenario.name());
         properties.setProperty("alarmCount", String.valueOf(options.alarmCount));
         properties.setProperty("stopCount", String.valueOf(options.getExpectedStopCount()));
+        properties.setProperty("generalCount", String.valueOf(options.countKind(AlarmKind.GENERAL)));
+        properties.setProperty("electrolyticCount", String.valueOf(options.countKind(AlarmKind.ELECTROLYTIC)));
+        properties.setProperty("disconnectCount", String.valueOf(options.countKind(AlarmKind.DISCONNECT)));
+        properties.setProperty("generalRatio", String.valueOf(options.generalRatio));
+        properties.setProperty("electrolyticRatio", String.valueOf(options.electrolyticRatio));
+        properties.setProperty("disconnectRatio", String.valueOf(options.disconnectRatio));
         properties.setProperty("orderMode", options.orderMode.name());
         properties.setProperty("sentMessages", String.valueOf(sent));
         properties.setProperty("sendStartMillis", String.valueOf(sendStartMillis));
@@ -382,17 +487,156 @@ public class AlarmMqDirectSenderMain {
         TIME_ORDER
     }
 
+    private enum AlarmScenario {
+        GENERAL,
+        ELECTROLYTIC,
+        MIXED
+    }
+
+    private enum AlarmKind {
+        GENERAL,
+        ELECTROLYTIC,
+        DISCONNECT
+    }
+
     private static final class GeneratedAlarm {
         private final String alarmId;
         private final String deviceSn;
         private final String gatewaySn;
         private final LocalDateTime alarmTime;
+        private final AlarmKind kind;
+        private final int sceneType;
+        private final int alarmType;
+        private final String irmsSn;
+        private final String seq;
+        private final String type;
+        private final int subdivideIndex;
+        private final int kua;
+        private final int grooveIndex;
+        private final String maxTemp;
+        private final String sequenceId;
+        private final String firstElectrodesPolarity;
 
-        private GeneratedAlarm(String alarmId, String deviceSn, String gatewaySn, LocalDateTime alarmTime) {
-            this.alarmId = alarmId;
-            this.deviceSn = deviceSn;
-            this.gatewaySn = gatewaySn;
-            this.alarmTime = alarmTime;
+        private GeneratedAlarm(Builder builder) {
+            this.alarmId = builder.alarmId;
+            this.deviceSn = builder.deviceSn;
+            this.gatewaySn = builder.gatewaySn;
+            this.alarmTime = builder.alarmTime;
+            this.kind = builder.kind;
+            this.sceneType = builder.sceneType;
+            this.alarmType = builder.alarmType;
+            this.irmsSn = builder.irmsSn;
+            this.seq = builder.seq;
+            this.type = builder.type;
+            this.subdivideIndex = builder.subdivideIndex;
+            this.kua = builder.kua;
+            this.grooveIndex = builder.grooveIndex;
+            this.maxTemp = builder.maxTemp;
+            this.sequenceId = builder.sequenceId;
+            this.firstElectrodesPolarity = builder.firstElectrodesPolarity;
+        }
+
+        private static final class Builder {
+            private String alarmId;
+            private String deviceSn;
+            private String gatewaySn;
+            private LocalDateTime alarmTime;
+            private AlarmKind kind;
+            private int sceneType;
+            private int alarmType;
+            private String irmsSn;
+            private String seq;
+            private String type;
+            private int subdivideIndex;
+            private int kua;
+            private int grooveIndex;
+            private String maxTemp;
+            private String sequenceId;
+            private String firstElectrodesPolarity;
+
+            private Builder alarmId(String alarmId) {
+                this.alarmId = alarmId;
+                return this;
+            }
+
+            private Builder deviceSn(String deviceSn) {
+                this.deviceSn = deviceSn;
+                return this;
+            }
+
+            private Builder gatewaySn(String gatewaySn) {
+                this.gatewaySn = gatewaySn;
+                return this;
+            }
+
+            private Builder alarmTime(LocalDateTime alarmTime) {
+                this.alarmTime = alarmTime;
+                return this;
+            }
+
+            private Builder kind(AlarmKind kind) {
+                this.kind = kind;
+                return this;
+            }
+
+            private Builder sceneType(int sceneType) {
+                this.sceneType = sceneType;
+                return this;
+            }
+
+            private Builder alarmType(int alarmType) {
+                this.alarmType = alarmType;
+                return this;
+            }
+
+            private Builder irmsSn(String irmsSn) {
+                this.irmsSn = irmsSn;
+                return this;
+            }
+
+            private Builder seq(String seq) {
+                this.seq = seq;
+                return this;
+            }
+
+            private Builder type(String type) {
+                this.type = type;
+                return this;
+            }
+
+            private Builder subdivideIndex(int subdivideIndex) {
+                this.subdivideIndex = subdivideIndex;
+                return this;
+            }
+
+            private Builder kua(int kua) {
+                this.kua = kua;
+                return this;
+            }
+
+            private Builder grooveIndex(int grooveIndex) {
+                this.grooveIndex = grooveIndex;
+                return this;
+            }
+
+            private Builder maxTemp(String maxTemp) {
+                this.maxTemp = maxTemp;
+                return this;
+            }
+
+            private Builder sequenceId(String sequenceId) {
+                this.sequenceId = sequenceId;
+                return this;
+            }
+
+            private Builder firstElectrodesPolarity(String firstElectrodesPolarity) {
+                this.firstElectrodesPolarity = firstElectrodesPolarity;
+                return this;
+            }
+
+            private GeneratedAlarm build() {
+                return new GeneratedAlarm(this);
+            }
         }
     }
 
@@ -402,14 +646,16 @@ public class AlarmMqDirectSenderMain {
         private final JSONObject payload;
         private final String alarmId;
         private final LocalDateTime alarmTime;
+        private final GeneratedAlarm alarm;
 
         private GeneratedMqMessage(LocalDateTime sendTime, int operCode, JSONObject payload,
-                                   String alarmId, LocalDateTime alarmTime) {
+                                   String alarmId, LocalDateTime alarmTime, GeneratedAlarm alarm) {
             this.sendTime = sendTime;
             this.operCode = operCode;
             this.payload = payload;
             this.alarmId = alarmId;
             this.alarmTime = alarmTime;
+            this.alarm = alarm;
         }
 
         private LocalDateTime getSendTime() {
@@ -433,18 +679,37 @@ public class AlarmMqDirectSenderMain {
         private final String queueName;
         private final boolean declareQueue;
         private final boolean durableQueue;
+        private final AlarmScenario scenario;
         private final int alarmCount;
         private final double stopRatio;
+        private final double generalRatio;
+        private final double electrolyticRatio;
+        private final double disconnectRatio;
         private final LocalDateTime alarmStartTime;
         private final LocalDateTime alarmEndTime;
         private final LocalDateTime stopStartTime;
         private final LocalDateTime stopEndTime;
         private final List<String> deviceSns;
         private final List<String> gatewaySns;
+        private final List<String> electrolyticIrmsSns;
+        private final List<String> electrolyticSeqs;
+        private final List<String> electrolyticTypes;
         private final int alarmDegree;
         private final int alarmType;
+        private final int generalAlarmType;
+        private final int electrolyticAlarmType;
+        private final int disconnectAlarmType;
         private final int cameraType;
         private final int sceneType;
+        private final int generalSceneType;
+        private final int electrolyticSceneType;
+        private final String areaSn;
+        private final int electrolyticSubdivideMod;
+        private final int electrolyticKuaMod;
+        private final int electrolyticGrooveMod;
+        private final double electrolyticMaxTempBase;
+        private final String electrolyticSequenceIdPrefix;
+        private final String electrolyticFirstElectrodesPolarity;
         private final int confItems;
         private final int cmdSeq;
         private final String servId;
@@ -472,18 +737,37 @@ public class AlarmMqDirectSenderMain {
             this.queueName = stringProperty("mq.queue", "alarm_queue");
             this.declareQueue = booleanProperty("mq.declareQueue", true);
             this.durableQueue = booleanProperty("mq.durableQueue", true);
+            this.scenario = scenarioProperty("alarm.mq.send.scenario", AlarmScenario.GENERAL);
             this.alarmCount = intProperty("alarm.mq.send.alarmCount", 100);
             this.stopRatio = doubleProperty("alarm.mq.send.stopRatio", 0.7D);
+            this.generalRatio = doubleProperty("alarm.mq.send.generalRatio", 0.45D);
+            this.electrolyticRatio = doubleProperty("alarm.mq.send.electrolyticRatio", 0.45D);
+            this.disconnectRatio = doubleProperty("alarm.mq.send.disconnectRatio", 0.10D);
             this.alarmStartTime = timeProperty("alarm.mq.send.alarmStartTime", "2025-11-01 23:50:00");
             this.alarmEndTime = timeProperty("alarm.mq.send.alarmEndTime", "2025-11-01 23:59:50");
             this.stopStartTime = timeProperty("alarm.mq.send.stopStartTime", "2025-11-01 23:53:00");
             this.stopEndTime = timeProperty("alarm.mq.send.stopEndTime", "2025-11-01 23:59:55");
             this.deviceSns = listProperty("alarm.mq.send.deviceSns", "HM-TD2068T-5/Q20250724AACHEA4925334");
             this.gatewaySns = listProperty("alarm.mq.send.gatewaySns", "5b6bebaff7aed77ae423af7e4065ef91");
+            this.electrolyticIrmsSns = listProperty("alarm.mq.send.electrolyticIrmsSns", String.join(",", this.gatewaySns));
+            this.electrolyticSeqs = listProperty("alarm.mq.send.electrolyticSeqs", "SEQ-A,SEQ-B,SEQ-C");
+            this.electrolyticTypes = listProperty("alarm.mq.send.electrolyticTypes", "1,2");
             this.alarmDegree = intProperty("alarm.mq.send.alarmDegree", 3);
             this.alarmType = intProperty("alarm.mq.send.alarmType", 6);
+            this.generalAlarmType = intProperty("alarm.mq.send.generalAlarmType", 1);
+            this.electrolyticAlarmType = intProperty("alarm.mq.send.electrolyticAlarmType", 1);
+            this.disconnectAlarmType = intProperty("alarm.mq.send.disconnectAlarmType", 6);
             this.cameraType = intProperty("alarm.mq.send.cameraType", 1);
             this.sceneType = intProperty("alarm.mq.send.sceneType", 1);
+            this.generalSceneType = intProperty("alarm.mq.send.generalSceneType", this.sceneType);
+            this.electrolyticSceneType = intProperty("alarm.mq.send.electrolyticSceneType", 2);
+            this.areaSn = stringProperty("alarm.mq.send.areaSn", "LOADTEST-AREA");
+            this.electrolyticSubdivideMod = intProperty("alarm.mq.send.electrolyticSubdivideMod", 16);
+            this.electrolyticKuaMod = intProperty("alarm.mq.send.electrolyticKuaMod", 2);
+            this.electrolyticGrooveMod = intProperty("alarm.mq.send.electrolyticGrooveMod", 4);
+            this.electrolyticMaxTempBase = doubleProperty("alarm.mq.send.electrolyticMaxTempBase", 82.0D);
+            this.electrolyticSequenceIdPrefix = stringProperty("alarm.mq.send.electrolyticSequenceIdPrefix", "LOADTEST-SEQUENCE");
+            this.electrolyticFirstElectrodesPolarity = stringProperty("alarm.mq.send.electrolyticFirstElectrodesPolarity", "+");
             this.confItems = intProperty("alarm.mq.send.confItems", 1000);
             this.cmdSeq = intProperty("alarm.mq.send.cmdSeq", 3);
             this.servId = stringProperty("alarm.mq.send.servId", "hp_access");
@@ -517,10 +801,48 @@ public class AlarmMqDirectSenderMain {
             if (stopStartTime.isAfter(stopEndTime)) {
                 throw new IllegalArgumentException("stopStartTime must not be after stopEndTime");
             }
+            if (generalRatio < 0D || electrolyticRatio < 0D || disconnectRatio < 0D) {
+                throw new IllegalArgumentException("mixed ratios must be >= 0");
+            }
+            if (Math.abs((generalRatio + electrolyticRatio + disconnectRatio) - 1D) > 0.000001D) {
+                throw new IllegalArgumentException("mixed ratios must sum to 1");
+            }
+            if (electrolyticSubdivideMod <= 0 || electrolyticKuaMod <= 0 || electrolyticGrooveMod <= 0) {
+                throw new IllegalArgumentException("electrolytic modulo settings must be > 0");
+            }
         }
 
         private int getExpectedStopCount() {
             return Math.min(alarmCount, (int) Math.round(alarmCount * stopRatio));
+        }
+
+        private AlarmKind kindForIndex(int index) {
+            if (scenario == AlarmScenario.ELECTROLYTIC) {
+                return AlarmKind.ELECTROLYTIC;
+            }
+            if (scenario == AlarmScenario.GENERAL) {
+                return AlarmKind.GENERAL;
+            }
+            int bucket = index % 100;
+            int generalLimit = (int) Math.round(generalRatio * 100D);
+            int electrolyticLimit = generalLimit + (int) Math.round(electrolyticRatio * 100D);
+            if (bucket < generalLimit) {
+                return AlarmKind.GENERAL;
+            }
+            if (bucket < electrolyticLimit) {
+                return AlarmKind.ELECTROLYTIC;
+            }
+            return AlarmKind.DISCONNECT;
+        }
+
+        private int countKind(AlarmKind kind) {
+            int count = 0;
+            for (int i = 0; i < alarmCount; i++) {
+                if (kindForIndex(i) == kind) {
+                    count++;
+                }
+            }
+            return count;
         }
 
         private long getSendIntervalNanos() {
@@ -575,5 +897,9 @@ public class AlarmMqDirectSenderMain {
 
     private static SendOrderMode orderModeProperty(String key, SendOrderMode defaultValue) {
         return SendOrderMode.valueOf(stringProperty(key, defaultValue.name()).trim().toUpperCase(Locale.ROOT));
+    }
+
+    private static AlarmScenario scenarioProperty(String key, AlarmScenario defaultValue) {
+        return AlarmScenario.valueOf(stringProperty(key, defaultValue.name()).trim().toUpperCase(Locale.ROOT));
     }
 }
