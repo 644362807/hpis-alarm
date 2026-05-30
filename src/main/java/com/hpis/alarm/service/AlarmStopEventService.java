@@ -14,6 +14,7 @@ import com.hpis.alarm.enums.AlarmStatusEnums;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
 import com.hpis.alarm.task.AlarmStopWorkerSignal;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.utils.DateUtils;
 import com.hpis.common.core.utils.StringUtils;
 import lombok.Data;
@@ -182,6 +183,13 @@ public class AlarmStopEventService {
         int batchSize = pendingCount >= properties.getHighWatermark()
                 ? properties.getHighBatchSize()
                 : properties.getNormalBatchSize();
+        /*
+         * 旧单条 stop 路径只作为回滚通道保留。关闭批量链路时必须限制单轮条数，
+         * 否则高水位配置会让旧路径一次展开数千次 route 查询。
+         */
+        if (!batchProperties.isStopEnabled()) {
+            batchSize = Math.min(batchSize, batchProperties.safeFallbackSingleMaxItems());
+        }
         List<AlarmStopEvent> events = stopEventMapper.selectPendingBatch(batchSize);
         if (events == null || events.isEmpty()) {
             return recoverFailedRouteMissingBatch();
@@ -217,7 +225,7 @@ public class AlarmStopEventService {
         }
 
         if (!alreadyClosedEventIds.isEmpty()) {
-            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            markAppliedBatchChunks(alreadyClosedEventIds, buildDeleteAfter());
             applied += alreadyClosedEventIds.size();
         }
 
@@ -240,7 +248,10 @@ public class AlarmStopEventService {
             try {
                 processed += processPendingChunk(batchId, events.size(), chunk);
             } catch (RouteLookupFailedException ex) {
-                if (!batchProperties.isFallbackSingleOnBatchError()) {
+                int fallbackLimit = batchProperties.safeFallbackSingleMaxItems();
+                if (!batchProperties.isFallbackSingleOnBatchError() || chunk.size() > fallbackLimit) {
+                    log.error("alarm stop batch stage=FALLBACK_SINGLE_REJECTED batchId={}, chunkSize={}, fallbackLimit={}, error={}",
+                            batchId, chunk.size(), fallbackLimit, ex.getMessage(), ex);
                     throw ex;
                 }
                 log.warn("alarm stop batch stage=FALLBACK_SINGLE batchId={}, chunkSize={}, sampleAlarmCids={}, costMs={}, error={}",
@@ -292,7 +303,7 @@ public class AlarmStopEventService {
 
         int processed = 0;
         if (!alreadyClosedEventIds.isEmpty()) {
-            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            markAppliedBatchChunks(alreadyClosedEventIds, buildDeleteAfter());
             processed += alreadyClosedEventIds.size();
         }
         if (!missingRouteEvents.isEmpty()) {
@@ -353,7 +364,7 @@ public class AlarmStopEventService {
          * 兼容历史误失败：如果 ROUTE_MISSING 已经 FAILED，但 route 后来出现，仍应恢复关闭。
          * 该扫描只在无 PENDING 时执行，避免高流量主链路额外扫 FAILED 数据。
          */
-        int limit = Math.max(1, properties.getRouteMissingRecoveryBatchSize());
+        int limit = AlarmBatchChunker.safeBatchSize(properties.getRouteMissingRecoveryBatchSize());
         long delayMs = Math.max(0L, properties.getRouteMissingRecoveryDelayMs());
         Date recoverAfter = new Date(System.currentTimeMillis() - delayMs);
         List<AlarmStopEvent> events = stopEventMapper.selectFailedRouteMissingBatch(limit, recoverAfter);
@@ -386,7 +397,7 @@ public class AlarmStopEventService {
 
         int recovered = 0;
         if (!alreadyClosedEventIds.isEmpty()) {
-            stopEventMapper.markAppliedBatch(alreadyClosedEventIds, buildDeleteAfter());
+            markAppliedBatchChunks(alreadyClosedEventIds, buildDeleteAfter());
             recovered += alreadyClosedEventIds.size();
         }
         for (Map.Entry<String, List<StopRouteContext>> entry : grouped.entrySet()) {
@@ -411,12 +422,12 @@ public class AlarmStopEventService {
             }
         }
         if (!retryIds.isEmpty()) {
-            stopEventMapper.markRetryBatch(retryIds, ROUTE_MISSING_ERROR);
+            markRetryBatchChunks(retryIds, ROUTE_MISSING_ERROR);
             log.warn("alarm stop batch stage=ROUTE_MISSING_RETRY batchId={}, retryCount={}, sampleAlarmCids={}",
                     batchId, retryIds.size(), sampleCids(events));
         }
         if (!failedIds.isEmpty()) {
-            stopEventMapper.markFailedBatch(failedIds, ROUTE_MISSING_ERROR);
+            markFailedBatchChunks(failedIds, ROUTE_MISSING_ERROR);
             log.error("alarm stop batch stage=ROUTE_MISSING_FAILED batchId={}, failedCount={}, sampleAlarmCids={}",
                     batchId, failedIds.size(), sampleCids(events));
         }
@@ -434,7 +445,8 @@ public class AlarmStopEventService {
             }
             return 0;
         }
-        return stopEventMapper.deleteApplied(DateUtils.getNowDate(), properties.getCleanupBatchSize());
+        return stopEventMapper.deleteApplied(DateUtils.getNowDate(),
+                AlarmBatchChunker.safeBatchSize(properties.getCleanupBatchSize()));
     }
 
     public boolean isLowTraffic() {
@@ -458,6 +470,14 @@ public class AlarmStopEventService {
         if (contexts.isEmpty()) {
             return 0;
         }
+        int applied = 0;
+        for (List<StopRouteContext> chunk : chunkContexts(contexts, batchProperties.safeInLimit())) {
+            applied += applyRouteGroupChunk(batchId, tableSuffix, chunk);
+        }
+        return applied;
+    }
+
+    private int applyRouteGroupChunk(String batchId, String tableSuffix, List<StopRouteContext> contexts) {
         long startMs = System.currentTimeMillis();
         try {
             /*
@@ -514,13 +534,18 @@ public class AlarmStopEventService {
                 alarmCidIndexService.closeRoutesByItems(hotItems, staleItems, deleteAfter);
                 long closeRouteMs = System.currentTimeMillis() - closeRouteStartMs;
                 long markAppliedStartMs = System.currentTimeMillis();
-                stopEventMapper.markAppliedBatch(eventIds, deleteAfter);
+                markAppliedBatchChunks(eventIds, deleteAfter);
                 long markAppliedMs = System.currentTimeMillis() - markAppliedStartMs;
                 log.info("alarm stop batch stage=BATCH_STOP_CORE batchId={}, tableSuffix={}, chunkSize={}, validCount={}, stopUpdateMs={}, selectAlarmMs={}, closeRouteMs={}, markAppliedMs={}",
                         batchId, tableSuffix, contexts.size(), validContexts.size(),
                         stopUpdateMs, selectAlarmMs, closeRouteMs, markAppliedMs);
             }
             if (!createSideEffectsBatch(batchId, validContexts)) {
+                if (validContexts.size() > batchProperties.safeFallbackSingleMaxItems()) {
+                    log.error("alarm stop batch stage=SIDE_EFFECT_FALLBACK_SINGLE_REJECTED batchId={}, tableSuffix={}, chunkSize={}, fallbackLimit={}",
+                            batchId, tableSuffix, validContexts.size(), batchProperties.safeFallbackSingleMaxItems());
+                    return validContexts.size();
+                }
                 /*
                  * side effect 只生成事件，不参与核心消警成功判定。
                  * 这样远程设备恢复、电解槽扩展清理、推送等慢动作不会拖住 alarm_endTime 写入。
@@ -661,21 +686,33 @@ public class AlarmStopEventService {
     }
 
     private List<List<AlarmStopEvent>> chunk(List<AlarmStopEvent> values, int batchSize) {
-        int size = batchSize <= 0 ? 500 : batchSize;
-        List<List<AlarmStopEvent>> chunks = new ArrayList<>();
-        for (int start = 0; start < values.size(); start += size) {
-            chunks.add(values.subList(start, Math.min(start + size, values.size())));
-        }
-        return chunks;
+        return AlarmBatchChunker.chunk(values, batchSize);
     }
 
     private List<List<String>> chunkStrings(List<String> values, int batchSize) {
-        int size = batchSize <= 0 ? 500 : batchSize;
-        List<List<String>> chunks = new ArrayList<>();
-        for (int start = 0; start < values.size(); start += size) {
-            chunks.add(values.subList(start, Math.min(start + size, values.size())));
+        return AlarmBatchChunker.chunk(values, batchSize);
+    }
+
+    private List<List<StopRouteContext>> chunkContexts(List<StopRouteContext> values, int batchSize) {
+        return AlarmBatchChunker.chunk(values, batchSize);
+    }
+
+    private void markAppliedBatchChunks(List<Long> eventIds, Date deleteAfter) {
+        for (List<Long> chunk : AlarmBatchChunker.chunk(eventIds, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            stopEventMapper.markAppliedBatch(chunk, deleteAfter);
         }
-        return chunks;
+    }
+
+    private void markRetryBatchChunks(List<Long> eventIds, String lastError) {
+        for (List<Long> chunk : AlarmBatchChunker.chunk(eventIds, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            stopEventMapper.markRetryBatch(chunk, lastError);
+        }
+    }
+
+    private void markFailedBatchChunks(List<Long> eventIds, String lastError) {
+        for (List<Long> chunk : AlarmBatchChunker.chunk(eventIds, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            stopEventMapper.markFailedBatch(chunk, lastError);
+        }
     }
 
     private List<String> sampleCids(List<AlarmStopEvent> events) {

@@ -135,7 +135,14 @@ public class AlarmInsertBatchConsumeService {
 
     private void handleBatchFailure(String batchId, List<PreparedStartItem> preparedItems,
                                     List<AlarmInsertConsumeResult> results) {
-        if (!properties.isFallbackSingleOnBatchError()) {
+        int fallbackLimit = properties.safeFallbackSingleMaxItems();
+        if (!properties.isFallbackSingleOnBatchError() || preparedItems.size() > fallbackLimit) {
+            /*
+             * 数据库异常时禁止把大批量重新放大成 N 次单条事务。
+             * 超过保险丝后整批 FAIL，由 MQ nack/requeue 在数据库恢复后重新走批量链路。
+             */
+            log.error("alarm batch listener stage=FALLBACK_SINGLE_REJECTED batchId={}, batchSize={}, fallbackLimit={}",
+                    batchId, preparedItems.size(), fallbackLimit);
             for (PreparedStartItem item : preparedItems) {
                 results.set(item.index, AlarmInsertConsumeResult.FAIL);
             }

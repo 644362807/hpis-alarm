@@ -3,10 +3,11 @@ package com.hpis.alarm.task;
 import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.config.sharding.AlarmShardContext;
 import com.hpis.alarm.config.sharding.AlarmShardProperties;
-import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
+import com.hpis.alarm.dto.AlarmStopApplyItem;
 import com.hpis.alarm.enums.AlarmStatusEnums;
 import com.hpis.alarm.mapper.AlarmMapper;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -15,7 +16,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * cid 路由生命周期低流量任务。
@@ -64,22 +68,37 @@ public class AlarmCidIndexLifecycleJob {
     public void closeExpiredStaleRoutes() {
         List<AlarmCidRoute> routes = alarmCidIndexService.findExpiredActiveStaleRoutes();
         Date now = DateUtils.getNowDate();
-        for (AlarmCidRoute route : routes) {
-            try {
-                AlarmShardContext.setTableSuffix(route.getTableSuffix());
-                Alarm alarm = new Alarm();
-                alarm.setAlarmId(route.getAlarmId());
-                alarm.setAlarmEndtime(now);
-                alarm.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-                alarm.setUpdateTime(now);
-                alarmMapper.updateAlarm(alarm);
-                alarmCidIndexService.closeRoute(route, now);
-            } finally {
-                AlarmShardContext.clear();
+        Map<String, List<AlarmCidRoute>> grouped = routes.stream()
+                .filter(route -> route.getTableSuffix() != null && !"".equals(route.getTableSuffix().trim()))
+                .collect(Collectors.groupingBy(AlarmCidRoute::getTableSuffix, LinkedHashMap::new, Collectors.toList()));
+        /*
+         * stale 超时关闭可能一次命中大量历史报警。
+         * 必须先按物理 suffix 分组，再按 500 条硬边界切 chunk，避免循环逐条 UPDATE 和超长 CASE WHEN。
+         */
+        for (Map.Entry<String, List<AlarmCidRoute>> entry : grouped.entrySet()) {
+            for (List<AlarmCidRoute> chunk : AlarmBatchChunker.chunk(entry.getValue(), AlarmBatchChunker.MAX_BATCH_SIZE)) {
+                try {
+                    AlarmShardContext.setTableSuffix(entry.getKey());
+                    List<AlarmStopApplyItem> items = chunk.stream()
+                            .map(route -> buildStopItem(route, now))
+                            .collect(Collectors.toList());
+                    alarmMapper.batchStopByAlarmIds(items, AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
+                    alarmCidIndexService.closeRoutes(chunk, now);
+                } finally {
+                    AlarmShardContext.clear();
+                }
             }
         }
         if (alarmShardProperties.getCidIndex().isLogEnabled() && !routes.isEmpty()) {
             log.info("已超时关闭 stale cid 路由 {} 条", routes.size());
         }
+    }
+
+    private AlarmStopApplyItem buildStopItem(AlarmCidRoute route, Date stopTime) {
+        AlarmStopApplyItem item = new AlarmStopApplyItem();
+        item.setAlarmId(route.getAlarmId());
+        item.setAlarmCid(route.getAlarmCid());
+        item.setStopTime(stopTime);
+        return item;
     }
 }

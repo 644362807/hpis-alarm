@@ -28,6 +28,7 @@ import com.hpis.alarm.service.*;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.alarm.service.support.AlarmDeviceResolver;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.alarm.service.support.DisconnectAlarmDeduplicator;
 import com.hpis.alarm.transfer.RabbitMQAlarmPushProducer;
 
@@ -581,6 +582,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			}
 			log.warn("alarm insert batch stage=FALLBACK_SINGLE batchId={}, batchSize={}, preparedCount={}, sampleAlarmCids={}, error={}",
 					batchId, jsonObjects.size(), contexts.size(), sampleAlarmInsertCids(jsonObjects), ex.getMessage(), ex);
+			if (contexts.size() > batchProperties.safeFallbackSingleMaxItems()) {
+				/*
+				 * 批量事务失败后只允许小批量拆单隔离坏数据。
+				 * 大批量拆单会在数据库异常时制造 N 次事务，必须交给上层重试恢复批量处理。
+				 */
+				throw new RuntimeException("alarm insert fallback single rejected, preparedCount=" + contexts.size()
+						+ ", fallbackLimit=" + batchProperties.safeFallbackSingleMaxItems(), ex);
+			}
 			RuntimeException firstFailure = null;
 			for (AlarmInsertContext context : contexts) {
 				try {
@@ -780,7 +789,13 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			grouped.computeIfAbsent(shardSuffix, key -> new ArrayList<>()).add(context);
 		}
 		for (Map.Entry<String, List<AlarmInsertContext>> entry : grouped.entrySet()) {
-			persistAlarmInsertGroup(batchId, entry.getKey(), entry.getValue());
+			/*
+			 * 即使上游 MQ batch 被调大，同一物理分片的单条 INSERT 也不能无限增长。
+			 * 事务顺序保持不变，只把 Mapper 入参限制在模块统一 500 条硬边界内。
+			 */
+			for (List<AlarmInsertContext> chunk : AlarmBatchChunker.chunk(entry.getValue(), batchProperties.safeInLimit())) {
+				persistAlarmInsertGroup(batchId, entry.getKey(), chunk);
+			}
 		}
 	}
 

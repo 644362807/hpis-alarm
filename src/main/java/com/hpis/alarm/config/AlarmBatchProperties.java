@@ -1,5 +1,6 @@
 package com.hpis.alarm.config;
 
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,14 @@ public class AlarmBatchProperties {
     /** 批量 SQL 或批量事务失败时是否拆回单条兜底；生产灰度期建议保持 true。 */
     private boolean fallbackSingleOnBatchError = true;
 
+    /**
+     * 批量失败后允许拆回单条 SQL 的最大数量。
+     *
+     * <p>单条降级只用于隔离小批坏数据，不能在数据库异常时把大批量重新放大为 N 次 SQL。
+     * 小于等于 0 时按 100，超过 500 时钳制为 500；需要停止拆单时关闭 fallbackSingleOnBatchError。</p>
+     */
+    private int fallbackSingleMaxItems = 100;
+
     /** 是否启用 Spring AMQP consumer batch listener；开启后旧 RabbitMQAlarmListener 会被条件关闭。 */
     private boolean insertConsumerBatchEnabled = false;
 
@@ -49,7 +58,12 @@ public class AlarmBatchProperties {
 
     /** SQL IN 和批量 upsert 的统一兜底值，防止配置成 0 或负数后出现全量或空批行为。 */
     public int safeInLimit() {
-        return inLimit <= 0 ? 500 : inLimit;
+        return AlarmBatchChunker.safeBatchSize(inLimit);
+    }
+
+    /** 单条兜底数量硬边界，防止数据库故障时出现批量转 N+1 的二次放大。 */
+    public int safeFallbackSingleMaxItems() {
+        return AlarmBatchChunker.safeBatchSize(fallbackSingleMaxItems <= 0 ? 100 : fallbackSingleMaxItems);
     }
 
     /** consumer batch 批大小兜底，防止容器被配置成 0 条批量。 */

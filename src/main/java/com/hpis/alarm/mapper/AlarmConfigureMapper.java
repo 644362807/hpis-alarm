@@ -47,6 +47,9 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
      */
     public int insertConfigTime(AlarmConfigureTime alarmConfigureTime);
 
+    /** 批量新增自定义时间段，调用方按统一 SQL 上限分块。 */
+    public int insertConfigTimeBatch(@Param("items") List<AlarmConfigureTime> items);
+
     /**
      * 修改报警配置
      * 

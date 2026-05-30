@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -143,6 +144,22 @@ public class AlarmInsertBatchConsumeServiceTest {
 
         assertEquals(Arrays.asList(AlarmInsertConsumeResult.SUCCESS, AlarmInsertConsumeResult.FAIL), results);
         verify(alarmService).releasePreparedAlarmOnFailure(secondContext);
+    }
+
+    @Test
+    public void oversizedBatchFailureDoesNotExpandIntoSingleTransactions() {
+        properties.setFallbackSingleMaxItems(1);
+        JSONObject first = rawData("A-1");
+        JSONObject second = rawData("A-2");
+        when(alarmService.prepareAlarmInsertContext(first)).thenReturn(context(first));
+        when(alarmService.prepareAlarmInsertContext(second)).thenReturn(context(second));
+        doThrow(new RuntimeException("batch failed"))
+                .when(alarmService).persistPreparedAlarmBatch(anyString(), anyList());
+
+        List<AlarmInsertConsumeResult> results = service.processStartBatch(Arrays.asList(first, second));
+
+        assertEquals(Arrays.asList(AlarmInsertConsumeResult.FAIL, AlarmInsertConsumeResult.FAIL), results);
+        verify(alarmService, never()).persistPreparedAlarmSingle(anyString(), any());
     }
 
     private JSONObject rawData(String alarmCid) {

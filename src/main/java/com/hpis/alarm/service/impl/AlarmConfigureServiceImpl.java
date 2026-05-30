@@ -11,6 +11,7 @@ import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.enums.SceneTypeEnums;
 import com.hpis.alarm.mapper.AlarmConfigureMapper;
 import com.hpis.alarm.service.IAlarmConfigureService;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 
 import com.hpis.common.core.constant.Constants;
 import com.hpis.common.core.constant.OperCodeConstants;
@@ -199,28 +200,14 @@ public class AlarmConfigureServiceImpl extends ServiceImpl<AlarmConfigureMapper,
            List<String> deviceIdList = listR.getData().stream()
                    .map(DeviceKeyInfoDTO::getDeviceSn)
                    .collect(Collectors.toList());
-           String[] deviceIdArray = deviceIdList.toArray(new String[0]);
-           alarmConfigureMapper.batchDeviceConfigure(deviceIdArray, alarmConfigureId);
+           insertDeviceConfigureChunks(deviceIdList, alarmConfigureId);
        }
    }
 
         //判断是否是自定义时间或全天
         if ("1".equals(alarmConfigure.getAlarmConfigurePeriod())){
 
-            //新增报警配置自定义时间
-            for ( AlarmConfigureTime alarmConfigureTime:alarmConfigure.getAlarmConfigureTimeList()) {
-                String[] time = alarmConfigureTime.getTime();
-                alarmConfigureTime.setAlarmConfigureId(alarmConfigureId);
-                alarmConfigureTime.setDelFlag("0");
-                //时间从string转换data
-                Date time1 = new SimpleDateFormat("HH:mm:ss").parse(time[0]);
-                Date time2 = new SimpleDateFormat("HH:mm:ss").parse(time[1]);
-                alarmConfigureTime.setAlarmConfigureStarttime(time1);
-                alarmConfigureTime.setAlarmConfigureEndtime(time2);
-                //存入Alarm_configure_Time表（时间段不多 使用循环sql语句 之后会更新）
-                alarmConfigureMapper.insertConfigTime(alarmConfigureTime);
-            }
-            //后续更新循环sql 变批量添加的位置
+            insertConfigTimeChunks(alarmConfigureId, alarmConfigure.getAlarmConfigureTimeList());
         }
         return "添加完成";
     }
@@ -281,8 +268,7 @@ public class AlarmConfigureServiceImpl extends ServiceImpl<AlarmConfigureMapper,
                 List<String> deviceIdList = listR.getData().stream()
                         .map(DeviceKeyInfoDTO::getDeviceSn)
                         .collect(Collectors.toList());
-                String[] deviceIdArray = deviceIdList.toArray(new String[0]);
-                alarmConfigureMapper.batchDeviceConfigure(deviceIdArray, alarmConfigure.getAlarmConfigureId());
+                insertDeviceConfigureChunks(deviceIdList, alarmConfigure.getAlarmConfigureId());
             }
 
 
@@ -298,25 +284,39 @@ public class AlarmConfigureServiceImpl extends ServiceImpl<AlarmConfigureMapper,
         if ("1".equals(alarmConfigure.getAlarmConfigurePeriod())){
             //先删除现有时间段
             alarmConfigureMapper.deleteConfigTime(alarmConfigure.getAlarmConfigureId());
-            //新增报警配置自定义时间 遍历时间集合
-            for ( AlarmConfigureTime alarmConfigureTime:alarmConfigure.getAlarmConfigureTimeList()) {
-                //获取时间数组
-                String[] time = alarmConfigureTime.getTime();
-                alarmConfigureTime.setAlarmConfigureId(alarmConfigure.getAlarmConfigureId());
-                alarmConfigureTime.setDelFlag("0");
-                //时间从string转换data
-                Date time1 = new SimpleDateFormat("HH:mm:ss").parse(time[0]);
-                Date time2 = new SimpleDateFormat("HH:mm:ss").parse(time[1]);
-                //时间赋值
-                alarmConfigureTime.setAlarmConfigureStarttime(time1);
-                alarmConfigureTime.setAlarmConfigureEndtime(time2);
-                //存入Alarm_configure_Time表（时间段不多 使用循环sql语句 之后会更新）
-                alarmConfigureMapper.insertConfigTime(alarmConfigureTime);
-            }
-            //后续更新循环sql 变批量添加的位置
+            insertConfigTimeChunks(alarmConfigure.getAlarmConfigureId(), alarmConfigure.getAlarmConfigureTimeList());
         }
 
         return "修改成功" ;
+    }
+
+    private void insertDeviceConfigureChunks(List<String> deviceSnList, Long alarmConfigureId) {
+        /*
+         * 租户设备数量不可假设很小。关联表批量新增必须分块，防止全租户设备一次拼成超长 INSERT。
+         */
+        for (List<String> chunk : AlarmBatchChunker.chunk(deviceSnList, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            alarmConfigureMapper.batchDeviceConfigure(chunk.toArray(new String[0]), alarmConfigureId);
+        }
+    }
+
+    private void insertConfigTimeChunks(Long alarmConfigureId,
+                                        List<AlarmConfigureTime> configureTimes) throws ParseException {
+        if (configureTimes == null || configureTimes.isEmpty()) {
+            return;
+        }
+        /*
+         * 时间段通常数量很小，但仍统一使用批量 Mapper，避免事务内形成逐条 INSERT 模板。
+         */
+        for (AlarmConfigureTime alarmConfigureTime : configureTimes) {
+            String[] time = alarmConfigureTime.getTime();
+            alarmConfigureTime.setAlarmConfigureId(alarmConfigureId);
+            alarmConfigureTime.setDelFlag("0");
+            alarmConfigureTime.setAlarmConfigureStarttime(new SimpleDateFormat("HH:mm:ss").parse(time[0]));
+            alarmConfigureTime.setAlarmConfigureEndtime(new SimpleDateFormat("HH:mm:ss").parse(time[1]));
+        }
+        for (List<AlarmConfigureTime> chunk : AlarmBatchChunker.chunk(configureTimes, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            alarmConfigureMapper.insertConfigTimeBatch(chunk);
+        }
     }
 
     /**

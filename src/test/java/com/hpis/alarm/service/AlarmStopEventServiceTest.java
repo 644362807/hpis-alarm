@@ -159,6 +159,24 @@ public class AlarmStopEventServiceTest {
     }
 
     @Test
+    public void oversizedRouteLookupFailureDoesNotExpandIntoSingleQueries() {
+        batchProperties.setFallbackSingleMaxItems(1);
+        List<AlarmStopEvent> events = buildEvents(2);
+        when(stopEventMapper.selectPendingBatch(workerProperties.getNormalBatchSize())).thenReturn(events);
+        when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt()))
+                .thenThrow(new RuntimeException("route query failed"));
+
+        try {
+            service.processPendingBatch();
+            fail("oversized fallback should keep the batch for worker retry");
+        } catch (RuntimeException expected) {
+            assertEquals("route query failed", expected.getCause().getMessage());
+        }
+
+        verify(alarmCidIndexService, never()).findActiveRouteByCid(any());
+    }
+
+    @Test
     public void failedRouteMissingCanRecoverWhenRouteAppears() {
         AlarmStopEvent event = buildEvent(1L, "cid-1");
         event.setEventStatus(AlarmStopEvent.STATUS_FAILED);

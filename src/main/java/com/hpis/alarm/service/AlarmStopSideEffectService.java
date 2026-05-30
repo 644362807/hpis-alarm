@@ -11,6 +11,7 @@ import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.enums.SceneTypeEnums;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
 import com.hpis.alarm.mapper.AlarmStopSideEffectMapper;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.enums.IrTypeEnums;
 import com.hpis.common.core.enums.UserStatus;
 import com.hpis.common.core.utils.StringUtils;
@@ -123,7 +124,12 @@ public class AlarmStopSideEffectService {
             }
             return 0;
         }
-        List<AlarmStopSideEffectEvent> events = sideEffectMapper.selectPendingBatch(properties.getNormalBatchSize());
+        /*
+         * 副作用执行可以慢，但不能因为配置误放大把数千条状态更新塞进一次 SQL。
+         * 执行动作仍逐条隔离失败，成功状态统一按 500 条硬边界分块回写。
+         */
+        List<AlarmStopSideEffectEvent> events = sideEffectMapper.selectPendingBatch(
+                AlarmBatchChunker.safeBatchSize(properties.getNormalBatchSize()));
         int done = 0;
         List<Long> doneIds = new ArrayList<>();
         for (AlarmStopSideEffectEvent event : events) {
@@ -136,7 +142,9 @@ public class AlarmStopSideEffectService {
             }
         }
         if (!doneIds.isEmpty()) {
-            sideEffectMapper.markDoneBatch(doneIds);
+            for (List<Long> chunk : AlarmBatchChunker.chunk(doneIds, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+                sideEffectMapper.markDoneBatch(chunk);
+            }
         }
         return done;
     }

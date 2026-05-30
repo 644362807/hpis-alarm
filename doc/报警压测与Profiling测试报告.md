@@ -139,3 +139,18 @@
 - `True closed-loop elapsed ms`：仅当 verifier 启动空窗不超过采样间隔时采纳，否则记为 `-1`。
 
 因此后续 `2000 / 10000 / 50000 / 100000` 性能对比只采纳 orchestrator 生成、`True closed-loop elapsed ms != -1` 且最终 PASS 的 run。当前 `2-4` consumer 下已通过的 start-then-stop 大档闭环约 `295-337 rows/s`，瓶颈主要在 stop worker 与 MySQL route/业务表批量关闭，不建议在修复 `ROUTE_MISSING` 前盲目扩大 MQ consumer 并发。
+
+## 2026-05-30 SQL 批处理硬边界
+
+本轮增加统一 `AlarmBatchChunker`，将单条 SQL、单次 JDBC batch 和分片内业务写批次硬限制为最多 `500` 条。异常逐条降级默认最多 `100` 条，超过上限整体重试，不在 MQ consumer 或 stop worker 线程中展开无界 N+1 SQL。
+
+这项修改的目标是控制长事务、锁等待、redo/undo 压力和失败回滚成本，不直接承诺提升 stop 闭环吞吐。`countPending/selectPendingBatch` 热路径和 scheduled 串行 worker 仍是下一阶段重点，真实性能结论需要在 PROCESSING claim worker 完成后重新压测。
+
+第一阶段真实回归结果：
+
+| 场景 | RunId | Send elapsed | True closed-loop elapsed | 吞吐 | 结果 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GENERAL_ALTERNATE 10000` | `SQLGOV-GALT-10K-20260531000155` | `853ms` | `57859ms` | `172.83 rows/s` | PASS |
+| `MIXED_ALTERNATE 10000` | `SQLGOV-MALT-10K-20260531000438` | `444ms` | `70783ms` | `141.28 rows/s` | PASS |
+
+两轮使用 Spring AMQP consumer batch，Rabbit consumer 从 `2` 扩到 `4`。结果证明 500 条 SQL 硬边界没有破坏闭环一致性，但吞吐仍明显低于 75 万积压 30 分钟目标所需的 `417 rows/s`，第二阶段必须继续替换串行 stop worker。

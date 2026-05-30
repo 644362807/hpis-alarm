@@ -119,6 +119,14 @@
         values (#{alarmConfigureId},#{alarmConfigureStarttime},#{alarmConfigureEndtime},#{delFlag})
     </insert>
 
+    <insert id="insertConfigTimeBatch">
+        insert into alarm_configure_time (alarm_configure_id,alarm_configure_starttime,alarm_configure_endtime,del_flag)
+        values
+        <foreach collection="items" item="item" separator=",">
+            (#{item.alarmConfigureId},#{item.alarmConfigureStarttime},#{item.alarmConfigureEndtime},#{item.delFlag})
+        </foreach>
+    </insert>
+
     <update id="updateAlarmConfigure" parameterType="AlarmConfigure">
         update alarm_configure
         <trim prefix="SET" suffixOverrides=",">

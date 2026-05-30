@@ -85,6 +85,30 @@
             updated_time = now()
     </insert>
 
+    <insert id="upsertStaleActiveBatch">
+        insert into alarm_cid_stale_index
+        (alarm_cid, alarm_id, alarm_beginTime, alarm_endTime, table_suffix, device_sn, irms_sn,
+         alarm_type, route_status, stale_time, expire_time, delete_after, created_time, updated_time)
+        values
+        <foreach collection="routes" item="route" separator=",">
+            (#{route.alarmCid}, #{route.alarmId}, #{route.alarmBegintime}, #{route.alarmEndtime},
+             #{route.tableSuffix}, #{route.deviceSn}, #{route.irmsSn}, #{route.alarmType},
+             'ACTIVE', #{route.staleTime}, #{route.expireTime}, null, now(), now())
+        </foreach>
+        on duplicate key update
+            alarm_id = values(alarm_id),
+            alarm_beginTime = values(alarm_beginTime),
+            alarm_endTime = values(alarm_endTime),
+            table_suffix = values(table_suffix),
+            device_sn = values(device_sn),
+            irms_sn = values(irms_sn),
+            alarm_type = values(alarm_type),
+            route_status = 'ACTIVE',
+            expire_time = values(expire_time),
+            delete_after = null,
+            updated_time = now()
+    </insert>
+
     <select id="selectHotByCid" resultMap="AlarmCidRouteResult">
         select h.*, 'HOT' as index_source
         from alarm_cid_index h
@@ -214,6 +238,15 @@
         delete from alarm_cid_index
         where alarm_id = #{alarmId}
           and route_status = 'ACTIVE'
+    </delete>
+
+    <delete id="deleteHotActiveByAlarmIds">
+        delete from alarm_cid_index
+        where route_status = 'ACTIVE'
+          and alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
     </delete>
 
     <delete id="deleteClosedHot">
