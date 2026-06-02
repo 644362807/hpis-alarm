@@ -281,6 +281,10 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
             <if test="deviceSn != null">#{deviceSn},</if>
             <if test="irmsSn != null">#{irmsSn},</if>
         </trim>
+        on duplicate key update
+        alarm_id = values(alarm_id),
+        temperature_variation = values(temperature_variation),
+        device_sn = values(device_sn)
     </insert>
 
     <insert id="insertAlarmElectrolyticCellEctypeList">
@@ -293,6 +297,10 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
              #{item.subdivideNumber}, #{item.observationPlace}, #{item.temperatureVariation},
              #{item.deviceSn}, #{item.irmsSn})
         </foreach>
+        on duplicate key update
+        alarm_id = values(alarm_id),
+        temperature_variation = values(temperature_variation),
+        device_sn = values(device_sn)
     </insert>
 
     <!-- 在 Mapper XML 文件中定义批量插入语句 -->
@@ -342,6 +350,12 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
 
     <delete id="deleteAlarmElectrolyticCellEctypeById" parameterType="Long">
         delete from alarm_electrolytic_cell_ectype where alarm_id = #{alarmId}
+    </delete>
+    <delete id="deleteAlarmElectrolyticCellEctypeByIds">
+        delete from alarm_electrolytic_cell_ectype where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
     </delete>
     <delete id="deleteAlarmECEctypeByDeviceId" parameterType="String">
         delete from alarm_electrolytic_cell_ectype where device_sn = #{deviceSn}
@@ -405,34 +419,6 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         h.create_time DESC
         LIMIT 1
     </select>
-    <delete id="deleteOldAlarmEctypeByPt">
-        delete from alarm_electrolytic_cell_ectype
-        WHERE
-        sequence_id = #{sequenceId}
-        AND row_index = #{rowIndex}
-        AND groove_number = #{grooveNumber}
-        AND observation_place = #{observationPlace}
-        AND irms_sn = #{irmsSn}
-        <if test="subdivideNumber!=null">
-            AND subdivide_number = #{subdivideNumber}
-        </if>
-    </delete>
-
-    <delete id="deleteOldAlarmEctypeByItems">
-        delete from alarm_electrolytic_cell_ectype
-        where
-        <foreach collection="items" item="item" separator=" or ">
-            (sequence_id = #{item.sequenceId}
-             and row_index = #{item.rowIndex}
-             and groove_number = #{item.grooveNumber}
-             and observation_place = #{item.observationPlace}
-             and irms_sn = #{item.irmsSn}
-             <if test="item.subdivideNumber != null">
-                 and subdivide_number = #{item.subdivideNumber}
-             </if>)
-        </foreach>
-    </delete>
-
     <select id="selectNewAlarmElectrolyticCellList"  resultType="com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO">
         select a.alarm_id,
                c.sequence_id,

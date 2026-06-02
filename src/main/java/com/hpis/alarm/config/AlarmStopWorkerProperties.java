@@ -16,6 +16,53 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "alarm.stop-worker")
 public class AlarmStopWorkerProperties {
 
+    /** 是否启用 PROCESSING claim 派发器。关闭后只暂停新认领，不影响 MQ stop 落库。 */
+    private boolean dispatchEnabled = true;
+
+    /** PROCESSING claim 派发扫描间隔。scheduled 只负责投递小任务，不在调度线程中跑长事务。 */
+    private long dispatchIntervalMs = 100L;
+
+    /** 专用 stop executor 工作线程数。不要与 push、WebSocket 或通用 @Async 线程池复用。 */
+    private int workerThreads = 4;
+
+    /** 单个 PROCESSING claim 最大事件数。硬上限 500，生产初始值 200。 */
+    private int claimBatchSize = 200;
+
+    /** 同一实例最多并行执行多少个已认领批次。 */
+    private int maxInFlightBatches = 4;
+
+    /** PROCESSING 超过该时间仍未完成时允许回收。 */
+    private long processingTimeoutMs = 60000L;
+
+    /** 超时 PROCESSING 回收任务每轮最大处理量。 */
+    private int claimRecoveryBatchSize = 500;
+
+    /** 超时 PROCESSING 回收任务扫描间隔。 */
+    private long claimRecoveryIntervalMs = 10000L;
+
+    /** 核心事务异常释放 PROCESSING 后的延迟重试时间。 */
+    private long processingRetryDelayMs = 1000L;
+
+    /** claim 短事务遇到 deadlock 等瞬时数据库冲突时的最大尝试次数。 */
+    private int claimRetryMaxAttempts = 3;
+
+    /** claim 短事务瞬时数据库冲突后的基础退避时间。 */
+    private long claimRetryBackoffMs = 25L;
+
+    /** route 暂不可见时的延迟重试时间。 */
+    private long routeMissingRetryDelayMs = 5000L;
+
+    /** ROUTE_MISSING 聚合日志间隔。避免高流量场景逐批 WARN 放大日志 IO。 */
+    private int routeMissingProfileLogEveryBatches = 100;
+
+    /**
+     * MQ stop 首次落库后允许 worker claim 前的短暂聚批窗口。
+     *
+     * <p>默认 0 保持旧语义；生产灰度可从 100-300ms 选择。该延迟同时给 start route 提交留出可见窗口，
+     * 避免交替上报时 worker 长期只认领 1-13 条并产生 ROUTE_MISSING 重试。</p>
+     */
+    private long initialAvailableDelayMs = 0L;
+
     /** PENDING 数低于该值时视为低流量，可以执行清理和副作用。 */
     private int lowWatermark = 500;
 
@@ -64,6 +111,9 @@ public class AlarmStopWorkerProperties {
     /** ROUTE_MISSING 转 FAILED 后至少等待多久再尝试恢复扫描。 */
     private long routeMissingRecoveryDelayMs = 1000L;
 
+    /** FAILED/ROUTE_MISSING 低频恢复扫描间隔。 */
+    private long routeMissingRecoveryIntervalMs = 10000L;
+
     /**
      * 是否在连续空轮次后暂停 stop worker 的数据库轮询。
      *
@@ -85,4 +135,56 @@ public class AlarmStopWorkerProperties {
      * 因此默认关闭，只保留异常日志；需要观察处理节奏时可在 Nacos 临时打开。</p>
      */
     private boolean logEnabled = false;
+
+    public int safeWorkerThreads() {
+        return Math.max(1, Math.min(workerThreads, 32));
+    }
+
+    public int safeClaimBatchSize() {
+        return Math.max(1, Math.min(claimBatchSize, 500));
+    }
+
+    public int safeMaxInFlightBatches() {
+        return Math.max(1, Math.min(maxInFlightBatches, 32));
+    }
+
+    public int safeClaimRecoveryBatchSize() {
+        return Math.max(1, Math.min(claimRecoveryBatchSize, 500));
+    }
+
+    public long safeProcessingTimeoutMs() {
+        return Math.max(1000L, processingTimeoutMs);
+    }
+
+    public long safeProcessingRetryDelayMs() {
+        return Math.max(100L, processingRetryDelayMs);
+    }
+
+    public int safeClaimRetryMaxAttempts() {
+        return Math.max(1, Math.min(claimRetryMaxAttempts, 5));
+    }
+
+    public long safeClaimRetryBackoffMs() {
+        return Math.max(1L, Math.min(claimRetryBackoffMs, 1000L));
+    }
+
+    public long safeRouteMissingRetryDelayMs() {
+        return Math.max(100L, routeMissingRetryDelayMs);
+    }
+
+    public int safeRouteMissingProfileLogEveryBatches() {
+        return Math.max(1, Math.min(routeMissingProfileLogEveryBatches, 10000));
+    }
+
+    public long safeInitialAvailableDelayMs() {
+        return Math.max(0L, Math.min(initialAvailableDelayMs, 5000L));
+    }
+
+    /**
+     * PROCESSING 失败重试必须有硬上限，避免配置错误让毒任务永久占用 stop worker。
+     * 上限只控制异常释放和超时回收；ROUTE_MISSING 仍沿用同一 maxRetry 语义。
+     */
+    public int safeMaxRetry() {
+        return Math.max(1, Math.min(maxRetry, 100));
+    }
 }

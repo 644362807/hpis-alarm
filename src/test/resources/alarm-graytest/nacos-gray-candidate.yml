@@ -1,0 +1,23 @@
+alarm:
+  internal-test:
+    remote-call-stub-enabled: true
+  batch:
+    insert-consumer-batch-enabled: true
+    insert-consumer-batch-size: 100
+    insert-consumer-batch-receive-timeout-ms: 50
+    insert-consumer-batch-concurrency: 2-4
+    insert-consumer-batch-prefetch: 100
+    stop-event-batch-enabled: true
+    stop-event-upsert-batch-size: 100
+    electrolytic-snapshot-mode: SYNC
+  stop-worker:
+    dispatch-enabled: true
+    worker-threads: 4
+    claim-batch-size: 200
+    max-in-flight-batches: 4
+    initial-available-delay-ms: 500
+  ec-snapshot-worker:
+    dispatch-enabled: false
+    worker-threads: 2
+    claim-batch-size: 100
+    max-in-flight-batches: 2

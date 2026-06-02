@@ -1,24 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <contextName>${APP_NAME}</contextName>
-    <springProperty name="APP_NAME" scope="context" source="spring.application.name"/>
+
+    <!--
+        说明：
+        1. 本文件只负责日志输出格式、appender、滚动策略。
+        2. 不在 XML 中写死 MyBatis / SQL / ShardingSphere / Spring JDBC 日志级别。
+        3. 日志级别统一放到 Nacos 的 logging.level 中控制。
+    -->
+
+    <springProperty name="APP_NAME" scope="context" source="spring.application.name" defaultValue="application"/>
     <springProperty name="LOG_PATH" scope="context" source="logging.file.path" defaultValue="./logs/${APP_NAME}"/>
     <springProperty name="LOG_MAXFILESIZE" scope="context" source="logback.filesize" defaultValue="45MB"/>
     <springProperty name="LOG_FILEMAXDAY" scope="context" source="logback.filemaxday" defaultValue="15"/>
     <springProperty name="ServerIP" scope="context" source="spring.cloud.client.ip-address" defaultValue="0.0.0.0"/>
     <springProperty name="ServerPort" scope="context" source="server.port" defaultValue="0000"/>
 
-    <!-- 彩色日志 -->
+    <!-- root 日志级别也从 Nacos 读取 -->
+    <springProperty name="ROOT_LOG_LEVEL" scope="context" source="logging.level.root" defaultValue="INFO"/>
+
+    <contextName>${APP_NAME}</contextName>
+
     <!-- 彩色日志依赖的渲染类 -->
-    <conversionRule conversionWord="clr" converterClass="org.springframework.boot.logging.logback.ColorConverter"/>
+    <conversionRule conversionWord="clr"
+                    converterClass="org.springframework.boot.logging.logback.ColorConverter"/>
     <conversionRule conversionWord="wex"
                     converterClass="org.springframework.boot.logging.logback.WhitespaceThrowableProxyConverter"/>
     <conversionRule conversionWord="wEx"
                     converterClass="org.springframework.boot.logging.logback.ExtendedWhitespaceThrowableProxyConverter"/>
 
-    <!-- 彩色日志格式 -->
+    <!-- 控制台彩色日志格式 -->
     <property name="CONSOLE_LOG_PATTERN"
               value="[${APP_NAME}:${ServerIP}:${ServerPort}] %clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%level){blue} %clr(${PID}){magenta} %clr([%X{traceId}]){yellow} %clr([%thread]){orange} %clr(%logger){cyan} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+
+    <!-- 文件日志格式，不带颜色 -->
     <property name="CONSOLE_LOG_PATTERN_NO_COLOR"
               value="[${APP_NAME}:${ServerIP}:${ServerPort}] %d{yyyy-MM-dd HH:mm:ss.SSS} %level ${PID} [%X{traceId}] [%thread] %logger %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
 
@@ -30,80 +44,89 @@
             <charset>UTF-8</charset>
         </encoder>
     </appender>
-    <!-- 按照每天生成常规日志文件 -->
+
+    <!-- 普通日志文件：INFO 及以上 -->
     <appender name="FileAppender" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_PATH}/info.log</file>
+
         <encoder>
             <pattern>${CONSOLE_LOG_PATTERN_NO_COLOR}</pattern>
             <charset>UTF-8</charset>
         </encoder>
 
-        <!-- 使用新版SizeAndTimeBasedRollingPolicy -->
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <!-- 文件名模式必须包含时间和序号 -->
             <fileNamePattern>${LOG_PATH}/info.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
-            <maxFileSize>${LOG_MAXFILESIZE}</maxFileSize> <!-- 分包触发大小 -->
-            <maxHistory>${LOG_FILEMAXDAY}</maxHistory>    <!-- 保留天数 -->
-            <totalSizeCap>1GB</totalSizeCap>             <!-- 可选：总大小限制 -->
+            <maxFileSize>${LOG_MAXFILESIZE}</maxFileSize>
+            <maxHistory>${LOG_FILEMAXDAY}</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
         </rollingPolicy>
-        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+
+        <!--
+            注意：
+            这里使用 ThresholdFilter，表示 INFO/WARN/ERROR 都会进入 info.log。
+            你原来用 LevelFilter 只接收 INFO，WARN 不会进入 info.log。
+        -->
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>INFO</level>
-            <!-- 明确匹配行为 -->
-            <onMatch>ACCEPT</onMatch>
-            <onMismatch>DENY</onMismatch>
         </filter>
     </appender>
+
+    <!-- 错误日志文件：只记录 ERROR -->
     <appender name="FileAppenderError" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_PATH}/error.log</file>
+
         <encoder>
             <pattern>${CONSOLE_LOG_PATTERN_NO_COLOR}</pattern>
             <charset>UTF-8</charset>
         </encoder>
-        <!-- 基于时间的分包策略 -->
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>${LOG_PATH}/error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
-            <!--保留时间,单位:天-->
+            <maxFileSize>${LOG_MAXFILESIZE}</maxFileSize>
             <maxHistory>${LOG_FILEMAXDAY}</maxHistory>
-            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
-                <maxFileSize>${LOG_MAXFILESIZE}</maxFileSize>
-            </timeBasedFileNamingAndTriggeringPolicy>
+            <totalSizeCap>1GB</totalSizeCap>
         </rollingPolicy>
-        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>ERROR</level>
-            <onMatch>ACCEPT</onMatch>
-            <onMismatch>DENY</onMismatch>
         </filter>
     </appender>
+
+    <!-- 异步普通日志 -->
     <appender name="file_async" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>8192</queueSize>
         <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
         <appender-ref ref="FileAppender"/>
     </appender>
+
+    <!-- 异步错误日志 -->
     <appender name="file_error" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>8192</queueSize>
         <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
         <appender-ref ref="FileAppenderError"/>
     </appender>
 
-    <!-- MyBatis log configure -->
-    <logger name="com.apache.ibatis" level="INFO"/>
-    <logger name="org.mybatis.spring" level="DEBUG"/>
-    <logger name="java.sql.Connection" level="DEBUG"/>
-    <logger name="java.sql.Statement" level="DEBUG"/>
-    <logger name="java.sql.PreparedStatement" level="DEBUG"/>
-    <logger name="org.hibernate.validator.internal.util.Version" level="off" />
+    <!--
+        不再在这里写：
+        org.mybatis.spring
+        java.sql.Connection
+        java.sql.Statement
+        java.sql.PreparedStatement
+        org.apache.shardingsphere
+        org.springframework.jdbc
+        com.hpis.**.mapper
 
-    <!--可以输出项目中的debug日志，包括mybatis的sql日志-->
-    <logger name="com.hpis.**.mapper" level="INFO" />
-    <!-- 系统模块日志级别控制  -->
-    <logger name="com.hpis" level="INFO" />
-    <!-- Spring日志级别控制  -->
-    <logger name="org.springframework" level="WARN" />
+        这些全部交给 Nacos logging.level 控制。
+    -->
 
     <springProfile name="local,dev,test,prod,docker">
-        <root level="INFO">
+        <root level="${ROOT_LOG_LEVEL}">
             <appender-ref ref="StdoutAppender"/>
-            <!-- 同时引用两个appender -->
-            <appender-ref ref="file_async" />
-            <appender-ref ref="file_error" />
+            <appender-ref ref="file_async"/>
+            <appender-ref ref="file_error"/>
         </root>
     </springProfile>
+
 </configuration>

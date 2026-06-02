@@ -95,7 +95,7 @@ public interface AlarmElectrolyticCellMapper  extends BaseMapper<AlarmElectrolyt
      */
     int insertAlarmElectrolyticCellEctypeList(@Param("items") List<AlarmElectrolyticCell> alarmElectrolyticCells);
 
-    int deleteOldAlarmEctypeByItems(@Param("items") List<AlarmElectrolyticCell> alarmElectrolyticCells);
+    int deleteAlarmElectrolyticCellEctypeByIds(@Param("alarmIds") List<Long> alarmIds);
 
     /**
      * 修改电解槽关联报警
@@ -156,19 +156,6 @@ public interface AlarmElectrolyticCellMapper  extends BaseMapper<AlarmElectrolyt
      * @return
      */
     RepeatAlarmDto selectRepeatAlarmHandleByPt(AlarmElectrolyticCell alarmElectrolyticCell);
-
-    /**
-     * 删除同点位旧报警
-     * @param sequenceId
-     * @param rowIndex
-     * @param grooveNumber
-     * @param observationPlace
-     * @param subdivideNumber
-     */
-    void deleteOldAlarmEctypeByPt(@Param("sequenceId") String sequenceId, @Param("rowIndex") Integer rowIndex,
-                             @Param("grooveNumber") Integer grooveNumber, @Param("observationPlace") String observationPlace,
-                             @Param("subdivideNumber") Integer subdivideNumber,@Param("irmsSn") String irmsSn);
-
 
     /**
      * 查询电解槽关联报警列表-点位最新报警

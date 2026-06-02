@@ -11,6 +11,7 @@ import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.enums.SceneTypeEnums;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
 import com.hpis.alarm.mapper.AlarmStopSideEffectMapper;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.enums.IrTypeEnums;
 import com.hpis.common.core.enums.UserStatus;
 import com.hpis.common.core.utils.StringUtils;
@@ -103,8 +104,10 @@ public class AlarmStopSideEffectService {
             List<AlarmStopSideEffectEvent> chunk = events.subList(start, Math.min(start + inLimit, events.size()));
             sideEffectMapper.upsertPendingBatch(chunk);
         }
-        log.info("alarm stop batch stage=SIDE_EFFECT_BATCH_UPSERT batchId={}, effectCount={}, alarmCount={}",
-                batchId, events.size(), alarms.size());
+        if (properties.isLogEnabled()) {
+            log.info("alarm stop batch stage=SIDE_EFFECT_BATCH_UPSERT batchId={}, effectCount={}, alarmCount={}",
+                    batchId, events.size(), alarms.size());
+        }
         return events.size();
     }
 
@@ -116,14 +119,19 @@ public class AlarmStopSideEffectService {
         if (!properties.isSideEffectEnabled()) {
             return 0;
         }
-        int pendingStopCount = stopEventMapper.countPending();
-        if (pendingStopCount >= properties.getHighWatermark()) {
+        Integer outstanding = stopEventMapper.existsOutstanding();
+        if (outstanding != null && outstanding > 0) {
             if (properties.isLogEnabled()) {
-                log.info("消警高流量模式下暂停执行副作用事件，pendingStopCount={}", pendingStopCount);
+                log.info("仍有 PENDING/PROCESSING 核心消警，暂停执行副作用事件");
             }
             return 0;
         }
-        List<AlarmStopSideEffectEvent> events = sideEffectMapper.selectPendingBatch(properties.getNormalBatchSize());
+        /*
+         * 副作用执行可以慢，但不能因为配置误放大把数千条状态更新塞进一次 SQL。
+         * 执行动作仍逐条隔离失败，成功状态统一按 500 条硬边界分块回写。
+         */
+        List<AlarmStopSideEffectEvent> events = sideEffectMapper.selectPendingBatch(
+                AlarmBatchChunker.safeBatchSize(properties.getNormalBatchSize()));
         int done = 0;
         List<Long> doneIds = new ArrayList<>();
         for (AlarmStopSideEffectEvent event : events) {
@@ -136,7 +144,9 @@ public class AlarmStopSideEffectService {
             }
         }
         if (!doneIds.isEmpty()) {
-            sideEffectMapper.markDoneBatch(doneIds);
+            for (List<Long> chunk : AlarmBatchChunker.chunk(doneIds, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+                sideEffectMapper.markDoneBatch(chunk);
+            }
         }
         return done;
     }
@@ -239,7 +249,7 @@ public class AlarmStopSideEffectService {
     private void markRetryOrFailed(AlarmStopSideEffectEvent event, Exception ex) {
         String error = truncateError(ex);
         int retryCount = event.getRetryCount() == null ? 0 : event.getRetryCount();
-        if (retryCount + 1 >= properties.getMaxRetry()) {
+        if (retryCount + 1 >= properties.safeMaxRetry()) {
             sideEffectMapper.markFailed(event.getId(), error);
             log.error("消警副作用事件达到最大重试次数，eventId={}, effectType={}, error={}",
                     event.getId(), event.getEffectType(), error);

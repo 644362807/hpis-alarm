@@ -5,6 +5,7 @@ import com.hpis.alarm.domain.AlarmCidRoute;
 import com.hpis.alarm.dto.AlarmStopApplyItem;
 import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.mapper.AlarmCidIndexMapper;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,6 +18,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -191,9 +193,21 @@ public class AlarmCidIndexService {
         if (routes == null || routes.isEmpty()) {
             return;
         }
+        Date deleteAfter = DateUtils.getNowDate();
+        List<AlarmStopApplyItem> hotItems = new ArrayList<>();
+        List<AlarmStopApplyItem> staleItems = new ArrayList<>();
         for (AlarmCidRoute route : routes) {
-            closeRoute(route, alarmEndTime);
+            if (route == null || route.getAlarmId() == null) {
+                continue;
+            }
+            AlarmStopApplyItem item = buildStopApplyItem(route, alarmEndTime);
+            if (AlarmCidRoute.SOURCE_STALE.equals(route.getIndexSource())) {
+                staleItems.add(item);
+            } else {
+                hotItems.add(item);
+            }
         }
+        closeRoutesByItems(hotItems, staleItems, deleteAfter);
     }
 
     /**
@@ -207,11 +221,15 @@ public class AlarmCidIndexService {
                                    List<AlarmStopApplyItem> staleItems,
                                    Date deleteAfter) {
         Date actualDeleteAfter = deleteAfter == null ? DateUtils.getNowDate() : deleteAfter;
-        if (hotItems != null && !hotItems.isEmpty()) {
-            cidIndexMapper.closeHotBatch(hotItems, actualDeleteAfter);
+        /*
+         * 调用方通常已经按 suffix 分组，但这里仍做最终 chunk 防线。
+         * 防止设备撤防、网关离线或配置误调后把数千条 CASE WHEN 拼成一条 SQL。
+         */
+        for (List<AlarmStopApplyItem> chunk : AlarmBatchChunker.chunk(hotItems, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            cidIndexMapper.closeHotBatch(chunk, actualDeleteAfter);
         }
-        if (staleItems != null && !staleItems.isEmpty()) {
-            cidIndexMapper.closeStaleBatch(staleItems, actualDeleteAfter);
+        for (List<AlarmStopApplyItem> chunk : AlarmBatchChunker.chunk(staleItems, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            cidIndexMapper.closeStaleBatch(chunk, actualDeleteAfter);
         }
     }
 
@@ -219,26 +237,35 @@ public class AlarmCidIndexService {
     public int transferHotToStale() {
         Date cutoffTime = addHours(DateUtils.getNowDate(), -properties.getCidIndex().getHotHours());
         List<AlarmCidRoute> routes = cidIndexMapper.selectHotTransferCandidates(
-                cutoffTime, properties.getCidIndex().getTransferBatchSize());
-        int transferred = 0;
+                cutoffTime, AlarmBatchChunker.safeBatchSize(properties.getCidIndex().getTransferBatchSize()));
+        Date staleTime = DateUtils.getNowDate();
         for (AlarmCidRoute route : routes) {
-            route.setStaleTime(DateUtils.getNowDate());
+            route.setStaleTime(staleTime);
             route.setExpireTime(addDays(route.getStaleTime(), properties.getCidIndex().getStaleExpireDays()));
             route.setDeleteAfter(null);
-            cidIndexMapper.upsertStaleActive(route);
-            transferred += cidIndexMapper.deleteHotActiveByAlarmId(route.getAlarmId());
+        }
+        int transferred = 0;
+        /*
+         * 迁移顺序仍是“先 stale 后 hot”，但从逐条 SQL 改为固定小批量。
+         * 任一批失败会回滚整个事务，hot route 不会在 stale 写入前消失。
+         */
+        for (List<AlarmCidRoute> chunk : AlarmBatchChunker.chunk(routes, properties.getCidIndex().getTransferBatchSize())) {
+            cidIndexMapper.upsertStaleActiveBatch(chunk);
+            transferred += cidIndexMapper.deleteHotActiveByAlarmIds(chunk.stream()
+                    .map(AlarmCidRoute::getAlarmId)
+                    .collect(java.util.stream.Collectors.toList()));
         }
         return transferred;
     }
 
     public List<AlarmCidRoute> findExpiredActiveStaleRoutes() {
         return cidIndexMapper.selectExpiredActiveStale(
-                DateUtils.getNowDate(), properties.getCidIndex().getCleanupBatchSize());
+                DateUtils.getNowDate(), AlarmBatchChunker.safeBatchSize(properties.getCidIndex().getCleanupBatchSize()));
     }
 
     public int cleanupClosedRoutes() {
         Date now = DateUtils.getNowDate();
-        int limit = properties.getCidIndex().getCleanupBatchSize();
+        int limit = AlarmBatchChunker.safeBatchSize(properties.getCidIndex().getCleanupBatchSize());
         return cidIndexMapper.deleteClosedHot(now, limit) + cidIndexMapper.deleteClosedStale(now, limit);
     }
 
@@ -278,21 +305,24 @@ public class AlarmCidIndexService {
         if (alarmCids == null || alarmCids.isEmpty()) {
             return Collections.emptyList();
         }
-        List<String> cids = new ArrayList<>();
+        LinkedHashSet<String> cids = new LinkedHashSet<>();
         for (String alarmCid : alarmCids) {
-            if (alarmCid != null && !"".equals(alarmCid.trim()) && !cids.contains(alarmCid)) {
+            if (alarmCid != null && !"".equals(alarmCid.trim())) {
                 cids.add(alarmCid);
             }
         }
-        return cids;
+        return new ArrayList<>(cids);
     }
 
     private <T> List<List<T>> chunk(List<T> values, int batchSize) {
-        int size = batchSize <= 0 ? 500 : batchSize;
-        List<List<T>> chunks = new ArrayList<>();
-        for (int start = 0; start < values.size(); start += size) {
-            chunks.add(values.subList(start, Math.min(start + size, values.size())));
-        }
-        return chunks;
+        return AlarmBatchChunker.chunk(values, batchSize);
+    }
+
+    private AlarmStopApplyItem buildStopApplyItem(AlarmCidRoute route, Date alarmEndTime) {
+        AlarmStopApplyItem item = new AlarmStopApplyItem();
+        item.setAlarmId(route.getAlarmId());
+        item.setAlarmCid(route.getAlarmCid());
+        item.setStopTime(alarmEndTime);
+        return item;
     }
 }

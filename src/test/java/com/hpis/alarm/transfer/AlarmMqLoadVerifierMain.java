@@ -59,7 +59,10 @@ public class AlarmMqLoadVerifierMain {
         try (java.sql.Connection db = DriverManager.getConnection(options.jdbcUrl, options.jdbcUsername, options.jdbcPassword)) {
             long deadline = System.currentTimeMillis() + options.timeoutSeconds * 1000L;
             while (System.currentTimeMillis() <= deadline) {
-                Snapshot snapshot = sample(db, options);
+                Snapshot previous = snapshots.isEmpty() ? null : snapshots.get(snapshots.size() - 1);
+                boolean forceFullSample = !options.terminalOnlyFullSample
+                        && (snapshots.isEmpty() || snapshots.size() % options.fullSampleEvery == 0);
+                Snapshot snapshot = sample(db, options, forceFullSample, previous);
                 snapshots.add(snapshot);
                 printSnapshot(snapshot);
                 if (isSuccess(snapshot, options)) {
@@ -81,13 +84,21 @@ public class AlarmMqLoadVerifierMain {
         return new VerifyResult(success, report);
     }
 
-    private static Snapshot sample(java.sql.Connection db, VerifyOptions options) throws Exception {
+    private static Snapshot sample(java.sql.Connection db, VerifyOptions options, boolean forceFullSample,
+                                   Snapshot previous) throws Exception {
         Snapshot snapshot = new Snapshot();
         snapshot.sampleMillis = System.currentTimeMillis();
         QueueStats queueStats = readQueueStats(options);
         snapshot.queueReady = queueStats.ready;
         snapshot.queueUnacked = queueStats.unacked;
         snapshot.queueConsumers = queueStats.consumers;
+
+        snapshot.stopEventStatus.putAll(countStatus(db, "alarm_stop_event", "event_status", options.alarmCidLike));
+        snapshot.fullSample = forceFullSample || isCoreStatusPotentiallyDone(snapshot, options);
+        if (!snapshot.fullSample) {
+            snapshot.copyFullValuesFrom(previous);
+            return snapshot;
+        }
 
         List<String> suffixes = loadSuffixes(db, options.monthKey);
         if (suffixes.isEmpty()) {
@@ -98,27 +109,36 @@ public class AlarmMqLoadVerifierMain {
                 CountPair pair = countAlarmTable(db, "alarm_" + suffix, options.alarmCidLike);
                 snapshot.alarmRows += pair.total;
                 snapshot.closedRows += pair.closed;
+                snapshot.physicalShardRows.put(suffix, pair.total);
+                countRouteConsistency(db, "alarm_" + suffix, suffix, options.alarmCidLike, snapshot);
                 countElectrolyticConsistency(db, "alarm_" + suffix,
                         "alarm_electrolytic_cell_" + suffix, options.alarmCidLike, snapshot);
             }
         }
-        snapshot.stopEventStatus.putAll(countStatus(db, "alarm_stop_event", "event_status", options.alarmCidLike));
         snapshot.sideEffectStatus.putAll(countStatus(db, "alarm_stop_side_effect_event", "effect_status", options.alarmCidLike));
         snapshot.hotRouteStatus.putAll(countStatus(db, "alarm_cid_index", "route_status", options.alarmCidLike));
         snapshot.staleRouteStatus.putAll(countStatus(db, "alarm_cid_stale_index", "route_status", options.alarmCidLike));
+        snapshot.snapshotCommandStatus.putAll(countStatusAll(db,
+                "alarm_electrolytic_cell_snapshot_command", "command_status"));
         return snapshot;
     }
 
     private static boolean isSuccess(Snapshot snapshot, VerifyOptions options) {
         long pending = snapshot.stopEventStatus.getOrDefault("PENDING", 0L);
+        long processing = snapshot.stopEventStatus.getOrDefault("PROCESSING", 0L);
         long failed = snapshot.stopEventStatus.getOrDefault("FAILED", 0L);
         long applied = snapshot.stopEventStatus.getOrDefault("APPLIED", 0L);
-        boolean coreDone = snapshot.alarmRows >= options.alarmCount
+        boolean coreDone = snapshot.fullSample
+                && snapshot.alarmRows >= options.alarmCount
                 && snapshot.closedRows >= options.expectedStopCount
                 && applied >= options.expectedStopCount
                 && pending == 0
+                && processing == 0
                 && failed == 0
-                && snapshot.queueReady == 0;
+                && snapshot.queueReady == 0
+                && (snapshot.queueUnacked < 0 || snapshot.queueUnacked == 0)
+                && snapshot.routeMissingRows == 0
+                && snapshot.routeSuffixMismatchRows == 0;
         if (coreDone && options.expectedElectrolyticCount > 0) {
             coreDone = snapshot.electrolyticRows >= options.expectedElectrolyticCount
                     && snapshot.electrolyticMissingRows == 0;
@@ -129,6 +149,18 @@ public class AlarmMqLoadVerifierMain {
         long sidePending = snapshot.sideEffectStatus.getOrDefault("PENDING", 0L);
         long sideFailed = snapshot.sideEffectStatus.getOrDefault("FAILED", 0L);
         return coreDone && sidePending == 0 && sideFailed == 0;
+    }
+
+    private static boolean isCoreStatusPotentiallyDone(Snapshot snapshot, VerifyOptions options) {
+        long pending = snapshot.stopEventStatus.getOrDefault("PENDING", 0L);
+        long processing = snapshot.stopEventStatus.getOrDefault("PROCESSING", 0L);
+        long failed = snapshot.stopEventStatus.getOrDefault("FAILED", 0L);
+        long applied = snapshot.stopEventStatus.getOrDefault("APPLIED", 0L);
+        return snapshot.queueReady == 0L
+                && pending == 0L
+                && processing == 0L
+                && failed == 0L
+                && applied >= options.expectedStopCount;
     }
 
     private static CountPair countAlarmTable(java.sql.Connection db, String tableName, String alarmCidLike) throws SQLException {
@@ -165,6 +197,20 @@ public class AlarmMqLoadVerifierMain {
                 alarmCidLike);
     }
 
+    private static void countRouteConsistency(java.sql.Connection db, String alarmTable, String suffix,
+                                              String alarmCidLike, Snapshot snapshot) throws SQLException {
+        String routeUnion = "(select alarm_cid, table_suffix from alarm_cid_index "
+                + "union all select alarm_cid, table_suffix from alarm_cid_stale_index)";
+        snapshot.routeMissingRows += countLong(db,
+                "select count(1) from " + alarmTable + " a left join " + routeUnion
+                        + " r on a.alarm_cid = r.alarm_cid where a.alarm_cid like ? and r.alarm_cid is null",
+                alarmCidLike);
+        snapshot.routeSuffixMismatchRows += countLong(db,
+                "select count(1) from " + alarmTable + " a join " + routeUnion
+                        + " r on a.alarm_cid = r.alarm_cid where a.alarm_cid like ? and r.table_suffix <> ?",
+                alarmCidLike, suffix);
+    }
+
     private static long countLong(java.sql.Connection db, String sql, String... params) throws SQLException {
         try (PreparedStatement statement = db.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) {
@@ -190,6 +236,23 @@ public class AlarmMqLoadVerifierMain {
                 while (resultSet.next()) {
                     result.put(resultSet.getString("status_name"), resultSet.getLong("total_count"));
                 }
+            }
+        }
+        return result;
+    }
+
+    private static Map<String, Long> countStatusAll(java.sql.Connection db, String tableName,
+                                                    String statusColumn) throws SQLException {
+        Map<String, Long> result = new LinkedHashMap<>();
+        if (!tableExists(db, tableName)) {
+            return result;
+        }
+        try (Statement statement = db.createStatement();
+             ResultSet resultSet = statement.executeQuery("select " + statusColumn
+                     + " as status_name, count(1) as total_count from " + tableName
+                     + " group by " + statusColumn)) {
+            while (resultSet.next()) {
+                result.put(resultSet.getString("status_name"), resultSet.getLong("total_count"));
             }
         }
         return result;
@@ -232,7 +295,19 @@ public class AlarmMqLoadVerifierMain {
         try (Connection connection = factory.newConnection("hpis-alarm-load-verifier-" + options.runId);
              Channel channel = connection.createChannel()) {
             AMQP.Queue.DeclareOk declareOk = channel.queueDeclarePassive(options.queueName);
-            return new QueueStats(declareOk.getMessageCount(), -1L, declareOk.getConsumerCount());
+            QueueStats passive = new QueueStats(declareOk.getMessageCount(), -1L, declareOk.getConsumerCount());
+            if (options.mqManagementUrl == null || options.mqManagementUrl.trim().isEmpty()) {
+                return passive;
+            }
+            try {
+                AlarmMqGrayQueueProbe.QueueStats management = AlarmMqGrayQueueProbe.readManagement(
+                        options.mqManagementUrl, options.mqUsername, options.mqPassword,
+                        options.mqVirtualHost, options.queueName,
+                        new AlarmMqGrayQueueProbe.QueueStats(passive.ready, passive.unacked, passive.consumers));
+                return new QueueStats(management.getReady(), management.getUnacked(), management.getConsumers());
+            } catch (Exception ignored) {
+                return passive;
+            }
         } catch (Exception ex) {
             return new QueueStats(-1L, -1L, -1);
         }
@@ -244,10 +319,13 @@ public class AlarmMqLoadVerifierMain {
                 + ", queueReady=" + snapshot.queueReady
                 + ", queueUnacked=" + snapshot.queueUnacked
                 + ", queueConsumers=" + snapshot.queueConsumers
+                + ", fullSample=" + snapshot.fullSample
                 + ", alarmRows=" + snapshot.alarmRows
                 + ", closedRows=" + snapshot.closedRows
                 + ", ecRows=" + snapshot.electrolyticRows
                 + ", ecMissing=" + snapshot.electrolyticMissingRows
+                + ", routeMissing=" + snapshot.routeMissingRows
+                + ", routeSuffixMismatch=" + snapshot.routeSuffixMismatchRows
                 + ", stop=" + snapshot.stopEventStatus
                 + ", side=" + snapshot.sideEffectStatus);
     }
@@ -316,6 +394,7 @@ public class AlarmMqLoadVerifierMain {
             writer.write("- Expected electrolytic count: `" + options.expectedElectrolyticCount + "`\n");
             writer.write("- Month key: `" + options.monthKey + "`\n");
             writer.write("- Alarm cid like: `" + options.alarmCidLike + "`\n");
+            writer.write("- Terminal-only full sample: `" + options.terminalOnlyFullSample + "`\n");
             writer.write("- Send elapsed ms: `" + sendElapsedMillis + "`\n");
             writer.write("- Verify elapsed ms: `" + (verifyEndMillis - verifyStartMillis) + "`\n");
             writer.write("- Consume elapsed after send ms: `" + consumeElapsedMillis + "`\n");
@@ -344,8 +423,11 @@ public class AlarmMqLoadVerifierMain {
             writer.write("- `closedRows >= expectedStopCount`\n");
             writer.write("- `alarm_stop_event.APPLIED >= expectedStopCount`\n");
             writer.write("- `alarm_stop_event.PENDING = 0`\n");
+            writer.write("- `alarm_stop_event.PROCESSING = 0`\n");
             writer.write("- `alarm_stop_event.FAILED = 0`\n");
             writer.write("- `alarm_queue.ready = 0`\n");
+            writer.write("- `alarm_queue.unacked = 0` when RabbitMQ management API is configured\n");
+            writer.write("- route can locate all rows and route suffix matches physical alarm table\n");
             writer.write("- Electrolytic: `alarm_electrolytic_cell.alarm_id` joined by `alarm.alarm_id`, missing rows = 0 when expected\n");
         }
         return report;
@@ -371,12 +453,15 @@ public class AlarmMqLoadVerifierMain {
 
     private static boolean isDbClosed(Snapshot snapshot, VerifyOptions options) {
         long pending = snapshot.stopEventStatus.getOrDefault("PENDING", 0L);
+        long processing = snapshot.stopEventStatus.getOrDefault("PROCESSING", 0L);
         long failed = snapshot.stopEventStatus.getOrDefault("FAILED", 0L);
         long applied = snapshot.stopEventStatus.getOrDefault("APPLIED", 0L);
-        return snapshot.alarmRows >= options.alarmCount
+        return snapshot.fullSample
+                && snapshot.alarmRows >= options.alarmCount
                 && snapshot.closedRows >= options.expectedStopCount
                 && applied >= options.expectedStopCount
                 && pending == 0L
+                && processing == 0L
                 && failed == 0L;
     }
 
@@ -395,11 +480,16 @@ public class AlarmMqLoadVerifierMain {
         writer.write("- Queue ready: `" + snapshot.queueReady + "`\n");
         writer.write("- Queue unacked: `" + snapshot.queueUnacked + "` (AMQP passive declare cannot expose this value; -1 means unavailable)\n");
         writer.write("- Queue consumers: `" + snapshot.queueConsumers + "`\n");
+        writer.write("- Full DB sample: `" + snapshot.fullSample + "`\n");
         writer.write("- Alarm rows: `" + snapshot.alarmRows + "`\n");
         writer.write("- Closed rows: `" + snapshot.closedRows + "`\n");
         writer.write("- Electrolytic rows joined by alarm_id: `" + snapshot.electrolyticRows + "`\n");
         writer.write("- Electrolytic rows missing for run scene_type=2: `" + snapshot.electrolyticMissingRows + "`\n");
         writer.write("- Electrolytic rows with null alarm_id observed in physical EC tables: `" + snapshot.electrolyticNullAlarmIdRows + "`\n");
+        writer.write("- Route missing rows: `" + snapshot.routeMissingRows + "`\n");
+        writer.write("- Route suffix mismatch rows: `" + snapshot.routeSuffixMismatchRows + "`\n");
+        writer.write("- Physical shard rows: `" + snapshot.physicalShardRows + "`\n");
+        writer.write("- Snapshot command status (global observation): `" + snapshot.snapshotCommandStatus + "`\n");
         writer.write("- Stop event status: `" + snapshot.stopEventStatus + "`\n");
         writer.write("- Side effect status: `" + snapshot.sideEffectStatus + "`\n");
         writer.write("- Hot route status: `" + snapshot.hotRouteStatus + "`\n");
@@ -412,11 +502,16 @@ public class AlarmMqLoadVerifierMain {
             max.queueReady = Math.max(max.queueReady, snapshot.queueReady);
             max.queueUnacked = Math.max(max.queueUnacked, snapshot.queueUnacked);
             max.queueConsumers = Math.max(max.queueConsumers, snapshot.queueConsumers);
+            max.fullSample = max.fullSample || snapshot.fullSample;
             max.alarmRows = Math.max(max.alarmRows, snapshot.alarmRows);
             max.closedRows = Math.max(max.closedRows, snapshot.closedRows);
             max.electrolyticRows = Math.max(max.electrolyticRows, snapshot.electrolyticRows);
             max.electrolyticMissingRows = Math.max(max.electrolyticMissingRows, snapshot.electrolyticMissingRows);
             max.electrolyticNullAlarmIdRows = Math.max(max.electrolyticNullAlarmIdRows, snapshot.electrolyticNullAlarmIdRows);
+            max.routeMissingRows = Math.max(max.routeMissingRows, snapshot.routeMissingRows);
+            max.routeSuffixMismatchRows = Math.max(max.routeSuffixMismatchRows, snapshot.routeSuffixMismatchRows);
+            mergeMax(max.physicalShardRows, snapshot.physicalShardRows);
+            mergeMax(max.snapshotCommandStatus, snapshot.snapshotCommandStatus);
             mergeMax(max.stopEventStatus, snapshot.stopEventStatus);
             mergeMax(max.sideEffectStatus, snapshot.sideEffectStatus);
             mergeMax(max.hotRouteStatus, snapshot.hotRouteStatus);
@@ -476,15 +571,38 @@ public class AlarmMqLoadVerifierMain {
         private long queueReady;
         private long queueUnacked = -1L;
         private int queueConsumers;
+        private boolean fullSample;
         private long alarmRows;
         private long closedRows;
         private long electrolyticRows;
         private long electrolyticMissingRows;
         private long electrolyticNullAlarmIdRows;
+        private long routeMissingRows;
+        private long routeSuffixMismatchRows;
+        private final Map<String, Long> physicalShardRows = new LinkedHashMap<>();
+        private final Map<String, Long> snapshotCommandStatus = new LinkedHashMap<>();
         private final Map<String, Long> stopEventStatus = new LinkedHashMap<>();
         private final Map<String, Long> sideEffectStatus = new LinkedHashMap<>();
         private final Map<String, Long> hotRouteStatus = new LinkedHashMap<>();
         private final Map<String, Long> staleRouteStatus = new LinkedHashMap<>();
+
+        private void copyFullValuesFrom(Snapshot previous) {
+            if (previous == null) {
+                return;
+            }
+            alarmRows = previous.alarmRows;
+            closedRows = previous.closedRows;
+            electrolyticRows = previous.electrolyticRows;
+            electrolyticMissingRows = previous.electrolyticMissingRows;
+            electrolyticNullAlarmIdRows = previous.electrolyticNullAlarmIdRows;
+            routeMissingRows = previous.routeMissingRows;
+            routeSuffixMismatchRows = previous.routeSuffixMismatchRows;
+            physicalShardRows.putAll(previous.physicalShardRows);
+            snapshotCommandStatus.putAll(previous.snapshotCommandStatus);
+            sideEffectStatus.putAll(previous.sideEffectStatus);
+            hotRouteStatus.putAll(previous.hotRouteStatus);
+            staleRouteStatus.putAll(previous.staleRouteStatus);
+        }
     }
 
     private static final class VerifyOptions {
@@ -498,6 +616,8 @@ public class AlarmMqLoadVerifierMain {
         private final String monthKey;
         private final long timeoutSeconds;
         private final long sampleIntervalMillis;
+        private final int fullSampleEvery;
+        private final boolean terminalOnlyFullSample;
         private final boolean requireSideEffects;
         private final String jdbcUrl;
         private final String jdbcUsername;
@@ -508,6 +628,7 @@ public class AlarmMqLoadVerifierMain {
         private final String mqPassword;
         private final String mqVirtualHost;
         private final String queueName;
+        private final String mqManagementUrl;
 
         private VerifyOptions() {
             this.runId = stringProperty("alarm.loadtest.runId", "AUTO-" + System.currentTimeMillis());
@@ -520,6 +641,8 @@ public class AlarmMqLoadVerifierMain {
             this.monthKey = stringProperty("alarm.loadtest.monthKey", "202511");
             this.timeoutSeconds = longProperty("alarm.loadtest.timeoutSeconds", 300L);
             this.sampleIntervalMillis = longProperty("alarm.loadtest.sampleIntervalMillis", 1000L);
+            this.fullSampleEvery = Math.max(1, intProperty("alarm.loadtest.fullSampleEvery", 5));
+            this.terminalOnlyFullSample = booleanProperty("alarm.loadtest.terminalOnlyFullSample", false);
             this.requireSideEffects = booleanProperty("alarm.loadtest.requireSideEffects", false);
             this.jdbcUrl = stringProperty("alarm.loadtest.jdbcUrl", "jdbc:mysql://127.0.0.1:3306/hpis_alarm");
             this.jdbcUsername = stringProperty("alarm.loadtest.jdbcUsername", "root");
@@ -530,6 +653,7 @@ public class AlarmMqLoadVerifierMain {
             this.mqPassword = stringProperty("mq.password", "guest");
             this.mqVirtualHost = stringProperty("mq.virtualHost", "/");
             this.queueName = stringProperty("mq.queue", "alarm_queue");
+            this.mqManagementUrl = stringProperty("alarm.loadtest.mqManagementUrl", "");
         }
 
         private static VerifyOptions fromSystemProperties() {

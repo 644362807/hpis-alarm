@@ -18,6 +18,7 @@ import com.hpis.alarm.mapper.AlarmElectrolyticCellMapper;
 import com.hpis.alarm.mapper.AlarmHandleMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.service.IAlarmHandleService;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 
 import com.hpis.common.core.constant.Constants;
 import com.hpis.common.core.domain.DeviceKeyInfoDTO;
@@ -473,13 +474,18 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
             }
 
             if (update.size()>0) {
-                AlarmHandle alarmHandle = new AlarmHandle();
-                Long[] longArray = update.stream().toArray(Long[]::new);
-                alarmHandle.setAlarmIds(longArray);
-                //-1 置空
-                alarmHandle.setConfirmUserId(-1L);
-                alarmHandle.setHandleStatus(HandleStatusEnums.ALARM_STATUS_ENUMS_0.getKey());
-                alarmHandleMapper.updateAlarmHandle(alarmHandle);
+                /*
+                 * Redis Map 可能长期累积大量待确认报警。
+                 * 更新 SQL 的 IN 必须按 500 条硬边界拆分，避免定时任务一次生成超长 SQL。
+                 */
+                for (List<Long> chunk : AlarmBatchChunker.chunk(update, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+                    AlarmHandle alarmHandle = new AlarmHandle();
+                    alarmHandle.setAlarmIds(chunk.toArray(new Long[0]));
+                    //-1 置空
+                    alarmHandle.setConfirmUserId(-1L);
+                    alarmHandle.setHandleStatus(HandleStatusEnums.ALARM_STATUS_ENUMS_0.getKey());
+                    alarmHandleMapper.updateAlarmHandle(alarmHandle);
+                }
 
                 update.forEach(alarmId -> confirmAlarm.remove(alarmId));
 

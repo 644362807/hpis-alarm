@@ -20,12 +20,17 @@ public class AlarmMqLoadSummaryReportMain {
 
     public static void main(String[] args) throws Exception {
         SummaryOptions options = SummaryOptions.fromSystemProperties();
-        List<RunReport> reports = loadReports(options.baseDir);
-        if (options.outputPath.getParent() != null) {
-            Files.createDirectories(options.outputPath.getParent());
+        Path output = run(options.baseDir, options.outputPath);
+        System.out.println("summary report written: " + output);
+    }
+
+    public static Path run(Path baseDir, Path outputPath) throws Exception {
+        List<RunReport> reports = loadReports(baseDir);
+        if (outputPath.getParent() != null) {
+            Files.createDirectories(outputPath.getParent());
         }
-        writeSummary(options, reports);
-        System.out.println("summary report written: " + options.outputPath);
+        writeSummary(outputPath, reports);
+        return outputPath;
     }
 
     private static List<RunReport> loadReports(Path baseDir) throws Exception {
@@ -62,6 +67,7 @@ public class AlarmMqLoadSummaryReportMain {
         report.runId = send.getProperty("runId", runDir.getFileName().toString());
         report.scenario = send.getProperty("scenario", "unknown");
         report.orderMode = send.getProperty("orderMode", "unknown");
+        report.faultMode = send.getProperty("faultMode", "NORMAL");
         report.alarmCount = send.getProperty("alarmCount", "unknown");
         report.stopCount = send.getProperty("stopCount", "unknown");
         report.electrolyticCount = send.getProperty("electrolyticCount", "0");
@@ -86,6 +92,9 @@ public class AlarmMqLoadSummaryReportMain {
         report.electrolyticRows = markdownValue(lines, "- Electrolytic rows joined by alarm_id:", "unknown");
         report.electrolyticMissingRows = markdownValue(lines, "- Electrolytic rows missing for run scene_type=2:", "unknown");
         report.electrolyticNullRows = markdownValue(lines, "- Electrolytic rows with null alarm_id observed in physical EC tables:", "unknown");
+        report.routeMissingRows = markdownValue(lines, "- Route missing rows:", "unknown");
+        report.routeSuffixMismatchRows = markdownValue(lines, "- Route suffix mismatch rows:", "unknown");
+        report.snapshotCommandStatus = markdownValue(lines, "- Snapshot command status (global observation):", "unknown");
         return report;
     }
 
@@ -103,30 +112,31 @@ public class AlarmMqLoadSummaryReportMain {
         return defaultValue;
     }
 
-    private static void writeSummary(SummaryOptions options, List<RunReport> reports) throws Exception {
+    private static void writeSummary(Path outputPath, List<RunReport> reports) throws Exception {
         boolean allPass = !reports.isEmpty();
         for (RunReport report : reports) {
             allPass = allPass && "PASS".equals(report.result);
         }
         try (OutputStreamWriter writer = new OutputStreamWriter(
-                Files.newOutputStream(options.outputPath), StandardCharsets.UTF_8)) {
+                Files.newOutputStream(outputPath), StandardCharsets.UTF_8)) {
             writer.write("# 报警 MQ-MySQL 批量消费压测报告\n\n");
             writer.write("- 生成日期: `" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "`\n");
             writer.write("- Run 数量: `" + reports.size() + "`\n");
             writer.write("- 总结论: `" + (allPass ? "PASS" : "待补齐或存在失败 run") + "`\n\n");
 
             writer.write("## 汇总表\n\n");
-            writer.write("| Run ID | 场景 | 顺序 | 数据量 | stop | EC | 结果 | 发送ms | verifier空窗ms | 队列清空ms | DB闭合ms | 可信闭环ms | 可信rows/s | alarmRows | closedRows | queueReady | EC rows | EC missing | EC null |\n");
-            writer.write("|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+            writer.write("| Run ID | 场景 | 顺序 | 异常模式 | 数据量 | stop | EC | 结果 | 发送ms | verifier空窗ms | 队列清空ms | DB闭合ms | 可信闭环ms | 可信rows/s | alarmRows | closedRows | queueReady | EC missing | route missing | suffix mismatch |\n");
+            writer.write("|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
             for (RunReport report : reports) {
-                writer.write("| `" + report.runId + "` | `" + report.scenario + "` | `" + report.orderMode + "` | "
+                writer.write("| `" + report.runId + "` | `" + report.scenario + "` | `" + report.orderMode
+                        + "` | `" + report.faultMode + "` | "
                         + report.alarmCount + " | " + report.stopCount + " | " + report.electrolyticCount + " | `"
                         + report.result + "` | " + report.sendElapsedMillis + " | " + report.verifierStartupGapMillis
                         + " | " + report.queueDrainElapsedMillis + " | " + report.dbClosedElapsedMillis
                         + " | " + report.trueClosedLoopElapsedMillis + " | " + report.trueClosedLoopThroughput
                         + " | " + report.alarmRows + " | " + report.closedRows + " | " + report.queueReady
-                        + " | " + report.electrolyticRows + " | " + report.electrolyticMissingRows
-                        + " | " + report.electrolyticNullRows + " |\n");
+                        + " | " + report.electrolyticMissingRows + " | " + report.routeMissingRows
+                        + " | " + report.routeSuffixMismatchRows + " |\n");
             }
 
             writer.write("\n## 结论检查\n\n");
@@ -136,6 +146,8 @@ public class AlarmMqLoadSummaryReportMain {
             writer.write("- 缺参毒消息风险: 由单测覆盖 DROP + ack；真实毒消息验证需单独保留 run 记录。\n");
             writer.write("- MQ 重投风险: 以各 run `queueReady=0` 且无持续 nack/requeue 日志为准。\n");
             writer.write("- MySQL 半成品风险: 以 `alarmRows/closedRows/stop APPLIED/EC missing` 验收项为准。\n");
+            writer.write("- route 风险: 以 `route missing/suffix mismatch` 均为 `0` 为准。\n");
+            writer.write("- snapshot command: 每轮报告记录全局状态，仅用于共享环境观察，不阻塞本轮核心闭环。\n");
         }
     }
 
@@ -170,6 +182,7 @@ public class AlarmMqLoadSummaryReportMain {
         private String runId;
         private String scenario;
         private String orderMode;
+        private String faultMode;
         private String alarmCount;
         private String stopCount;
         private String electrolyticCount;
@@ -192,6 +205,9 @@ public class AlarmMqLoadSummaryReportMain {
         private String electrolyticRows;
         private String electrolyticMissingRows;
         private String electrolyticNullRows;
+        private String routeMissingRows;
+        private String routeSuffixMismatchRows;
+        private String snapshotCommandStatus;
     }
 
     private static final class SummaryOptions {

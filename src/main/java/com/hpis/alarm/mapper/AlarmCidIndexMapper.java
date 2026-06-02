@@ -27,6 +27,11 @@ public interface AlarmCidIndexMapper {
 
     int upsertStaleActive(AlarmCidRoute route);
 
+    /**
+     * 批量写 stale route。调用方必须先写 stale 成功，再删除 hot，保证迁移失败时 route 不丢。
+     */
+    int upsertStaleActiveBatch(@Param("routes") List<AlarmCidRoute> routes);
+
     AlarmCidRoute selectHotByCid(@Param("alarmCid") String alarmCid);
 
     AlarmCidRoute selectStaleByCid(@Param("alarmCid") String alarmCid);
@@ -85,6 +90,8 @@ public interface AlarmCidIndexMapper {
                                                     @Param("limit") int limit);
 
     int deleteHotActiveByAlarmId(@Param("alarmId") Long alarmId);
+
+    int deleteHotActiveByAlarmIds(@Param("alarmIds") List<Long> alarmIds);
 
     int deleteClosedHot(@Param("now") Date now, @Param("limit") int limit);
 

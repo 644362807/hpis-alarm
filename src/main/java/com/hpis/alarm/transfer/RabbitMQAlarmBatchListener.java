@@ -7,6 +7,7 @@ import com.hpis.alarm.service.AlarmInsertConsumeResult;
 import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmColorService;
 import com.hpis.alarm.service.IAlarmService;
+import com.hpis.alarm.dto.AlarmStopRecord;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.common.core.constant.OperCodeConstants;
@@ -161,9 +162,7 @@ public class RabbitMQAlarmBatchListener {
          * 而被 ROUTE_MISSING 标记 FAILED 的窗口；direct 消息之间仍保持原批内相对顺序。
          */
         BatchAckStats startStats = processStartMessages(startMessages, channel);
-        for (AlarmMqMessage directMessage : directMessages) {
-            processDirectMessage(directMessage, channel);
-        }
+        processDirectMessages(directMessages, channel);
         if (batchProperties.isInsertConsumerBatchLogEnabled()) {
             log.info("alarm batch listener stage=BATCH_CONSUME_DONE actualBatchSize={}, startCount={}, directCount={}, rejectedCount={}, ackCount={}, nackCount={}, costMs={}, sampleAlarmCids={}",
                     messages.size(), startMessages.size(), directMessages.size(), rejectedCount,
@@ -243,6 +242,69 @@ public class RabbitMQAlarmBatchListener {
             log.error("[hpis-alarm]-rabbitmq batch direct message failed, requeue, deliveryTag={}, operCode={}, error={}",
                     mqMessage.deliveryTag, mqMessage.operCode, ex.getMessage(), ex);
             requeue(channel, mqMessage.deliveryTag);
+        }
+    }
+
+    private void processDirectMessages(List<AlarmMqMessage> directMessages, Channel channel) {
+        /*
+         * 只聚合连续 stop，不跨越颜色同步等 direct 消息重排顺序。
+         * 这样能够减少 alarm_stop_event 往返，同时保持旧 direct 消息的先后语义。
+         */
+        List<AlarmMqMessage> stopMessages = new ArrayList<>();
+        for (AlarmMqMessage directMessage : directMessages) {
+            if (isBatchableStop(directMessage)) {
+                stopMessages.add(directMessage);
+                continue;
+            }
+            flushStopMessages(stopMessages, channel);
+            processDirectMessage(directMessage, channel);
+        }
+        flushStopMessages(stopMessages, channel);
+    }
+
+    private boolean isBatchableStop(AlarmMqMessage mqMessage) {
+        return alarmStopEventService != null
+                && batchProperties.isStopEventBatchEnabled()
+                && OperCodeConstants.ALARM_STOP.intValue() == mqMessage.operCode.intValue();
+    }
+
+    private void flushStopMessages(List<AlarmMqMessage> stopMessages, Channel channel) {
+        if (stopMessages.isEmpty()) {
+            return;
+        }
+        List<AlarmMqMessage> validMessages = new ArrayList<>();
+        List<AlarmStopRecord> records = new ArrayList<>();
+        for (AlarmMqMessage stopMessage : stopMessages) {
+            try {
+                records.add(alarmStopEventService.toStopRecord(stopMessage.rawData));
+                validMessages.add(stopMessage);
+            } catch (IllegalArgumentException ex) {
+                /*
+                 * 缺少 alarmId 或时间格式非法属于不可恢复坏消息。
+                 * 单条 DROP + ack，不能让它拖住同批其它可可靠入队的 stop。
+                 */
+                log.warn("[hpis-alarm]-rabbitmq batch stop invalid, ack drop, deliveryTag={}, error={}",
+                        stopMessage.deliveryTag, ex.getMessage());
+                ack(channel, stopMessage.deliveryTag);
+            }
+        }
+        try {
+            alarmStopEventService.recordStops(records);
+            for (AlarmMqMessage stopMessage : validMessages) {
+                ack(channel, stopMessage.deliveryTag);
+            }
+        } catch (Exception ex) {
+            /*
+             * 数据库瞬态异常必须整批 requeue。这里禁止逐条 upsert fallback，
+             * 否则高峰期一次数据库故障会被放大成 N 次 SQL。
+             */
+            log.error("[hpis-alarm]-rabbitmq batch stop enqueue failed, requeue all, size={}, error={}",
+                    records.size(), ex.getMessage(), ex);
+            for (AlarmMqMessage stopMessage : validMessages) {
+                requeue(channel, stopMessage.deliveryTag);
+            }
+        } finally {
+            stopMessages.clear();
         }
     }
 
