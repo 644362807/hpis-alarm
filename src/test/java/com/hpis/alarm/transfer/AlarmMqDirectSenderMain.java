@@ -125,6 +125,7 @@ public class AlarmMqDirectSenderMain {
                 + ", alarmCount=" + options.alarmCount
                 + ", stopCount=" + options.getExpectedStopCount()
                 + ", orderMode=" + options.orderMode
+                + ", faultMode=" + options.faultMode
                 + ", elapsedMs=" + (sendDoneMillis - sendStartMillis));
     }
 
@@ -141,19 +142,80 @@ public class AlarmMqDirectSenderMain {
         startMessages.sort(Comparator.comparing(GeneratedMqMessage::getSendTime));
         stopMessages.sort(Comparator.comparing(GeneratedMqMessage::getSendTime));
 
+        List<GeneratedMqMessage> ordered;
         if (options.orderMode == SendOrderMode.START_THEN_STOP) {
             List<GeneratedMqMessage> result = new ArrayList<>(messages.size());
             result.addAll(startMessages);
             result.addAll(stopMessages);
-            return result;
+            ordered = result;
+        } else if (options.orderMode == SendOrderMode.ALTERNATE) {
+            ordered = alternateMessages(startMessages, stopMessages);
+        } else {
+            ordered = new ArrayList<>(messages);
+            ordered.sort(Comparator.comparing(GeneratedMqMessage::getSendTime)
+                    .thenComparing(GeneratedMqMessage::getOperCode));
         }
-        if (options.orderMode == SendOrderMode.ALTERNATE) {
-            return alternateMessages(startMessages, stopMessages);
+        return applyFaultMode(options, ordered, startMessages, stopMessages);
+    }
+
+    private static List<GeneratedMqMessage> applyFaultMode(SenderOptions options,
+                                                           List<GeneratedMqMessage> ordered,
+                                                           List<GeneratedMqMessage> starts,
+                                                           List<GeneratedMqMessage> stops) {
+        if (options.faultMode == FaultMode.NORMAL) {
+            return ordered;
         }
-        List<GeneratedMqMessage> ordered = new ArrayList<>(messages);
-        ordered.sort(Comparator.comparing(GeneratedMqMessage::getSendTime)
-                .thenComparing(GeneratedMqMessage::getOperCode));
-        return ordered;
+        List<GeneratedMqMessage> result = new ArrayList<>(ordered);
+        switch (options.faultMode) {
+            case DUPLICATE_START:
+                result.add(0, firstRequired(starts, null));
+                return result;
+            case DUPLICATE_STOP:
+                result.add(firstRequired(stops, null));
+                return result;
+            case STOP_BEFORE_START:
+                result.clear();
+                result.addAll(stops);
+                result.addAll(starts);
+                return result;
+            case ELECTROLYTIC_MISSING_FIELD:
+                result.add(corruptElectrolyticStart(firstRequired(starts, AlarmKind.ELECTROLYTIC)));
+                return result;
+            case INVALID_STOP_MISSING_ALARM_ID:
+                result.add(corruptStopWithoutAlarmId(firstRequired(stops, null)));
+                return result;
+            case DISCONNECT_DUPLICATE:
+                result.add(firstRequired(starts, AlarmKind.DISCONNECT));
+                return result;
+            default:
+                throw new IllegalArgumentException("unsupported fault mode " + options.faultMode);
+        }
+    }
+
+    private static GeneratedMqMessage firstRequired(List<GeneratedMqMessage> messages, AlarmKind kind) {
+        for (GeneratedMqMessage message : messages) {
+            if (kind == null || message.alarm.kind == kind) {
+                return message;
+            }
+        }
+        throw new IllegalStateException("fault mode requires message kind " + kind);
+    }
+
+    private static GeneratedMqMessage corruptElectrolyticStart(GeneratedMqMessage source) {
+        JSONObject payload = JSON.parseObject(JSON.toJSONString(source.payload));
+        JSONObject rawData = payload.getJSONObject("cmdData").getJSONObject("rawData");
+        String alarmId = source.alarmId.substring(0, source.alarmId.length() - 1) + "X}";
+        rawData.put("alarmId", alarmId);
+        rawData.remove("maxTemp");
+        return new GeneratedMqMessage(source.sendTime, OPER_CODE_ALARM_PUSH, payload,
+                alarmId, source.alarmTime, source.alarm);
+    }
+
+    private static GeneratedMqMessage corruptStopWithoutAlarmId(GeneratedMqMessage source) {
+        JSONObject payload = JSON.parseObject(JSON.toJSONString(source.payload));
+        payload.getJSONObject("cmdData").getJSONObject("rawData").remove("alarmId");
+        return new GeneratedMqMessage(source.sendTime, OPER_CODE_ALARM_STOP, payload,
+                source.alarmId + "-MISSING", source.alarmTime, source.alarm);
     }
 
     private static List<GeneratedAlarm> generateAlarms(SenderOptions options) {
@@ -401,6 +463,7 @@ public class AlarmMqDirectSenderMain {
         properties.setProperty("electrolyticRatio", String.valueOf(options.electrolyticRatio));
         properties.setProperty("disconnectRatio", String.valueOf(options.disconnectRatio));
         properties.setProperty("orderMode", options.orderMode.name());
+        properties.setProperty("faultMode", options.faultMode.name());
         properties.setProperty("sentMessages", String.valueOf(sent));
         properties.setProperty("sendStartMillis", String.valueOf(sendStartMillis));
         properties.setProperty("startDoneMillis", String.valueOf(startDoneMillis));
@@ -497,6 +560,16 @@ public class AlarmMqDirectSenderMain {
         GENERAL,
         ELECTROLYTIC,
         DISCONNECT
+    }
+
+    private enum FaultMode {
+        NORMAL,
+        DUPLICATE_START,
+        DUPLICATE_STOP,
+        STOP_BEFORE_START,
+        ELECTROLYTIC_MISSING_FIELD,
+        INVALID_STOP_MISSING_ALARM_ID,
+        DISCONNECT_DUPLICATE
     }
 
     private static final class GeneratedAlarm {
@@ -721,6 +794,7 @@ public class AlarmMqDirectSenderMain {
         private final long stopQueueDelayMillis;
         private final int maxAlarmCidLength;
         private final SendOrderMode orderMode;
+        private final FaultMode faultMode;
         private final boolean dryRun;
         private final int previewCount;
 
@@ -779,6 +853,7 @@ public class AlarmMqDirectSenderMain {
             this.stopQueueDelayMillis = longProperty("alarm.mq.send.stopQueueDelayMillis", 10000L);
             this.maxAlarmCidLength = intProperty("alarm.mq.send.maxAlarmCidLength", 38);
             this.orderMode = orderModeProperty("alarm.mq.send.orderMode", SendOrderMode.START_THEN_STOP);
+            this.faultMode = faultModeProperty("alarm.mq.send.faultMode", FaultMode.NORMAL);
             this.dryRun = booleanProperty("alarm.mq.send.dryRun", false);
             this.previewCount = intProperty("alarm.mq.send.previewCount", 5);
             validate();
@@ -901,5 +976,9 @@ public class AlarmMqDirectSenderMain {
 
     private static AlarmScenario scenarioProperty(String key, AlarmScenario defaultValue) {
         return AlarmScenario.valueOf(stringProperty(key, defaultValue.name()).trim().toUpperCase(Locale.ROOT));
+    }
+
+    private static FaultMode faultModeProperty(String key, FaultMode defaultValue) {
+        return FaultMode.valueOf(stringProperty(key, defaultValue.name()).trim().toUpperCase(Locale.ROOT));
     }
 }

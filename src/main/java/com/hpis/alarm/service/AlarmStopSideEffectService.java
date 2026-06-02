@@ -104,8 +104,10 @@ public class AlarmStopSideEffectService {
             List<AlarmStopSideEffectEvent> chunk = events.subList(start, Math.min(start + inLimit, events.size()));
             sideEffectMapper.upsertPendingBatch(chunk);
         }
-        log.info("alarm stop batch stage=SIDE_EFFECT_BATCH_UPSERT batchId={}, effectCount={}, alarmCount={}",
-                batchId, events.size(), alarms.size());
+        if (properties.isLogEnabled()) {
+            log.info("alarm stop batch stage=SIDE_EFFECT_BATCH_UPSERT batchId={}, effectCount={}, alarmCount={}",
+                    batchId, events.size(), alarms.size());
+        }
         return events.size();
     }
 
@@ -117,10 +119,10 @@ public class AlarmStopSideEffectService {
         if (!properties.isSideEffectEnabled()) {
             return 0;
         }
-        int pendingStopCount = stopEventMapper.countPending();
-        if (pendingStopCount >= properties.getHighWatermark()) {
+        Integer outstanding = stopEventMapper.existsOutstanding();
+        if (outstanding != null && outstanding > 0) {
             if (properties.isLogEnabled()) {
-                log.info("消警高流量模式下暂停执行副作用事件，pendingStopCount={}", pendingStopCount);
+                log.info("仍有 PENDING/PROCESSING 核心消警，暂停执行副作用事件");
             }
             return 0;
         }
@@ -247,7 +249,7 @@ public class AlarmStopSideEffectService {
     private void markRetryOrFailed(AlarmStopSideEffectEvent event, Exception ex) {
         String error = truncateError(ex);
         int retryCount = event.getRetryCount() == null ? 0 : event.getRetryCount();
-        if (retryCount + 1 >= properties.getMaxRetry()) {
+        if (retryCount + 1 >= properties.safeMaxRetry()) {
             sideEffectMapper.markFailed(event.getId(), error);
             log.error("消警副作用事件达到最大重试次数，eventId={}, effectType={}, error={}",
                     event.getId(), event.getEffectType(), error);

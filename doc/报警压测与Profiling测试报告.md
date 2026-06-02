@@ -154,3 +154,109 @@
 | `MIXED_ALTERNATE 10000` | `SQLGOV-MALT-10K-20260531000438` | `444ms` | `70783ms` | `141.28 rows/s` | PASS |
 
 两轮使用 Spring AMQP consumer batch，Rabbit consumer 从 `2` 扩到 `4`。结果证明 500 条 SQL 硬边界没有破坏闭环一致性，但吞吐仍明显低于 75 万积压 30 分钟目标所需的 `417 rows/s`，第二阶段必须继续替换串行 stop worker。
+
+## 2026-05-31 PROCESSING claim 待验证口径
+
+第二阶段已经把串行 scheduled worker 替换为 `PROCESSING + lock_token` 短事务认领和 stop 专用线程池。初始参数为 `workerThreads=4`、`claimBatchSize=200`、`maxInFlightBatches=4`。单批 SQL 仍不超过 `500`，不通过放大事务换吞吐。
+
+verifier 改为轻量热采样：每轮只读取 RabbitMQ 队列和当前 run 的 stop 状态；默认每 `5` 轮或 stop 接近终态时才完整统计物理分片、route 和 side effect。终态门禁新增 `alarm_stop_event.PROCESSING=0`。这样压测结果更接近业务闭环本身，不会被 verifier 高频 count 明显干扰。
+
+待重新执行：`10000 -> 50000 -> 100000 -> 750000 PENDING`。75 万门禁仍为 30 分钟内完成、平均吞吐 `>= 417 rows/s`、最终 `PENDING=0`、`PROCESSING=0`、`FAILED=0`。
+
+## 2026-06-01 2w MQ/min 最小优化待验证口径
+
+本轮增加：
+
+- stop 连续消息批量 upsert 的批次大小和耗时。
+- stop event 首次可用延迟，灰度候选为 `100 / 200 / 300ms`。
+- start 分阶段耗时：handle、electrolytic 历史、ectype 快照、alarm 主表、route、补偿处理。
+- ectype 快照批次候选：`500 / 100 / 50`，默认候选为 `100`。
+- ectype 快照死锁、有限整体重试、受限 fallback 次数。
+- token/version 更新数量不一致的正确性门禁。
+
+通过标准：
+
+- mixed 持续吞吐 `>= 333.33 MQ/s`。
+- 核心关闭吞吐 `>= 166.67 alarm/s`。
+- `20000 MQ` 核心闭环 `<= 120s`。
+- queue 和 pending 在持续输入期间不线性增长。
+- 终态 `PENDING=0`、`PROCESSING=0`、`FAILED=0`。
+- deadlock、逐条 fallback、持续 requeue 均为 `0`。
+- `750000 PENDING` 在 `30min` 内完成核心关闭。
+
+每档第一轮作为 warm-up，第二轮才进入正式结论。若任一核心指标未通过，输出 `报警2wMQ每分钟未达标拆分分析-YYYYMMDD.md`，并只选择一个最大瓶颈进入下一阶段。
+
+## 2026-06-02 Phase A 真实 MQ + MySQL 结果
+
+短时正式轮：
+
+| 场景 | Run ID | MQ 数量 | 核心闭环 | 关闭吞吐 | 结果 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GENERAL_ALTERNATE` | `P2W-GALT-FORMAL-20260602001620` | `20000` | `14283ms` | `700.13 alarm/s` | PASS |
+| `ELECTROLYTIC_ALTERNATE` | `P2W-EALT-FORMAL-20260602001709` | `20000` | `23030ms` | `434.22 alarm/s` | PASS |
+| `MIXED_ALTERNATE` | `P2W-MALT-FORMAL-20260602001805` | `20000` | `19131ms` | `522.71 alarm/s` | PASS |
+
+持续输入正式轮：
+
+| 场景 | Run ID | MQ 数量 | 发送吞吐 | 核心关闭吞吐 | 终态 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `MIXED_ALTERNATE` | `P2W-MALT-SUSTAINED-20260602003005` | `200000` | `333.22 MQ/s` | `165.17 alarm/s` | `APPLIED=100000`、`route CLOSED=100000`、`side effect DONE=55000` |
+
+持续输入期间队列最大 `ready=5`，stop event 最大 `PENDING=281`、最大 `PROCESSING=170`，没有线性堆积。核心性能已经接近 `20000 MQ/min`，但没有达到 `>= 333.33 MQ/s` 和 `>= 166.67 alarm/s` 的门禁。
+
+同步 `alarm_electrolytic_cell_ectype` 快照 upsert 仍出现 `8` 次 `PERSIST_LOCK_RETRY`，且 `initialAvailableDelayMs=200` 下记录 `1059` 批 `ROUTE_MISSING_RETRY`。因此本轮判定为生产门禁未通过，不继续放大 `50000 / 100000 MQ` 和 `750000 PENDING`。
+
+下一阶段只选择电解槽快照异步投影拆分，详见：
+
+- `doc/报警2wMQ每分钟未达标拆分分析-20260602.md`
+- `doc/报警电解槽快照异步拆分实施计划-20260602.md`
+
+## 2026-06-02 stop 可靠性审核修复灰度结果
+
+本轮补齐三个可靠性缺口：
+
+- `PROCESSING` 普通异常释放和超时回收使用有限重试，达到 `safeMaxRetry()` 后转 `FAILED`。
+- 电解槽单条 fallback 在 `ASYNC` 下只写可靠快照命令，不再绕过命令表直接写投影。
+- start 后到补偿不再吞掉 side effect outbox 创建异常；outbox 落库失败会回滚核心关闭。
+
+focused 测试已通过：`Tests run: 26, Failures: 0, Errors: 0, Skipped: 0`。从父工程执行 hpis-alarm
+全量单测也已通过：`Tests run: 80, Failures: 0, Errors: 0, Skipped: 2`。
+
+### Nacos 旧基线阻断
+
+首次按本机 Nacos 原配置直接启动时，`hpis-alarm-dev.yml` 只有旧的 `alarm.sharding` 和
+`alarm.stop-worker` 基础配置，没有 `alarm.batch.*`、`alarm.internal-test.*` 和异步快照 worker
+候选参数。服务因此回落到旧单条 listener，Rabbit 从 `10` 个消费者扩展到 `36` 个；start 因测试
+外部调用没有 stub 持续失败并 requeue，stop 先落成 `8999` 条 `FAILED/ROUTE_MISSING`，队列保留
+`11001` 条消息。
+
+该轮立即停止放大并保留现场。随后仅使用本地 JVM 临时覆盖候选参数重启服务，Rabbit 回到 consumer
+batch 的 `2-4` 个消费者，积压清空，`10000` 条报警和 route 最终全部关闭，历史
+`FAILED/ROUTE_MISSING` 全部恢复为 `APPLIED`。这个过程证明恢复路径有效，但也说明共享灰度前必须
+先补齐 Nacos 候选参数。
+
+### 候选参数短灰度
+
+重新执行 `GENERAL_ALTERNATE / ELECTROLYTIC_ALTERNATE / MIXED_ALTERNATE` 的 `20000 MQ` warm-up 和
+formal。正式轮结果：
+
+| 场景 | Run ID | Send elapsed | True closed-loop elapsed | 关闭吞吐 | 终态 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GENERAL_ALTERNATE` | `P2W-GALT-FORMAL-20260602222624` | `2472ms` | `16866ms` | `592.91 alarm/s` | `alarmRows=closedRows=APPLIED=10000` |
+| `ELECTROLYTIC_ALTERNATE` | `P2W-EALT-FORMAL-20260602222732` | `3927ms` | `29947ms` | `333.92 alarm/s` | `alarmRows=closedRows=APPLIED=10000`、`ecRows=10000`、`ecMissing=0` |
+| `MIXED_ALTERNATE` | `P2W-MALT-FORMAL-20260602222841` | `1796ms` | `15516ms` | `644.50 alarm/s` | `alarmRows=closedRows=APPLIED=10000`、`ecRows=4500`、`ecMissing=0` |
+
+`MIXED_ALTERNATE` formal 首次生成 manifest 时遇到 Windows 瞬时文件映射锁，消息尚未发送；复用同一
+run 数据单独重跑后通过，不计为业务失败。
+
+终态 SQL 和日志：
+
+- Rabbit `ready=0`、`unacked=0`。
+- stop event 全库 `FAILED=0`、`PROCESSING=0`、`PENDING=0`。
+- 电解槽快照命令 `DONE=48`，没有持续 `PENDING/PROCESSING/FAILED`。
+- 服务日志 `ERROR=0`、`FALLBACK_SINGLE=0`、`PROCESSING_TIMEOUT=0`、`PERSIST_LOCK_RETRY=0`、
+  `deadlock=0`、`ROUTE_MISSING_PROFILE=0`。
+
+结论：本轮三项可靠性修复通过 2 万 MQ 短灰度。生产化仍定位为候选，不直接合并上线；先把候选配置
+同步到 Nacos，再继续执行 `20000 MQ/min x 10min`、`50000 / 100000 MQ` 和 `750000 PENDING`
+积压门禁。

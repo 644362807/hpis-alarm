@@ -356,9 +356,14 @@ public class AlarmMonthlySliceTableManager {
                 + "id bigint NOT NULL AUTO_INCREMENT,"
                 + "alarm_cid varchar(128) NOT NULL,"
                 + "stop_time datetime NOT NULL,"
+                + "event_version bigint NOT NULL DEFAULT 0,"
+                + "applied_stop_time datetime DEFAULT NULL,"
                 + "event_status varchar(16) NOT NULL DEFAULT 'PENDING',"
                 + "retry_count int NOT NULL DEFAULT 0,"
                 + "last_error varchar(1024) DEFAULT NULL,"
+                + "lock_token varchar(64) DEFAULT NULL,"
+                + "locked_at datetime DEFAULT NULL,"
+                + "available_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                 + "created_time datetime DEFAULT CURRENT_TIMESTAMP,"
                 + "updated_time datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
                 + "applied_time datetime DEFAULT NULL,"
@@ -366,6 +371,8 @@ public class AlarmMonthlySliceTableManager {
                 + "PRIMARY KEY (id),"
                 + "UNIQUE KEY uk_alarm_stop_event_cid (alarm_cid),"
                 + "KEY idx_stop_event_status_time (event_status, created_time),"
+                + "KEY idx_stop_event_claim (event_status, available_time, created_time, id),"
+                + "KEY idx_stop_event_processing_timeout (event_status, locked_at),"
                 + "KEY idx_stop_event_delete_after (event_status, delete_after)"
                 + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='alarm stop event reliable buffer'";
 
@@ -386,6 +393,28 @@ public class AlarmMonthlySliceTableManager {
                 + "KEY idx_effect_status_time (effect_status, created_time)"
                 + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='alarm stop side effect event'";
 
+        String createElectrolyticSnapshotCommandSql =
+                "CREATE TABLE IF NOT EXISTS alarm_electrolytic_cell_snapshot_command ("
+                + "point_hash varchar(64) NOT NULL,"
+                + "command_type varchar(16) NOT NULL,"
+                + "alarm_id bigint NOT NULL,"
+                + "alarm_begin_time datetime DEFAULT NULL,"
+                + "payload_json text NOT NULL,"
+                + "command_status varchar(16) NOT NULL DEFAULT 'PENDING',"
+                + "lock_token varchar(64) DEFAULT NULL,"
+                + "locked_at datetime DEFAULT NULL,"
+                + "available_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                + "version bigint NOT NULL DEFAULT 0,"
+                + "retry_count int NOT NULL DEFAULT 0,"
+                + "last_error varchar(1024) DEFAULT NULL,"
+                + "created_time datetime DEFAULT CURRENT_TIMESTAMP,"
+                + "updated_time datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                + "PRIMARY KEY (point_hash),"
+                + "KEY idx_ec_snapshot_claim (command_status, available_time, updated_time, point_hash),"
+                + "KEY idx_ec_snapshot_processing_timeout (command_status, locked_at),"
+                + "KEY idx_ec_snapshot_alarm_id (alarm_id)"
+                + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='electrolytic cell current snapshot projection command'";
+
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.execute(createSliceSql);
@@ -393,6 +422,7 @@ public class AlarmMonthlySliceTableManager {
             statement.execute(createStaleCidSql);
             statement.execute(createStopEventSql);
             statement.execute(createSideEffectSql);
+            statement.execute(createElectrolyticSnapshotCommandSql);
         } catch (SQLException ex) {
             throw new IllegalStateException("创建报警分片元数据表失败", ex);
         }

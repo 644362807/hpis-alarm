@@ -7,7 +7,10 @@ import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -118,7 +121,7 @@ public class AlarmInsertBatchConsumeService {
         }
         try {
             // 批量持久化是一个事务：任一 suffix 或扩展表失败都会整体回滚，再进入拆单兜底。
-            alarmService.persistPreparedAlarmBatch(batchId, contexts(preparedItems));
+            persistPreparedBatchWithLockRetry(batchId, preparedItems);
             for (PreparedStartItem item : preparedItems) {
                 results.set(item.index, AlarmInsertConsumeResult.SUCCESS);
             }
@@ -130,6 +133,55 @@ public class AlarmInsertBatchConsumeService {
             log.error("alarm batch listener stage=BATCH_PERSIST_FAILED batchId={}, batchSize={}, sampleAlarmCids={}, error={}",
                     batchId, preparedItems.size(), samplePreparedAlarmCids(preparedItems), ex.getMessage(), ex);
             handleBatchFailure(batchId, preparedItems, results);
+        }
+    }
+
+    private void persistPreparedBatchWithLockRetry(String batchId, List<PreparedStartItem> preparedItems) {
+        int retries = 0;
+        while (true) {
+            long startMs = System.currentTimeMillis();
+            try {
+                alarmService.persistPreparedAlarmBatch(batchId, contexts(preparedItems));
+                if (retries > 0 || properties.isInsertConsumerBatchLogEnabled()) {
+                    log.info("alarm start batch stage=PERSIST_LOCK_RETRY_SUCCESS batchId={}, batchSize={}, retries={}, costMs={}",
+                            batchId, preparedItems.size(), retries, System.currentTimeMillis() - startMs);
+                }
+                return;
+            } catch (RuntimeException ex) {
+                if (!isTransientLockFailure(ex) || retries >= properties.safeStartLockRetryMaxAttempts()) {
+                    throw ex;
+                }
+                retries++;
+                long backoffMs = retries == 1 ? 50L : (retries == 2 ? 150L : 300L);
+                log.warn("alarm start batch stage=PERSIST_LOCK_RETRY batchId={}, batchSize={}, retry={}, backoffMs={}, error={}",
+                        batchId, preparedItems.size(), retries, backoffMs, ex.getMessage());
+                sleepBeforeLockRetry(backoffMs);
+            }
+        }
+    }
+
+    private boolean isTransientLockFailure(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof DeadlockLoserDataAccessException
+                    || current instanceof CannotAcquireLockException) {
+                return true;
+            }
+            if (current instanceof SQLException) {
+                SQLException sqlException = (SQLException) current;
+                if (sqlException.getErrorCode() == 1213 || "40001".equals(sqlException.getSQLState())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void sleepBeforeLockRetry(long backoffMs) {
+        try {
+            Thread.sleep(backoffMs);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("alarm start batch lock retry interrupted", ex);
         }
     }
 

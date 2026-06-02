@@ -126,9 +126,14 @@ CREATE TABLE IF NOT EXISTS alarm_stop_event (
   id bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
   alarm_cid varchar(128) NOT NULL COMMENT '外部报警ID，即 MQ rawData.alarmId',
   stop_time datetime NOT NULL COMMENT '外部 stop 消息携带的结束时间',
-  event_status varchar(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING待应用，APPLIED已应用，FAILED人工处理',
+  event_version bigint NOT NULL DEFAULT 0 COMMENT 'stop时间版本，更晚stop到达时递增',
+  applied_stop_time datetime DEFAULT NULL COMMENT '最近一次成功写入业务分片的stop时间',
+  event_status varchar(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING待认领，PROCESSING处理中，APPLIED已应用，FAILED人工处理',
   retry_count int NOT NULL DEFAULT 0 COMMENT '核心消警重试次数',
   last_error varchar(1024) DEFAULT NULL COMMENT '最后一次失败原因',
+  lock_token varchar(64) DEFAULT NULL COMMENT 'PROCESSING认领批次令牌',
+  locked_at datetime DEFAULT NULL COMMENT 'PROCESSING认领时间，用于超时回收',
+  available_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下次允许认领时间，用于延迟重试',
   created_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   applied_time datetime DEFAULT NULL COMMENT '成功写入业务分片的时间',
@@ -136,6 +141,8 @@ CREATE TABLE IF NOT EXISTS alarm_stop_event (
   PRIMARY KEY (id),
   UNIQUE KEY uk_alarm_stop_event_cid (alarm_cid),
   KEY idx_stop_event_status_time (event_status, created_time),
+  KEY idx_stop_event_claim (event_status, available_time, created_time, id),
+  KEY idx_stop_event_processing_timeout (event_status, locked_at),
   KEY idx_stop_event_delete_after (event_status, delete_after)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报警停止事件短生命周期可靠缓冲表';
 
@@ -156,3 +163,25 @@ CREATE TABLE IF NOT EXISTS alarm_stop_side_effect_event (
   UNIQUE KEY uk_alarm_effect (alarm_id, effect_type),
   KEY idx_effect_status_time (effect_status, created_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报警停止后异步副作用事件表';
+
+-- 电解槽当前点位快照可靠投影命令。历史扩展表仍同步写入，只有当前点位投影允许最终一致。
+CREATE TABLE IF NOT EXISTS alarm_electrolytic_cell_snapshot_command (
+  point_hash varchar(64) NOT NULL COMMENT '稳定点位 SHA-256',
+  command_type varchar(16) NOT NULL COMMENT 'ACTIVE/DELETED',
+  alarm_id bigint NOT NULL COMMENT '当前命令关联内部报警ID',
+  alarm_begin_time datetime DEFAULT NULL COMMENT '当前报警开始时间',
+  payload_json text NOT NULL COMMENT '生成点位快照投影所需最小上下文',
+  command_status varchar(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PROCESSING/DONE/FAILED',
+  lock_token varchar(64) DEFAULT NULL COMMENT 'PROCESSING认领批次令牌',
+  locked_at datetime DEFAULT NULL COMMENT 'PROCESSING认领时间',
+  available_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下次允许认领时间',
+  version bigint NOT NULL DEFAULT 0 COMMENT '点位命令版本，防止旧worker覆盖新状态',
+  retry_count int NOT NULL DEFAULT 0 COMMENT '处理重试次数',
+  last_error varchar(1024) DEFAULT NULL COMMENT '最后一次失败原因',
+  created_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_time datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (point_hash),
+  KEY idx_ec_snapshot_claim (command_status, available_time, updated_time, point_hash),
+  KEY idx_ec_snapshot_processing_timeout (command_status, locked_at),
+  KEY idx_ec_snapshot_alarm_id (alarm_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='电解槽当前点位快照可靠投影命令';

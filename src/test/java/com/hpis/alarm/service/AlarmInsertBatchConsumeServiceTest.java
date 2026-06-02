@@ -11,6 +11,7 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 
 import java.util.Arrays;
 import java.util.List;
@@ -159,6 +160,23 @@ public class AlarmInsertBatchConsumeServiceTest {
         List<AlarmInsertConsumeResult> results = service.processStartBatch(Arrays.asList(first, second));
 
         assertEquals(Arrays.asList(AlarmInsertConsumeResult.FAIL, AlarmInsertConsumeResult.FAIL), results);
+        verify(alarmService, never()).persistPreparedAlarmSingle(anyString(), any());
+    }
+
+    @Test
+    public void transientDeadlockRetriesWholePreparedBatchBeforeFallback() {
+        JSONObject first = rawData("A-1");
+        AlarmServiceImpl.AlarmInsertContext firstContext = context(first);
+        when(alarmService.prepareAlarmInsertContext(first)).thenReturn(firstContext);
+        doThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .doThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .doNothing()
+                .when(alarmService).persistPreparedAlarmBatch(anyString(), anyList());
+
+        List<AlarmInsertConsumeResult> results = service.processStartBatch(Arrays.asList(first));
+
+        assertEquals(Arrays.asList(AlarmInsertConsumeResult.SUCCESS), results);
+        verify(alarmService, times(3)).persistPreparedAlarmBatch(anyString(), anyList());
         verify(alarmService, never()).persistPreparedAlarmSingle(anyString(), any());
     }
 

@@ -843,33 +843,57 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					pdItems.add(pd);
 				}
 			}
+			long handleInsertMs = 0L;
+			long electrolyticInsertMs = 0L;
+			long electrolyticSnapshotMs = 0L;
+			long pdInsertMs = 0L;
+			long alarmInsertMs;
+			long routeInsertMs = 0L;
+			long pendingStopCompensationMs = 0L;
 			if (!handles.isEmpty()) {
+				long stageStartMs = System.currentTimeMillis();
 				alarmHandleMapper.insertAlarmHandelList(handles);
+				handleInsertMs = System.currentTimeMillis() - stageStartMs;
 			}
 			if (!ecItems.isEmpty()) {
+				long stageStartMs = System.currentTimeMillis();
 				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellList(ecItems);
+				electrolyticInsertMs = System.currentTimeMillis() - stageStartMs;
 			}
 			if (!ecEctypeItems.isEmpty()) {
+				long stageStartMs = System.currentTimeMillis();
 				iAlarmElectrolyticCellService.insertAlarmElectrolyticCellEctypeList(ecEctypeItems);
+				electrolyticSnapshotMs = System.currentTimeMillis() - stageStartMs;
 			}
 			if (!pdItems.isEmpty()) {
+				long stageStartMs = System.currentTimeMillis();
 				iAlarmPartialDischargeService.insertAlarmPartialDischargeList(pdItems);
+				pdInsertMs = System.currentTimeMillis() - stageStartMs;
 			}
+			long alarmInsertStartMs = System.currentTimeMillis();
 			int inserted = alarmMapper.insertAlarmBatch(alarms);
+			alarmInsertMs = System.currentTimeMillis() - alarmInsertStartMs;
 			if (inserted <= 0) {
 				throw new CustomException("报警主表批量插入返回 0");
 			}
 			Map<String, AlarmCidRoute> routeByCid = new LinkedHashMap<>();
 			if (shardSuffix != null && alarmCidIndexService != null) {
+				long routeStartMs = System.currentTimeMillis();
 				List<AlarmCidRoute> routes = alarmCidIndexService.saveActiveHotRoutes(alarms, shardSuffix, batchProperties.safeInLimit());
+				routeInsertMs = System.currentTimeMillis() - routeStartMs;
 				for (AlarmCidRoute route : routes) {
 					routeByCid.put(route.getAlarmCid(), route);
 				}
 				if (alarmStopEventService != null) {
 					// start 批量入库后立即批量补偿 stop 早到消息，避免 stop 已落库但新报警没有 endTime。
+					long compensationStartMs = System.currentTimeMillis();
 					alarmStopEventService.applyPendingStopsForNewAlarms(alarms, routeByCid);
+					pendingStopCompensationMs = System.currentTimeMillis() - compensationStartMs;
 				}
 			}
+			log.info("alarm start persist stage=BATCH_GROUP_PROFILE batchId={}, tableSuffix={}, batchSize={}, handleMs={}, electrolyticMs={}, snapshotMs={}, pdMs={}, alarmMainMs={}, routeMs={}, compensationMs={}",
+					batchId, shardSuffix, contexts.size(), handleInsertMs, electrolyticInsertMs, electrolyticSnapshotMs,
+					pdInsertMs, alarmInsertMs, routeInsertMs, pendingStopCompensationMs);
 			for (AlarmInsertContext context : contexts) {
 				// push 仍保持旧格式逐条 afterCommit 发布，不能为了批量入库改变旧消费者协议。
 				JSONObject clonedJsonObject = JSON.parseObject(JSON.toJSONString(context.getJsonObject()));
@@ -987,6 +1011,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	 */
 	private void logAlarmInsertStage(String traceId, String stage, String result, long startMs,
 									 JSONObject jsonObject, Alarm alarm, String errorMsg) {
+		/*
+		 * 正常 start 每条会经过多个阶段。高流量下逐条 INFO 本身会成为 IO 放大器，
+		 * 因此默认只保留批次级 Profiling；失败、丢弃和去重等非正常结果继续打印。
+		 */
+		if (!batchProperties.isInsertItemProfileLogEnabled()
+				&& ("BEGIN".equals(result) || "SUCCESS".equals(result))) {
+			return;
+		}
 		log.info("alarm insert stage={}, result={}, traceId={}, alarmCid={}, deviceSn={}, sceneType={}, alarmType={}, tenantId={}, costMs={}, error={}",
 				stage,
 				result,

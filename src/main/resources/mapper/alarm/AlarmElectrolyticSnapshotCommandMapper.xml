@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hpis.alarm.mapper.AlarmElectrolyticSnapshotCommandMapper">
+
+    <resultMap id="SnapshotCommandResult" type="com.hpis.alarm.domain.AlarmElectrolyticSnapshotCommand">
+        <id property="pointHash" column="point_hash"/>
+        <result property="commandType" column="command_type"/>
+        <result property="alarmId" column="alarm_id"/>
+        <result property="alarmBeginTime" column="alarm_begin_time"/>
+        <result property="payloadJson" column="payload_json"/>
+        <result property="commandStatus" column="command_status"/>
+        <result property="lockToken" column="lock_token"/>
+        <result property="lockedAt" column="locked_at"/>
+        <result property="availableTime" column="available_time"/>
+        <result property="version" column="version"/>
+        <result property="retryCount" column="retry_count"/>
+        <result property="lastError" column="last_error"/>
+        <result property="createdTime" column="created_time"/>
+        <result property="updatedTime" column="updated_time"/>
+    </resultMap>
+
+    <insert id="upsertActiveBatch">
+        insert into alarm_electrolytic_cell_snapshot_command
+        (point_hash, command_type, alarm_id, alarm_begin_time, payload_json, command_status,
+         lock_token, locked_at, available_time, version, retry_count, last_error, created_time, updated_time)
+        values
+        <foreach collection="commands" item="command" separator=",">
+            (#{command.pointHash}, 'ACTIVE', #{command.alarmId}, #{command.alarmBeginTime},
+             #{command.payloadJson}, 'PENDING', null, null, #{command.availableTime}, 0, 0, null, now(), now())
+        </foreach>
+        on duplicate key update
+            command_type = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                'ACTIVE', command_type),
+            alarm_id = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                values(alarm_id), alarm_id),
+            payload_json = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                values(payload_json), payload_json),
+            command_status = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                'PENDING', command_status),
+            lock_token = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                null, lock_token),
+            locked_at = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                null, locked_at),
+            available_time = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                values(available_time), available_time),
+            version = version + if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                1, 0),
+            retry_count = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                0, retry_count),
+            last_error = if(values(alarm_begin_time) &gt;= ifnull(alarm_begin_time, values(alarm_begin_time)),
+                null, last_error),
+            alarm_begin_time = greatest(ifnull(alarm_begin_time, values(alarm_begin_time)), values(alarm_begin_time)),
+            updated_time = now()
+    </insert>
+
+    <update id="enqueueDeleteByAlarmId">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_type = 'DELETED',
+            command_status = 'PENDING',
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            version = version + 1,
+            retry_count = 0,
+            last_error = null,
+            updated_time = now()
+        where alarm_id = #{alarmId}
+    </update>
+
+    <update id="claimPendingBatch">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_status = 'PROCESSING',
+            lock_token = #{lockToken},
+            locked_at = #{lockedAt},
+            updated_time = now()
+        where command_status = 'PENDING'
+          and available_time &lt;= #{lockedAt}
+        order by point_hash
+        limit #{limit}
+    </update>
+
+    <select id="selectProcessingByToken" resultMap="SnapshotCommandResult">
+        select *
+        from alarm_electrolytic_cell_snapshot_command
+        where command_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+        order by point_hash
+    </select>
+
+    <update id="markDoneBatch">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_status = 'DONE',
+            lock_token = null,
+            locked_at = null,
+            updated_time = now()
+        where command_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+          and (
+        <foreach collection="commands" item="command" separator=" or ">
+            (point_hash = #{command.pointHash} and version = #{command.version})
+        </foreach>
+          )
+    </update>
+
+    <update id="releaseProcessingByToken">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_status = if(retry_count + 1 &gt;= #{maxRetry}, 'FAILED', 'PENDING'),
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            updated_time = now()
+        where command_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+    </update>
+
+    <update id="releaseSupersededByToken">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_status = 'PENDING',
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            last_error = null,
+            updated_time = now()
+        where command_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+    </update>
+
+    <update id="releaseExpiredProcessing">
+        update alarm_electrolytic_cell_snapshot_command
+        set command_status = if(retry_count + 1 &gt;= #{maxRetry}, 'FAILED', 'PENDING'),
+            retry_count = retry_count + 1,
+            last_error = 'PROCESSING_TIMEOUT',
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            updated_time = now()
+        where command_status = 'PROCESSING'
+          and locked_at &lt;= #{lockedBefore}
+        order by locked_at, point_hash
+        limit #{limit}
+    </update>
+</mapper>

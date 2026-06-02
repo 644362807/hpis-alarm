@@ -6,6 +6,7 @@ import com.hpis.alarm.config.sharding.AlarmCidIndexService;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmCidRoute;
 import com.hpis.alarm.domain.AlarmStopEvent;
+import com.hpis.alarm.dto.AlarmStopRecord;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
 import com.hpis.alarm.task.AlarmStopWorkerSignal;
@@ -17,6 +18,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -29,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -131,6 +134,7 @@ public class AlarmStopEventServiceTest {
         when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(activeRoutes);
         when(alarmMapper.selectAlarmByIdsForStop(Collections.singletonList(1001L)))
                 .thenReturn(Collections.singletonList(alarm));
+        when(alarmMapper.batchStopByAlarmIds(anyList(), any())).thenReturn(1);
 
         int processed = service.processPendingBatch();
 
@@ -156,6 +160,106 @@ public class AlarmStopEventServiceTest {
         assertEquals(0, processed);
         verify(alarmCidIndexService, org.mockito.Mockito.times(2)).findActiveRouteByCid(any());
         verify(stopEventMapper, org.mockito.Mockito.times(2)).markRetryBatch(anyList(), eq("ROUTE_MISSING"));
+    }
+
+    @Test
+    public void recordStopsUsesBoundedChunksAndInitialClaimDelay() {
+        batchProperties.setStopEventUpsertBatchSize(2);
+        workerProperties.setInitialAvailableDelayMs(200L);
+        long before = System.currentTimeMillis();
+        List<AlarmStopRecord> records = Arrays.asList(
+                new AlarmStopRecord("cid-1", new Date()),
+                new AlarmStopRecord("cid-2", new Date()),
+                new AlarmStopRecord("cid-3", new Date()));
+
+        service.recordStops(records);
+
+        ArgumentCaptor<List> chunks = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<Date> availableTimes = ArgumentCaptor.forClass(Date.class);
+        verify(stopEventMapper, org.mockito.Mockito.times(2))
+                .upsertPendingBatch(chunks.capture(), availableTimes.capture());
+        assertEquals(2, chunks.getAllValues().get(0).size());
+        assertEquals(1, chunks.getAllValues().get(1).size());
+        org.junit.Assert.assertTrue(availableTimes.getAllValues().get(0).getTime() >= before + 150L);
+        verify(workerSignal).wakeUp("recordStops", null);
+    }
+
+    @Test
+    public void claimedActiveRouteUsesTokenConditionalApply() {
+        AlarmStopEvent event = buildEvent(1L, "cid-1");
+        AlarmCidRoute route = buildRoute("cid-1", 1001L, "202605_00");
+        Alarm alarm = new Alarm();
+        alarm.setAlarmId(1001L);
+        alarm.setAlarmCid("cid-1");
+        Map<String, AlarmCidRoute> activeRoutes = new LinkedHashMap<>();
+        activeRoutes.put("cid-1", route);
+        when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(activeRoutes);
+        when(alarmMapper.selectAlarmByIdsForStop(Collections.singletonList(1001L)))
+                .thenReturn(Collections.singletonList(alarm));
+        when(alarmMapper.batchStopByAlarmIds(anyList(), any())).thenReturn(1);
+        when(stopEventMapper.markProcessingAppliedBatch(anyList(), eq("token-1"), any(Date.class))).thenReturn(1);
+
+        int processed = service.processClaimedBatch("token-1", Collections.singletonList(event));
+
+        assertEquals(1, processed);
+        verify(stopEventMapper).markProcessingAppliedBatch(anyList(), eq("token-1"), any(Date.class));
+        verify(stopEventMapper, never()).markAppliedBatch(anyList(), any(Date.class));
+    }
+
+    @Test
+    public void claimedApplyRollsBackWhenTokenOrVersionUpdateCountDoesNotMatch() {
+        AlarmStopEvent event = buildEvent(1L, "cid-1");
+        event.setEventVersion(3L);
+        AlarmCidRoute route = buildRoute("cid-1", 1001L, "202605_00");
+        Alarm alarm = new Alarm();
+        alarm.setAlarmId(1001L);
+        alarm.setAlarmCid("cid-1");
+        Map<String, AlarmCidRoute> activeRoutes = new LinkedHashMap<>();
+        activeRoutes.put("cid-1", route);
+        when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(activeRoutes);
+        when(alarmMapper.selectAlarmByIdsForStop(Collections.singletonList(1001L)))
+                .thenReturn(Collections.singletonList(alarm));
+        when(alarmMapper.batchStopByAlarmIds(anyList(), any())).thenReturn(1);
+        when(stopEventMapper.markProcessingAppliedBatch(anyList(), eq("token-stale"), any(Date.class))).thenReturn(0);
+
+        try {
+            service.processClaimedBatch("token-stale", Collections.singletonList(event));
+            fail("stale token/version must roll back the core stop transaction");
+        } catch (IllegalStateException expected) {
+            org.junit.Assert.assertTrue(expected.getMessage().contains("token/version"));
+        }
+    }
+
+    @Test
+    public void claimedRouteMissingReturnsToDelayedPending() {
+        List<AlarmStopEvent> events = buildEvents(2);
+        when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(Collections.emptyMap());
+        when(alarmCidIndexService.findRoutesByCids(anyList(), anyInt())).thenReturn(Collections.emptyMap());
+
+        int processed = service.processClaimedBatch("token-1", events);
+
+        assertEquals(0, processed);
+        verify(stopEventMapper).markProcessingRetryBatch(eq(ids(events)), eq("token-1"),
+                eq("ROUTE_MISSING"), any(Date.class));
+        verify(stopEventMapper, never()).markRetryBatch(anyList(), eq("ROUTE_MISSING"));
+    }
+
+    @Test
+    public void routeMissingUsesClampedMaxRetryWhenConfigurationIsTooLarge() {
+        workerProperties.setMaxRetry(999);
+        List<AlarmStopEvent> events = buildEvents(2);
+        for (AlarmStopEvent event : events) {
+            event.setRetryCount(workerProperties.safeMaxRetry() - 1);
+        }
+        when(stopEventMapper.selectPendingBatch(workerProperties.getNormalBatchSize())).thenReturn(events);
+        when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(Collections.emptyMap());
+        when(alarmCidIndexService.findRoutesByCids(anyList(), anyInt())).thenReturn(Collections.emptyMap());
+
+        int processed = service.processPendingBatch();
+
+        assertEquals(2, processed);
+        verify(stopEventMapper).markFailedBatch(eq(ids(events)), eq("ROUTE_MISSING"));
+        verify(stopEventMapper, never()).markRetryBatch(anyList(), eq("ROUTE_MISSING"));
     }
 
     @Test
@@ -194,6 +298,7 @@ public class AlarmStopEventServiceTest {
         when(alarmCidIndexService.findActiveRoutesByCids(anyList(), anyInt())).thenReturn(activeRoutes);
         when(alarmMapper.selectAlarmByIdsForStop(Collections.singletonList(1001L)))
                 .thenReturn(Collections.singletonList(alarm));
+        when(alarmMapper.batchStopByAlarmIds(anyList(), any())).thenReturn(1);
 
         int processed = service.processPendingBatch();
 
@@ -225,6 +330,28 @@ public class AlarmStopEventServiceTest {
         verify(alarmCidIndexService, never()).findActiveRouteByCid(any());
     }
 
+    @Test
+    public void pendingStopCompensationPropagatesOutboxFailure() {
+        AlarmStopEvent event = buildEvent(1L, "cid-1");
+        AlarmCidRoute route = buildRoute("cid-1", 1001L, "202605_00");
+        Alarm alarm = new Alarm();
+        alarm.setAlarmId(1001L);
+        alarm.setAlarmCid("cid-1");
+        when(stopEventMapper.selectRecoverableByCid("cid-1")).thenReturn(event);
+        doThrow(new RuntimeException("outbox unavailable"))
+                .when(sideEffectService).createEvents(alarm, route);
+
+        try {
+            service.applyPendingStopForNewAlarm(alarm, route);
+            fail("outbox failure must roll back pending-stop compensation");
+        } catch (RuntimeException expected) {
+            assertEquals("outbox unavailable", expected.getMessage());
+        }
+
+        verify(alarmCidIndexService).closeRoute(eq(route), any(Date.class));
+        verify(stopEventMapper, never()).markApplied(any(), any(Date.class));
+    }
+
     private List<AlarmStopEvent> buildEvents(int size) {
         List<AlarmStopEvent> events = new ArrayList<>();
         for (int i = 0; i < size; i++) {
@@ -238,6 +365,7 @@ public class AlarmStopEventServiceTest {
         event.setId(id);
         event.setAlarmCid(alarmCid);
         event.setStopTime(new Date());
+        event.setEventVersion(0L);
         return event;
     }
 

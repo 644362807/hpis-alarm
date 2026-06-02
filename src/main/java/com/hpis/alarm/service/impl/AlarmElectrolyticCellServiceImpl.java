@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO;
+import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmElectrolyticCell;
 import com.hpis.alarm.dto.AlarmDetailEc;
@@ -17,6 +18,8 @@ import com.hpis.alarm.mapper.AlarmElectrolyticCellMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.service.IAlarmElectrolyticCellService;
 import com.hpis.alarm.service.IAlarmService;
+import com.hpis.alarm.service.AlarmElectrolyticSnapshotCommandService;
+import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.alarm.util.DictUtil;
 
 import com.hpis.common.core.constant.Constants;
@@ -80,6 +83,12 @@ public class AlarmElectrolyticCellServiceImpl extends ServiceImpl<AlarmElectroly
 {
     @Autowired
     private AlarmElectrolyticCellMapper alarmElectrolyticCellMapper;
+
+    @Autowired
+    private AlarmBatchProperties alarmBatchProperties;
+
+    @Autowired(required = false)
+    private AlarmElectrolyticSnapshotCommandService snapshotCommandService;
 
     @Autowired
     private RemoteElectrolyticSequenceService electrolyticCellSequenceMapper;
@@ -427,12 +436,20 @@ return alarmElectrolyticCellDTOList;
 
     @Override
     public int insertAlarmElectrolyticCellEctype(AlarmElectrolyticCell alarmElectrolyticCell) {
-        //先删除当前点位的旧报警数据，在新增
-        alarmElectrolyticCellMapper.deleteOldAlarmEctypeByPt(alarmElectrolyticCell.getSequenceId(), alarmElectrolyticCell.getRowIndex(),
-                alarmElectrolyticCell.getGrooveNumber(), alarmElectrolyticCell.getObservationPlace(), alarmElectrolyticCell.getSubdivideNumber(),alarmElectrolyticCell.getIrmsSn());
-        alarmElectrolyticCellMapper.insertAlarmElectrolyticCellEctype(alarmElectrolyticCell);
-
-        return 0;
+        String snapshotMode = snapshotMode();
+        int commandAffected = 0;
+        if ("DUAL_WRITE".equals(snapshotMode) || "ASYNC".equals(snapshotMode)) {
+            /*
+             * 单条入口也是批量失败后的 fallback 入口，必须与批量模式保持一致。
+             * ASYNC 下如果绕过命令表直接写投影，旧 PENDING 命令随后可能把点位覆盖回旧 alarmId。
+             */
+            commandAffected = requiredSnapshotCommandService().enqueueActive(
+                    Collections.singletonList(alarmElectrolyticCell));
+        }
+        if ("ASYNC".equals(snapshotMode)) {
+            return commandAffected;
+        }
+        return alarmElectrolyticCellMapper.insertAlarmElectrolyticCellEctype(alarmElectrolyticCell);
     }
 
     @Override
@@ -445,8 +462,53 @@ return alarmElectrolyticCellDTOList;
         if (alarmElectrolyticCells == null || alarmElectrolyticCells.isEmpty()) {
             return 0;
         }
-        alarmElectrolyticCellMapper.deleteOldAlarmEctypeByItems(alarmElectrolyticCells);
-        return alarmElectrolyticCellMapper.insertAlarmElectrolyticCellEctypeList(alarmElectrolyticCells);
+        String snapshotMode = snapshotMode();
+        int commandAffected = 0;
+        if ("DUAL_WRITE".equals(snapshotMode) || "ASYNC".equals(snapshotMode)) {
+            commandAffected = requiredSnapshotCommandService().enqueueActive(alarmElectrolyticCells);
+        }
+        if ("ASYNC".equals(snapshotMode)) {
+            log.info("alarm start persist stage=EC_SNAPSHOT_COMMAND_UPSERT inputSize={}, affected={}",
+                    alarmElectrolyticCells.size(), commandAffected);
+            return commandAffected;
+        }
+        /*
+         * 当前点位表只保留每个点位最后一条报警。数据库唯一键和 upsert 保证替换原子性；
+         * 固定排序让多个 consumer 批次按相同顺序取锁，分块避免单条 SQL 过大。
+         */
+        int inserted = 0;
+        long startMs = System.currentTimeMillis();
+        int chunkCount = 0;
+        int batchSize = alarmBatchProperties == null
+                ? AlarmBatchChunker.MAX_BATCH_SIZE
+                : alarmBatchProperties.safeElectrolyticSnapshotBatchSize();
+        for (List<AlarmElectrolyticCell> chunk : AlarmBatchChunker.chunk(
+                normalizeEctypeItems(alarmElectrolyticCells), batchSize)) {
+            inserted += alarmElectrolyticCellMapper.insertAlarmElectrolyticCellEctypeList(chunk);
+            chunkCount++;
+        }
+        log.info("alarm start persist stage=EC_SNAPSHOT_UPSERT inputSize={}, chunkCount={}, batchLimit={}, costMs={}",
+                alarmElectrolyticCells.size(), chunkCount, batchSize, System.currentTimeMillis() - startMs);
+        return inserted;
+    }
+
+    public static List<AlarmElectrolyticCell> normalizeEctypeItems(List<AlarmElectrolyticCell> items) {
+        Map<String, AlarmElectrolyticCell> latestByPoint = new LinkedHashMap<>();
+        for (AlarmElectrolyticCell item : items) {
+            latestByPoint.put(ectypePointKey(item), item);
+        }
+        List<AlarmElectrolyticCell> normalized = new ArrayList<>(latestByPoint.values());
+        normalized.sort(Comparator.comparing(AlarmElectrolyticCellServiceImpl::ectypePointKey));
+        return normalized;
+    }
+
+    public static String ectypePointKey(AlarmElectrolyticCell item) {
+        return String.valueOf(item.getIrmsSn()) + '\u0001'
+                + String.valueOf(item.getSequenceId()) + '\u0001'
+                + String.valueOf(item.getRowIndex()) + '\u0001'
+                + String.valueOf(item.getGrooveNumber()) + '\u0001'
+                + String.valueOf(item.getObservationPlace()) + '\u0001'
+                + String.valueOf(item.getSubdivideNumber());
     }
 
     /**
@@ -482,7 +544,30 @@ return alarmElectrolyticCellDTOList;
     @Override
     public int deleteAlarmElectrolyticCellEctypeById(Long alarmId)
     {
-        return alarmElectrolyticCellMapper.deleteAlarmElectrolyticCellEctypeById(alarmId);
+        String snapshotMode = snapshotMode();
+        if ("SYNC".equals(snapshotMode)) {
+            return alarmElectrolyticCellMapper.deleteAlarmElectrolyticCellEctypeById(alarmId);
+        }
+        int enqueued = requiredSnapshotCommandService().enqueueDelete(alarmId);
+        if ("DUAL_WRITE".equals(snapshotMode) || enqueued == 0) {
+            /*
+             * DUAL_WRITE 仍同步清理投影；ASYNC 下没有命令时兼容灰度切换前的历史快照。
+             * delete 按 alarm_id 带条件，不会让旧 stop 删除已被新 start 覆盖的点位。
+             */
+            return alarmElectrolyticCellMapper.deleteAlarmElectrolyticCellEctypeById(alarmId);
+        }
+        return enqueued;
+    }
+
+    private String snapshotMode() {
+        return alarmBatchProperties == null ? "SYNC" : alarmBatchProperties.safeElectrolyticSnapshotMode();
+    }
+
+    private AlarmElectrolyticSnapshotCommandService requiredSnapshotCommandService() {
+        if (snapshotCommandService == null) {
+            throw new IllegalStateException("电解槽快照异步模式需要启用 alarm.sharding.enabled");
+        }
+        return snapshotCommandService;
     }
 
     @Override

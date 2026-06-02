@@ -16,6 +16,15 @@ import java.util.concurrent.Future;
 public class AlarmMqLoadOrchestratorMain {
 
     public static void main(String[] args) throws Exception {
+        AlarmMqLoadVerifierMain.VerifyResult result = run(args);
+        if (!result.isSuccess()) {
+            System.err.println("orchestrated loadtest failed, report=" + result.getReport());
+            System.exit(2);
+        }
+        System.out.println("orchestrated loadtest passed, report=" + result.getReport());
+    }
+
+    public static AlarmMqLoadVerifierMain.VerifyResult run(String[] args) throws Exception {
         normalizeProperties();
         long verifierLeadMillis = longProperty("alarm.loadtest.orchestrator.verifierLeadMillis", 500L);
         ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
@@ -33,11 +42,7 @@ public class AlarmMqLoadOrchestratorMain {
             Thread.sleep(Math.max(0L, verifierLeadMillis));
             AlarmMqDirectSenderMain.main(args);
             AlarmMqLoadVerifierMain.VerifyResult result = verifier.get();
-            if (!result.isSuccess()) {
-                System.err.println("orchestrated loadtest failed, report=" + result.getReport());
-                System.exit(2);
-            }
-            System.out.println("orchestrated loadtest passed, report=" + result.getReport());
+            return result;
         } catch (ExecutionException ex) {
             Throwable cause = ex.getCause() == null ? ex : ex.getCause();
             throw cause instanceof Exception ? (Exception) cause : new RuntimeException(cause);

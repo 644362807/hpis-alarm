@@ -7,6 +7,7 @@ import com.hpis.alarm.service.AlarmInsertConsumeResult;
 import com.hpis.alarm.service.AlarmStopEventService;
 import com.hpis.alarm.service.IAlarmColorService;
 import com.hpis.alarm.service.IAlarmService;
+import com.hpis.alarm.dto.AlarmStopRecord;
 import com.hpis.common.core.constant.OperCodeConstants;
 import com.hpis.common.core.enums.OperCodeEnums;
 import com.rabbitmq.client.Channel;
@@ -28,6 +29,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -88,7 +90,7 @@ public class RabbitMQAlarmBatchListenerTest {
                 message(OperCodeConstants.ALARM_PUSH, 302L),
                 message(OperCodeEnums.SYNC_COLOR_SETTING.getKey(), 303L)), channel);
 
-        verify(alarmStopEventService).recordStop(any(JSONObject.class));
+        verify(alarmStopEventService).recordStops(any(List.class));
         verify(alarmColorService).insertOrUpdateAlarmColor(any(JSONObject.class));
         verify(batchConsumeService).processStartBatch(any(List.class));
         verify(channel).basicAck(301L, false);
@@ -111,7 +113,39 @@ public class RabbitMQAlarmBatchListenerTest {
          */
         InOrder inOrder = inOrder(batchConsumeService, alarmStopEventService);
         inOrder.verify(batchConsumeService).processStartBatch(any(List.class));
-        inOrder.verify(alarmStopEventService).recordStop(any(JSONObject.class));
+        inOrder.verify(alarmStopEventService).recordStops(any(List.class));
+    }
+
+    @Test
+    public void consecutiveStopsUseOneBatchUpsertAndAckEachMessage() throws Exception {
+        when(alarmStopEventService.toStopRecord(any(JSONObject.class)))
+                .thenAnswer(invocation -> new AlarmStopRecord(
+                        ((JSONObject) invocation.getArgument(0)).getString("alarmId"), new java.util.Date()));
+
+        listener.listenMessages(Arrays.asList(
+                message(OperCodeConstants.ALARM_STOP, 601L),
+                message(OperCodeConstants.ALARM_STOP, 602L)), channel);
+
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(alarmStopEventService).recordStops(captor.capture());
+        assertEquals(2, captor.getValue().size());
+        verify(channel).basicAck(601L, false);
+        verify(channel).basicAck(602L, false);
+    }
+
+    @Test
+    public void stopBatchDatabaseFailureRequeuesWholeBatchWithoutSingleFallback() throws Exception {
+        when(alarmStopEventService.toStopRecord(any(JSONObject.class)))
+                .thenAnswer(invocation -> new AlarmStopRecord(
+                        ((JSONObject) invocation.getArgument(0)).getString("alarmId"), new java.util.Date()));
+        doThrow(new RuntimeException("db unavailable")).when(alarmStopEventService).recordStops(any(List.class));
+
+        listener.listenMessages(Arrays.asList(
+                message(OperCodeConstants.ALARM_STOP, 701L),
+                message(OperCodeConstants.ALARM_STOP, 702L)), channel);
+
+        verify(channel).basicNack(701L, false, true);
+        verify(channel).basicNack(702L, false, true);
     }
 
     @Test

@@ -8,9 +8,14 @@
         <id property="id" column="id"/>
         <result property="alarmCid" column="alarm_cid"/>
         <result property="stopTime" column="stop_time"/>
+        <result property="eventVersion" column="event_version"/>
+        <result property="appliedStopTime" column="applied_stop_time"/>
         <result property="eventStatus" column="event_status"/>
         <result property="retryCount" column="retry_count"/>
         <result property="lastError" column="last_error"/>
+        <result property="lockToken" column="lock_token"/>
+        <result property="lockedAt" column="locked_at"/>
+        <result property="availableTime" column="available_time"/>
         <result property="createdTime" column="created_time"/>
         <result property="updatedTime" column="updated_time"/>
         <result property="appliedTime" column="applied_time"/>
@@ -19,15 +24,60 @@
 
     <insert id="upsertPending">
         insert into alarm_stop_event
-        (alarm_cid, stop_time, event_status, retry_count, last_error, created_time, updated_time)
+        (alarm_cid, stop_time, event_version, applied_stop_time, event_status, retry_count, last_error,
+         available_time, created_time, updated_time)
         values
-        (#{alarmCid}, #{stopTime}, 'PENDING', 0, null, now(), now())
+        (#{alarmCid}, #{stopTime}, 0, null, 'PENDING', 0, null, #{availableTime}, now(), now())
         on duplicate key update
-            stop_time = greatest(stop_time, values(stop_time)),
-            event_status = if(event_status = 'APPLIED', event_status, 'PENDING'),
-            retry_count = if(event_status = 'APPLIED', retry_count, 0),
-            last_error = if(event_status = 'APPLIED', last_error, null),
-            updated_time = now()
+            event_version = event_version + if(values(stop_time) > stop_time, 1, 0),
+            available_time = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                available_time, values(available_time)),
+            retry_count = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                retry_count, 0),
+            last_error = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                last_error, null),
+            event_status = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                event_status, 'PENDING'),
+            updated_time = now(),
+            stop_time = greatest(stop_time, values(stop_time))
+    </insert>
+
+    <insert id="upsertPendingBatch">
+        insert into alarm_stop_event
+        (alarm_cid, stop_time, event_version, applied_stop_time, event_status, retry_count, last_error,
+         available_time, created_time, updated_time)
+        values
+        <foreach collection="records" item="record" separator=",">
+            (#{record.alarmCid}, #{record.stopTime}, 0, null, 'PENDING', 0, null, #{availableTime}, now(), now())
+        </foreach>
+        on duplicate key update
+            event_version = event_version + if(values(stop_time) > stop_time, 1, 0),
+            available_time = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                available_time, values(available_time)),
+            retry_count = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                retry_count, 0),
+            last_error = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                last_error, null),
+            event_status = if(
+                event_status = 'PROCESSING'
+                    or (event_status = 'APPLIED' and values(stop_time) &lt;= ifnull(applied_stop_time, stop_time)),
+                event_status, 'PENDING'),
+            updated_time = now(),
+            stop_time = greatest(stop_time, values(stop_time))
     </insert>
 
     <select id="selectPendingByCid" resultMap="AlarmStopEventResult">
@@ -81,6 +131,54 @@
         limit #{limit}
     </select>
 
+    <update id="claimPendingBatch">
+        update alarm_stop_event
+        set event_status = 'PROCESSING',
+            lock_token = #{lockToken},
+            locked_at = #{lockedAt},
+            updated_time = now()
+        where event_status = 'PENDING'
+          and available_time &lt;= #{lockedAt}
+        order by available_time, created_time, id
+        limit #{limit}
+    </update>
+
+    <select id="selectProcessingByToken" resultMap="AlarmStopEventResult">
+        select *
+        from alarm_stop_event
+        where event_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+        order by created_time, id
+    </select>
+
+    <update id="releaseProcessingByToken">
+        update alarm_stop_event
+        set event_status = if(retry_count + 1 &gt;= #{maxRetry}, 'FAILED', 'PENDING'),
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            updated_time = now()
+        where event_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+    </update>
+
+    <update id="releaseExpiredProcessing">
+        update alarm_stop_event
+        set event_status = if(retry_count + 1 &gt;= #{maxRetry}, 'FAILED', 'PENDING'),
+            retry_count = retry_count + 1,
+            last_error = 'PROCESSING_TIMEOUT',
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            updated_time = now()
+        where event_status = 'PROCESSING'
+          and locked_at &lt;= #{lockedBefore}
+        order by locked_at, id
+        limit #{limit}
+    </update>
+
     <select id="selectFailedRouteMissingBatch" resultMap="AlarmStopEventResult">
         select *
         from alarm_stop_event
@@ -94,6 +192,7 @@
     <update id="markApplied">
         update alarm_stop_event
         set event_status = 'APPLIED',
+            applied_stop_time = stop_time,
             applied_time = now(),
             delete_after = #{deleteAfter},
             updated_time = now()
@@ -103,6 +202,7 @@
     <update id="markAppliedBatch">
         update alarm_stop_event
         set event_status = 'APPLIED',
+            applied_stop_time = stop_time,
             applied_time = now(),
             delete_after = #{deleteAfter},
             updated_time = now()
@@ -110,6 +210,24 @@
         <foreach collection="ids" item="id" open="(" separator="," close=")">
             #{id}
         </foreach>
+    </update>
+
+    <update id="markProcessingAppliedBatch">
+        update alarm_stop_event
+        set event_status = 'APPLIED',
+            applied_stop_time = stop_time,
+            applied_time = now(),
+            delete_after = #{deleteAfter},
+            lock_token = null,
+            locked_at = null,
+            updated_time = now()
+        where event_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+          and (
+        <foreach collection="events" item="event" separator=" or ">
+            (id = #{event.id} and event_version = #{event.eventVersion})
+        </foreach>
+          )
     </update>
 
     <update id="markRetry">
@@ -143,6 +261,23 @@
         </foreach>
     </update>
 
+    <update id="markProcessingRetryBatch">
+        update alarm_stop_event
+        set event_status = 'PENDING',
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            lock_token = null,
+            locked_at = null,
+            available_time = #{availableTime},
+            updated_time = now()
+        where event_status = 'PROCESSING'
+          and lock_token = #{lockToken}
+          and id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
     <update id="markFailedBatch">
         update alarm_stop_event
         set event_status = 'FAILED',
@@ -150,6 +285,22 @@
             last_error = #{lastError},
             updated_time = now()
         where event_status = 'PENDING'
+          and id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
+    <update id="markProcessingFailedBatch">
+        update alarm_stop_event
+        set event_status = 'FAILED',
+            retry_count = retry_count + 1,
+            last_error = #{lastError},
+            lock_token = null,
+            locked_at = null,
+            updated_time = now()
+        where event_status = 'PROCESSING'
+          and lock_token = #{lockToken}
           and id in
         <foreach collection="ids" item="id" open="(" separator="," close=")">
             #{id}
@@ -167,6 +318,13 @@
     <select id="countPending" resultType="java.lang.Integer">
         select count(1)
         from alarm_stop_event
-        where event_status = 'PENDING'
+        where event_status in ('PENDING', 'PROCESSING')
+    </select>
+
+    <select id="existsOutstanding" resultType="java.lang.Integer">
+        select 1
+        from alarm_stop_event
+        where event_status in ('PENDING', 'PROCESSING')
+        limit 1
     </select>
 </mapper>
