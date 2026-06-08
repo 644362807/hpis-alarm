@@ -11,6 +11,7 @@
 - 设备停止、IRMS 停止接口参数不变，并能用于更新路由元数据。
 - `alarm_handle` 直接新增时可以接收 `alarmBegintime`，对应数据库字段 `alarm_beginTime`。
 - 时间范围查询类接口应带真实时间条件，避免无谓扫描全部历史分片。
+- `/alarm/list` 列表分页接口使用 `BaseEntity.startTime/endTime` 作为时间范围参数；不要使用 `alarmBegintime/alarmEndtime` 作为列表页查询入参。
 
 ## 自动化接口契约测试
 
@@ -46,6 +47,14 @@ mvn -pl hpis-alarm -am -DskipTests install
 HTTP 用例文件：
 
 `src/test/resources/http/alarm-time-capacity-sharding-api.http`
+
+列表分页示例：
+
+```http
+GET /alarm/list?pageNum=1&pageSize=10&startTime=2026-06-01%2000:00:00&endTime=2026-06-30%2023:59:59
+```
+
+说明：`AlarmServiceImpl.selectAlarmPage` 从 `BaseEntity.startTime/endTime` 读取时间范围并拼接 `a.alarm_beginTime` 条件。如果传 `alarmBegintime/alarmEndtime`，该分页接口不会把它们作为时间条件，可能导致 ShardingSphere 广播到已注册但尚未物理创建的预注册节点。
 
 执行前置条件：
 
@@ -101,7 +110,7 @@ WHERE device_sn = 'device-001' OR irms_sn = 'irms-001';
 - 电解槽报警的 `alarm`、`alarm_handle`、`alarm_electrolytic_cell` 命中同一个后缀。
 - 当 `alarm.sharding.maxRowsPerSlice` 调小后，同月 `00` 子表满后自动创建并切到 `01`。
 - 按 `alarm_id`、`alarm_cid` 查询时优先通过 `alarm_shard_route` 精准路由。
-- 时间范围查询只命中对应月份的新月表，以及迁移期配置允许的旧 `alarm_0..4`。
+- 时间范围查询只命中对应月份的新月表；legacy `alarm_0..4` 不再参与查询兜底。
 
 ## 注意事项
 

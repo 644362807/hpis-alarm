@@ -1,6 +1,7 @@
 package com.hpis.alarm.config.sharding;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -16,7 +17,6 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashSet;
@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
  *
  * <p>写入分配采用行业常见的 Segment 号段预占：本机从 alarm_shard_slice 批量预占一段 rowNo，
  * 后续报警在内存中消耗号段，只有号段耗尽时才进入 SELECT ... FOR UPDATE。DDL 使用
- * CREATE TABLE ... LIKE 复用现有 alarm_0..4 或 alarm 模板，减少手写 DDL 漏字段的风险。</p>
+ * CREATE TABLE ... LIKE 复用现有逻辑表或月度分片表模板，减少手写 DDL 漏字段的风险。</p>
  */
 @Slf4j
 public class AlarmMonthlySliceTableManager {
@@ -52,6 +52,10 @@ public class AlarmMonthlySliceTableManager {
     private final DataSource dataSource;
 
     private final AlarmShardProperties properties;
+
+    private final ObjectProvider<AlarmShardingRuleRefreshService> refreshServiceProvider;
+
+    private volatile boolean initialized;
 
     /**
      * 本机已预占但尚未消耗完的 rowNo 号段。
@@ -79,8 +83,14 @@ public class AlarmMonthlySliceTableManager {
     private final ConcurrentMap<String, Object> physicalTableLocks = new ConcurrentHashMap<>();
 
     public AlarmMonthlySliceTableManager(DataSource dataSource, AlarmShardProperties properties) {
+        this(dataSource, properties, null);
+    }
+
+    public AlarmMonthlySliceTableManager(DataSource dataSource, AlarmShardProperties properties,
+                                         ObjectProvider<AlarmShardingRuleRefreshService> refreshServiceProvider) {
         this.dataSource = dataSource;
         this.properties = properties;
+        this.refreshServiceProvider = refreshServiceProvider;
     }
 
     /**
@@ -89,6 +99,7 @@ public class AlarmMonthlySliceTableManager {
     public void init() {
         createMetadataTables();
         preCreateMonthSlices();
+        initialized = true;
     }
 
     /**
@@ -197,9 +208,6 @@ public class AlarmMonthlySliceTableManager {
             String monthKey = month.format(MONTH_FORMATTER);
             result.addAll(listTablesByMonth(logicTableName, monthKey));
         }
-        if (properties.isIncludeLegacyTables()) {
-            result.addAll(listLegacyTables(logicTableName));
-        }
         return result.isEmpty() ? listAllShardTables(logicTableName) : result;
     }
 
@@ -213,16 +221,6 @@ public class AlarmMonthlySliceTableManager {
         return suffixes.stream()
                 .filter(suffix -> suffix != null && !"".equals(suffix.trim()))
                 .map(suffix -> logicTableName + "_" + suffix)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-    }
-
-    public Set<String> toLegacyPhysicalTablesByAlarmIds(String logicTableName, Collection<Long> alarmIds) {
-        if (!properties.isIncludeLegacyTables() || alarmIds == null || alarmIds.isEmpty()) {
-            return Collections.emptySet();
-        }
-        return alarmIds.stream()
-                .filter(alarmId -> alarmId != null)
-                .map(alarmId -> logicTableName + "_" + Math.floorMod(alarmId, 5L))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
@@ -250,21 +248,54 @@ public class AlarmMonthlySliceTableManager {
         }
     }
 
-    /**
-     * 列出当前逻辑表所有已知的新月表；迁移期可同时带上 alarm_0..4 旧表。
-     */
     public Set<String> listAllShardTables(String logicTableName) {
         Set<String> tables = new LinkedHashSet<>();
         tables.addAll(listMonthlyPhysicalTables(logicTableName, null));
-        if (properties.isIncludeLegacyTables()) {
-            tables.addAll(listLegacyTables(logicTableName));
-        }
         return tables;
     }
 
-    public void createTablesForSuffix(String tableSuffix) {
+    public Set<String> listActualDataNodeTables(String logicTableName) {
+        return buildActualDataNodeTables(logicTableName, listMonthlyPhysicalTables(logicTableName, null), LocalDate.now());
+    }
+
+    public Set<String> buildActualDataNodeTables(String logicTableName, Set<String> existingPhysicalTables,
+                                                 LocalDate baseDate) {
+        assertSafeTableName(logicTableName);
+        LocalDate currentMonth = (baseDate == null ? LocalDate.now() : baseDate).withDayOfMonth(1);
+        Set<String> tables = new LinkedHashSet<>();
+        String monthlyRegex = Pattern.quote(logicTableName) + "_\\d{6}_\\d{2}";
+        if (existingPhysicalTables != null) {
+            tables.addAll(existingPhysicalTables.stream()
+                    .filter(tableName -> tableName != null && tableName.matches(monthlyRegex))
+                    .collect(Collectors.toCollection(LinkedHashSet::new)));
+        }
+        addPreRegisteredMonthTables(tables, logicTableName, currentMonth,
+                properties.getActualDataNodes().safeCurrentMonthMaxSliceNo());
+        addPreRegisteredMonthTables(tables, logicTableName, currentMonth.plusMonths(1),
+                properties.getActualDataNodes().safeNextMonthMaxSliceNo());
+        return tables;
+    }
+
+    public boolean createTablesForSuffix(String tableSuffix) {
+        return createTablesForSuffix(tableSuffix, true);
+    }
+
+    private boolean createTablesForSuffix(String tableSuffix, boolean requestRefresh) {
+        boolean created = false;
         for (String logicTableName : SHARD_LOGIC_TABLES) {
-            createPhysicalTableIfAbsent(logicTableName, logicTableName + "_" + tableSuffix);
+            created |= createPhysicalTableIfAbsent(logicTableName, logicTableName + "_" + tableSuffix);
+        }
+        if (created && initialized && requestRefresh) {
+            requestRuleRefreshAfterTableCreated(tableSuffix);
+        }
+        return created;
+    }
+
+    private void addPreRegisteredMonthTables(Set<String> tables, String logicTableName, LocalDate month,
+                                             int maxSliceNo) {
+        String monthKey = month.format(MONTH_FORMATTER);
+        for (int sliceNo = 0; sliceNo <= maxSliceNo; sliceNo++) {
+            tables.add(logicTableName + "_" + buildSuffix(monthKey, sliceNo));
         }
     }
 
@@ -272,19 +303,35 @@ public class AlarmMonthlySliceTableManager {
         LocalDate firstDayOfMonth = LocalDate.now().withDayOfMonth(1);
         for (int i = 0; i <= properties.getPreCreateMonths(); i++) {
             String monthKey = firstDayOfMonth.plusMonths(i).format(MONTH_FORMATTER);
-            ensureSlice(monthKey, 0);
+            ensureSlice(monthKey, 0, false);
         }
     }
 
-    private void ensureSlice(String monthKey, int sliceNo) {
+    public boolean preCreateNextMonthSlices(LocalDate baseDate, int maxSliceNo) {
+        LocalDate firstDayOfMonth = (baseDate == null ? LocalDate.now() : baseDate).withDayOfMonth(1);
+        String nextMonthKey = firstDayOfMonth.plusMonths(1).format(MONTH_FORMATTER);
+        int safeMaxSliceNo = Math.max(0, Math.min(maxSliceNo, 255));
+        boolean created = false;
+        for (int sliceNo = 0; sliceNo <= safeMaxSliceNo; sliceNo++) {
+            created |= ensureSlice(nextMonthKey, sliceNo, false);
+        }
+        return created;
+    }
+
+    private boolean ensureSlice(String monthKey, int sliceNo) {
+        return ensureSlice(monthKey, sliceNo, true);
+    }
+
+    private boolean ensureSlice(String monthKey, int sliceNo, boolean requestRefresh) {
         String suffix = buildSuffix(monthKey, sliceNo);
-        createTablesForSuffix(suffix);
+        boolean created = createTablesForSuffix(suffix, requestRefresh);
         try (Connection connection = dataSource.getConnection()) {
             insertSlice(connection, monthKey, sliceNo);
             confirmedSliceSuffixes.add(suffix);
         } catch (SQLException ex) {
             throw new IllegalStateException("初始化报警分片元数据失败，monthKey=" + monthKey, ex);
         }
+        return created;
     }
 
     private void createMetadataTables() {
@@ -490,39 +537,53 @@ public class AlarmMonthlySliceTableManager {
         }
     }
 
-    private void createPhysicalTableIfAbsent(String logicTableName, String physicalTableName) {
+    private boolean createPhysicalTableIfAbsent(String logicTableName, String physicalTableName) {
         if (confirmedPhysicalTables.contains(physicalTableName)) {
-            return;
+            return false;
         }
         Object tableLock = physicalTableLocks.computeIfAbsent(physicalTableName, key -> new Object());
         synchronized (tableLock) {
             if (confirmedPhysicalTables.contains(physicalTableName)) {
-                return;
+                return false;
             }
-            createPhysicalTable(logicTableName, physicalTableName);
+            boolean created = createPhysicalTable(logicTableName, physicalTableName);
             confirmedPhysicalTables.add(physicalTableName);
+            return created;
         }
     }
 
-    private void createPhysicalTable(String logicTableName, String physicalTableName) {
+    private boolean createPhysicalTable(String logicTableName, String physicalTableName) {
         assertSafeTableName(logicTableName);
         assertSafeTableName(physicalTableName);
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
+            boolean created = false;
             if (!tableExists(connection, physicalTableName)) {
                 String templateTable = findTemplateTable(connection, logicTableName);
                 if (templateTable == null) {
-                    throw new IllegalStateException("未找到报警分片模板表：" + logicTableName
-                            + " 或 " + logicTableName + "_0..4");
+                    throw new IllegalStateException("未找到报警分片模板表：" + logicTableName);
                 }
                 statement.execute("CREATE TABLE IF NOT EXISTS " + physicalTableName + " LIKE " + templateTable);
+                created = true;
                 log.info("创建报警分片物理表成功，logicTableName={}, physicalTableName={}, templateTable={}",
                         logicTableName, physicalTableName, templateTable);
             }
             ensureExtraColumns(connection, statement, logicTableName, physicalTableName);
+            return created;
         } catch (SQLException ex) {
             throw new IllegalStateException("创建报警分片物理表失败：" + physicalTableName, ex);
         }
+    }
+
+    private void requestRuleRefreshAfterTableCreated(String tableSuffix) {
+        if (refreshServiceProvider == null) {
+            return;
+        }
+        AlarmShardingRuleRefreshService refreshService = refreshServiceProvider.getIfAvailable();
+        if (refreshService == null) {
+            return;
+        }
+        refreshService.requestRefreshAfterCommit("table-created:" + tableSuffix);
     }
 
     private void ensureExtraColumns(Connection connection, Statement statement, String logicTableName,
@@ -538,12 +599,6 @@ public class AlarmMonthlySliceTableManager {
     private String findTemplateTable(Connection connection, String logicTableName) throws SQLException {
         if (tableExists(connection, logicTableName)) {
             return logicTableName;
-        }
-        for (int i = 0; i <= 4; i++) {
-            String legacyTable = logicTableName + "_" + i;
-            if (tableExists(connection, legacyTable)) {
-                return legacyTable;
-            }
         }
         Set<String> tables = listTables(connection, logicTableName + "_%");
         return tables.stream()
@@ -569,22 +624,6 @@ public class AlarmMonthlySliceTableManager {
                     .collect(Collectors.toCollection(LinkedHashSet::new));
         } catch (SQLException ex) {
             log.warn("读取报警月分片物理表失败，logicTableName={}, monthKey={}", logicTableName, monthKey, ex);
-            return Collections.emptySet();
-        }
-    }
-
-    private Set<String> listLegacyTables(String logicTableName) {
-        try (Connection connection = dataSource.getConnection()) {
-            Set<String> result = new LinkedHashSet<>();
-            for (int i = 0; i <= 4; i++) {
-                String tableName = logicTableName + "_" + i;
-                if (tableExists(connection, tableName)) {
-                    result.add(tableName);
-                }
-            }
-            return result;
-        } catch (SQLException ex) {
-            log.warn("读取报警旧分片物理表失败，logicTableName={}", logicTableName, ex);
             return Collections.emptySet();
         }
     }

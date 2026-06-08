@@ -66,8 +66,8 @@ Content-Type: application/json
   "time": "2026-04-15 10:30:30"
 }
 
-### 5. 报警列表时间范围查询：应只命中对应月份和迁移期旧表
-GET {{host}}/alarm/list?alarmBegintime=2026-04-01%2000:00:00&alarmEndtime=2026-05-01%2000:00:00&deviceSn=device-001
+### 5. 报警列表时间范围查询：必须使用 BaseEntity.startTime/endTime，避免广播到未物理创建的预注册节点
+GET {{host}}/alarm/list?startTime=2026-04-01%2000:00:00&endTime=2026-05-01%2000:00:00&deviceSn=device-001
 Authorization: {{token}}
 
 ### 6. 报警时间统计：SQL 日志应包含 alarm_beginTime 范围条件

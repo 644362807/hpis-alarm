@@ -162,7 +162,7 @@ alarm:
   sharding:
     enabled: true
     maxRowsPerSlice: 5000000
-    preCreateMonths: 1
+    preCreateMonths: 0
     includeLegacyTables: true
 ```
 

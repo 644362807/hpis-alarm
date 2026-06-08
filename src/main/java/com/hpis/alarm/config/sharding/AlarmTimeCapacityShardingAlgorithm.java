@@ -69,35 +69,36 @@ public class AlarmTimeCapacityShardingAlgorithm implements ComplexKeysShardingAl
 
         String contextSuffix = AlarmShardContext.getTableSuffix();
         if (contextSuffix != null && !"".equals(contextSuffix.trim())) {
-            return Collections.singleton(logicTableName + "_" + contextSuffix);
+            return requireAvailable(logicTableName, Collections.singleton(logicTableName + "_" + contextSuffix),
+                    availableTargetNames, "contextSuffix");
         }
 
         Set<String> routeById = routeByAlarmIds(logicTableName, shardingValue);
         if (!routeById.isEmpty()) {
-            return routeById;
+            return requireAvailable(logicTableName, routeById, availableTargetNames, COLUMN_ALARM_ID);
         }
 
         Set<String> routeByCid = routeByAlarmCids(logicTableName, shardingValue);
         if (!routeByCid.isEmpty()) {
-            return routeByCid;
+            return requireAvailable(logicTableName, routeByCid, availableTargetNames, COLUMN_ALARM_CID);
         }
 
         Set<String> routeByTime = routeByTime(logicTableName, shardingValue);
         if (!routeByTime.isEmpty()) {
-            return routeByTime;
+            return requireAvailable(logicTableName, routeByTime, availableTargetNames, COLUMN_ALARM_BEGIN_TIME);
         }
 
         Set<String> routeByDevice = routeByActiveDevice(logicTableName, shardingValue);
         if (!routeByDevice.isEmpty()) {
-            return routeByDevice;
+            return requireAvailable(logicTableName, routeByDevice, availableTargetNames, COLUMN_DEVICE_SN);
         }
 
         Set<String> routeByIrms = routeByActiveIrms(logicTableName, shardingValue);
         if (!routeByIrms.isEmpty()) {
-            return routeByIrms;
+            return requireAvailable(logicTableName, routeByIrms, availableTargetNames, COLUMN_IRMS_SN);
         }
 
-        Set<String> fallback = tableManager.listAllShardTables(logicTableName);
+        Set<String> fallback = filterAvailable(tableManager.listAllShardTables(logicTableName), availableTargetNames);
         if (!fallback.isEmpty()) {
             log.debug("报警分片未命中明确分片键，回退到全部已知分片，logicTableName={}, tables={}",
                     logicTableName, fallback);
@@ -121,9 +122,7 @@ public class AlarmTimeCapacityShardingAlgorithm implements ComplexKeysShardingAl
             }
         }
         suffixes.addAll(cidIndexRepository.findSuffixesByAlarmIds(alarmIds));
-        Set<String> routedTables = tableManager.toPhysicalTables(logicTableName, suffixes);
-        routedTables.addAll(tableManager.toLegacyPhysicalTablesByAlarmIds(logicTableName, alarmIds));
-        return routedTables;
+        return tableManager.toPhysicalTables(logicTableName, suffixes);
     }
 
     private Set<String> routeByAlarmCids(String logicTableName,
@@ -200,6 +199,34 @@ public class AlarmTimeCapacityShardingAlgorithm implements ComplexKeysShardingAl
             }
         }
         return null;
+    }
+
+    private Set<String> requireAvailable(String logicTableName, Set<String> routedTables,
+                                         Collection<String> availableTargetNames, String routeReason) {
+        Set<String> availableTables = filterAvailable(routedTables, availableTargetNames);
+        if (availableTables.isEmpty()) {
+            throw new IllegalStateException("alarm shard table is not registered in actualDataNodes, logicTableName="
+                    + logicTableName + ", routeReason=" + routeReason + ", routedTables=" + routedTables
+                    + ", availableTargetNames=" + availableTargetNames);
+        }
+        if (availableTables.size() != routedTables.size()) {
+            log.warn("alarm shard route removed unregistered tables, logicTableName={}, routeReason={}, routedTables={}, availableTables={}",
+                    logicTableName, routeReason, routedTables, availableTables);
+        }
+        return availableTables;
+    }
+
+    private Set<String> filterAvailable(Set<String> routedTables, Collection<String> availableTargetNames) {
+        if (routedTables == null || routedTables.isEmpty()) {
+            return Collections.emptySet();
+        }
+        if (availableTargetNames == null || availableTargetNames.isEmpty()) {
+            return routedTables;
+        }
+        Set<String> availableSet = new LinkedHashSet<>(availableTargetNames);
+        return routedTables.stream()
+                .filter(availableSet::contains)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private Long toLong(Object value) {
