@@ -46,14 +46,30 @@ public class AlarmShardProperties {
      *
      * <p>只预建每个月的 00 号子表，容量切片仍在写入时按阈值动态创建。</p>
      */
-    private int preCreateMonths = 1;
+    private int preCreateMonths = 0;
 
     /**
-     * 是否在迁移期保留 alarm_0..4 旧表兜底路由。
-     *
-     * <p>旧数据完成迁移并切换到 alarm_yyyyMM_nn 后，应改为 false，避免旧表参与查询。</p>
+     * Deprecated compatibility switch. New routing no longer registers or queries legacy 0..4 tables.
      */
-    private boolean includeLegacyTables = true;
+    @Deprecated
+    private boolean includeLegacyTables = false;
+
+    /**
+     * Actual data node registration scope for ShardingSphere 4.1.1.
+     *
+     * <p>Runtime routing still only queries physical tables that really exist. These values only
+     * pre-register possible current/next-month tables so later on-demand table creation does not
+     * hit "Actual table is not in table config".</p>
+     */
+    private ActualDataNodes actualDataNodes = new ActualDataNodes();
+
+    /**
+     * Monthly rule refresh configuration.
+     *
+     * <p>Refresh rebuilds a new ShardingSphere datasource and swaps it through a stable proxy.
+     * If rebuild fails, the old datasource remains active.</p>
+     */
+    private RuleRefresh ruleRefresh = new RuleRefresh();
 
     /**
      * 外部 cid 热点索引生命周期配置。
@@ -117,5 +133,103 @@ public class AlarmShardProperties {
          * 时生成相同 alarm_id。</p>
          */
         private int workerId = 0;
+    }
+
+    @Data
+    public static class ActualDataNodes {
+
+        /**
+         * Current month pre-registers all slice numbers by default.
+         */
+        private int currentMonthMaxSliceNo = 255;
+
+        /**
+         * Next month pre-registers 00..09 by default so the month boundary has a small warm range.
+         */
+        private int nextMonthMaxSliceNo = 9;
+
+        public int safeCurrentMonthMaxSliceNo() {
+            return safeSliceNo(currentMonthMaxSliceNo, 255);
+        }
+
+        public int safeNextMonthMaxSliceNo() {
+            return safeSliceNo(nextMonthMaxSliceNo, 9);
+        }
+
+        private int safeSliceNo(int value, int defaultValue) {
+            if (value < 0) {
+                return defaultValue;
+            }
+            return Math.min(value, 255);
+        }
+    }
+
+    @Data
+    public static class RuleRefresh {
+
+        /**
+         * Enable monthly ShardingSphere datasource rebuild and proxy swap.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Default to 00:05 on the first day of each month.
+         */
+        private String cron = "0 5 0 1 * ?";
+
+        /**
+         * Delay closing old datasource so in-flight transactions can finish.
+         */
+        private long closeOldDelayMs = 300_000L;
+
+        /**
+         * Trigger a debounced refresh after runtime table creation.
+         */
+        private boolean activeOnTableCreatedEnabled = true;
+
+        /**
+         * Debounce active table-created refresh requests.
+         */
+        private long activeOnTableCreatedDebounceMs = 30_000L;
+
+        /**
+         * Run active table-created refresh outside the caller thread by default.
+         */
+        private boolean activeOnTableCreatedAsync = true;
+
+        /**
+         * Enable month-end pre-create of the next month's first physical slice.
+         */
+        private boolean monthEndPreCreateEnabled = true;
+
+        /**
+         * Run daily near month-end; the job checks the actual last day in code.
+         */
+        private String monthEndPreCreateCron = "0 50 23 * * ?";
+
+        /**
+         * Keep the daily cron portable by checking last day in Java.
+         */
+        private boolean monthEndPreCreateCheckLastDay = true;
+
+        /**
+         * Physical slices to pre-create for next month. Default 0 means only 00.
+         */
+        private int monthEndPreCreateNextMonthMaxSliceNo = 0;
+
+        public long safeCloseOldDelayMs() {
+            return Math.max(0L, closeOldDelayMs);
+        }
+
+        public long safeActiveOnTableCreatedDebounceMs() {
+            return Math.max(0L, activeOnTableCreatedDebounceMs);
+        }
+
+        public int safeMonthEndPreCreateNextMonthMaxSliceNo() {
+            if (monthEndPreCreateNextMonthMaxSliceNo < 0) {
+                return 0;
+            }
+            return Math.min(monthEndPreCreateNextMonthMaxSliceNo, 255);
+        }
     }
 }

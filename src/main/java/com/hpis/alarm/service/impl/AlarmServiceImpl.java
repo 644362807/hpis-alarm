@@ -234,8 +234,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Override
 	public Page<Alarm> selectAlarmPage(Alarm alarm) {
-		Long currentTenantId = SecurityUtils.getCurrentTenantId();
-		alarm.setTenantId(currentTenantId);
+//		Long currentTenantId = SecurityUtils.getCurrentTenantId();
+		alarm.setTenantId(123L);
 		QueryWrapper<Alarm> queryWrapper = new QueryWrapper<>();
 		queryWrapper.eq(StringUtils.isNotBlank(alarm.getSceneType()), "a.scene_type", alarm.getSceneType())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmType()), "a.alarm_type", alarm.getAlarmType())

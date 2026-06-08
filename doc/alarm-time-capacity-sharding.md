@@ -33,7 +33,7 @@
 
 写入时通过 `AlarmShardContext` 保存本次报警的 `table_suffix`，保证 `alarm`、`alarm_handle`、`alarm_electrolytic_cell` 三张绑定表落到同一个物理分片。
 
-迁移期 `alarm.sharding.includeLegacyTables=true` 会让兜底路由带上旧 `alarm_0..4`，旧数据迁移并回填元数据后应改为 `false`。
+2026-06-04 起 `alarm.sharding.includeLegacyTables` 仅作为废弃兼容配置保留，新链路不会再把旧 `alarm_0..4` 带入兜底路由。
 
 ## 配置示例
 
@@ -42,8 +42,8 @@ alarm:
   sharding:
     enabled: true
     maxRowsPerSlice: 5000000
-    preCreateMonths: 1
-    includeLegacyTables: true
+    preCreateMonths: 0
+    includeLegacyTables: false
 
 spring:
   datasource:
@@ -96,7 +96,7 @@ SQL 文件：
 4. 回填 `alarm_shard_route`，并按每个月每个 suffix 的行数回填 `alarm_shard_slice.current_rows`。
 5. Nacos 关闭旧 inline 规则，开启 `alarm.sharding.enabled=true`。
 6. 验证按 ID、按外部告警 ID、按设备停止、按时间范围查询的 SQL 路由。
-7. 迁移稳定后设置 `alarm.sharding.includeLegacyTables=false`。
+7. 迁移稳定后保持 `alarm.sharding.includeLegacyTables=false`；新链路不再支持 legacy 查询兜底。
 
 ## 回滚
 
@@ -113,3 +113,11 @@ SQL 文件：
 ## 后续待处理
 
 - 设备停止接口当前业务 SQL 会排除 `alarm_type = '3'`，但路由元数据按 `device_sn` 批量关闭。该问题先记录为后续优化项，后续应把 `alarm_shard_route.active_flag` 的更新条件和实际停止 SQL 保持一致。
+## 2026-06-04 actualDataNodes Refresh Note
+
+ShardingSphere 4.1.1 does not discover newly created physical tables after the sharding datasource has been built. The current implementation no longer relies on `ds.alarm_*`; it builds explicit `actualDataNodes` and refreshes them by rebuilding the inner ShardingSphere datasource.
+
+- Historical months use actual existing `yyyyMM_nn` tables.
+- The current month pre-registers `00..255`.
+- The next month pre-registers `00` by default and can be expanded with `alarm.sharding.actual-data-nodes.next-month-max-slice-no`.
+- Legacy `alarm_0..4`, `alarm_handle_0..4`, and `alarm_electrolytic_cell_0..4` are no longer registered or used as fallback routes.
