@@ -153,6 +153,13 @@
         </foreach>
     </delete>
 
+    <update id="deleteAlarmHandleByAlarmIds" parameterType="String">
+        update alarm_handle set del_flag=2 where alarm_id in
+        <foreach item="alarmId" collection="array" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </update>
+
     <delete id="deleteAlarmHandelByAlarmIdReale" parameterType="Long">
         delete from alarm_handle where alarm_id = #{alarmId}
     </delete>

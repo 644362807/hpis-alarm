@@ -68,5 +68,13 @@ public interface AlarmHandleMapper  extends BaseMapper<AlarmHandle>
      */
     public int deleteAlarmHandleByIds(Long[] alarmHandleIds);
 
+    /**
+     * 按报警 ID 批量逻辑删除处理记录。
+     *
+     * @param alarmIds 报警 ID
+     * @return 结果
+     */
+    int deleteAlarmHandleByAlarmIds(Long[] alarmIds);
+
     int deleteAlarmHandelByAlarmIdReale(Long alarmId);
 }

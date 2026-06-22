@@ -4,7 +4,6 @@ import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.hpis.alarm.domain.Alarm;
-import com.hpis.alarm.domain.AlarmConfigure;
 import com.hpis.alarm.dto.AlarmQueryParameter;
 import org.springframework.web.bind.annotation.RequestBody;
 
@@ -13,26 +12,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 【请填写功能名称】Service接口
- *
- * @author ruoyi
- * @date 2023-03-21
+ * 报警记录 Service 接口。
  */
 public interface IAlarmService extends IService<Alarm>
 {
     /**
-     * 查询【请填写功能名称】
+     * 按内部报警 ID 查询单条报警。
      *
-     * @param alarmId 【请填写功能名称】ID
-     * @return 【请填写功能名称】
+     * @param alarmId 内部报警 ID
+     * @return 报警记录
      */
     public Alarm selectAlarmById(Long alarmId);
 
     /**
-     * 查询列表(分页)
+     * 查询报警分页列表。
      *
-     * @param alarm 【请填写功能名称】
-     * @return 【请填写功能名称】集合
+     * @param alarm 查询条件，列表时间范围使用 startTime/endTime
+     * @return 报警分页结果
      */
     public Page<Alarm> selectAlarmPage(Alarm alarm);
 
@@ -42,17 +38,17 @@ public interface IAlarmService extends IService<Alarm>
     Long countAlarm(Alarm alarm);
 
     /**
-     * 查询【请填写功能名称】列表
+     * 查询报警列表。
      *
-     * @param alarm 【请填写功能名称】
-     * @return 【请填写功能名称】集合
+     * @param alarm 查询条件
+     * @return 报警列表
      */
     public List<Alarm> selectAlarmList(Alarm alarm, Long customerId);
 
     /**
-     * 新增【请填写功能名称】
+     * 新增单条报警。
      *
-     * @param jsonObject 【请填写功能名称】
+     * @param jsonObject MQ/接口传入的原始报警 JSON
      */
     public void insertAlarm(JSONObject jsonObject);
 
@@ -66,36 +62,38 @@ public interface IAlarmService extends IService<Alarm>
     void insertAlarms(List<JSONObject> jsonObjects);
 
     /**
-     * 报警停止
-     * @param object
+     * 按 alarmCid 停止报警。
+     *
+     * @param object 停止报警 payload
      */
     void alarmStop(@RequestBody JSONObject object);
 
     /**
-     * 根据设备sn报警停止
-     * @param object
+     * 根据设备 SN 停止报警。
+     *
+     * @param object 停止报警 payload
      */
     void alarmStopByDeviceSn(@RequestBody JSONObject object);
     /**
-     * 修改【请填写功能名称】
+     * 修改报警记录。
      *
-     * @param alarm 【请填写功能名称】
+     * @param alarm 报警记录
      * @return 结果
      */
     public int updateAlarm(Alarm alarm);
 
     /**
-     * 批量删除【请填写功能名称】
+     * 批量删除报警记录。
      *
-     * @param alarmIds 需要删除的【请填写功能名称】ID
+     * @param alarmIds 需要删除的报警 ID
      * @return 结果
      */
     public int deleteAlarmByIds(Long[] alarmIds);
 
     /**
-     * 删除【请填写功能名称】信息
+     * 删除单条报警记录。
      *
-     * @param alarmId 【请填写功能名称】ID
+     * @param alarmId 报警 ID
      * @return 结果
      */
     public int deleteAlarmById(Long alarmId);
