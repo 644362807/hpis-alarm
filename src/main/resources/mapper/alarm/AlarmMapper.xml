@@ -265,6 +265,7 @@
             <if test="updateTime != null">update_time = #{updateTime},</if>
             <if test="createBy != null">create_by = #{createBy},</if>
             <if test="updateBy != null">update_by = #{updateBy},</if>
+            <!-- 审查记录：identify 当前仍写 update_by，是否应写处理表字段需单独确认业务语义。 -->
             <if test="identify != null">update_by = #{identify},</if>
             <if test="alarmCid != null">alarm_cid = #{alarmCid},</if>
             <if test="irmsSn != null">irms_sn = #{irmsSn},</if>
@@ -295,13 +296,15 @@
         delete from alarm where alarm_id = #{alarmId}
     </delete>
 
-    <delete id="deleteAlarmByIds" parameterType="String">
-        delete from alarm where alarm_id in
+    <!-- 删除接口统一为主业务表逻辑删除；cid hot/stale route 由 service 额外真删。 -->
+    <update id="deleteAlarmByIds" parameterType="String">
+        update alarm set del_flag='2' where alarm_id in
         <foreach item="alarmId" collection="array" open="(" separator="," close=")">
             #{alarmId}
         </foreach>
-    </delete>
+    </update>
 
+    <!-- 审查记录：HTTP/direct stop 兼容 SQL，MQ stop 主链路已走 alarm_stop_event 可靠关闭。 -->
     <update id="alarmStop" parameterType="String">
         update alarm set alarm_endTime = #{endTime},alarm_status = #{alarmStatus} where  alarm_cid = #{alarmCId}
     </update>

@@ -119,5 +119,5 @@ ShardingSphere 4.1.1 does not discover newly created physical tables after the s
 
 - Historical months use actual existing `yyyyMM_nn` tables.
 - The current month pre-registers `00..255`.
-- The next month pre-registers `00` by default and can be expanded with `alarm.sharding.actual-data-nodes.next-month-max-slice-no`.
+- The next month pre-registers slices from `00` through `09` by default and can be expanded with `alarm.sharding.actual-data-nodes.next-month-max-slice-no`.
 - Legacy `alarm_0..4`, `alarm_handle_0..4`, and `alarm_electrolytic_cell_0..4` are no longer registered or used as fallback routes.

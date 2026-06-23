@@ -93,6 +93,10 @@ public interface AlarmCidIndexMapper {
 
     int deleteHotActiveByAlarmIds(@Param("alarmIds") List<Long> alarmIds);
 
+    int deleteHotByAlarmIds(@Param("alarmIds") List<Long> alarmIds);
+
+    int deleteStaleByAlarmIds(@Param("alarmIds") List<Long> alarmIds);
+
     int deleteClosedHot(@Param("now") Date now, @Param("limit") int limit);
 
     int deleteClosedStale(@Param("now") Date now, @Param("limit") int limit);

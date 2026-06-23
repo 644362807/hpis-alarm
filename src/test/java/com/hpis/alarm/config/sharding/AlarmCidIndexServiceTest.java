@@ -93,4 +93,18 @@ public class AlarmCidIndexServiceTest {
         assertEquals(500, captor.getAllValues().get(0).size());
         assertEquals(1, captor.getAllValues().get(1).size());
     }
+
+    @Test
+    public void deleteRoutesByAlarmIdsDeletesHotAndStaleRoutes() {
+        List<Long> alarmIds = java.util.Arrays.asList(1001L, 1002L);
+        when(cidIndexMapper.deleteHotByAlarmIds(alarmIds)).thenReturn(1);
+        when(cidIndexMapper.deleteStaleByAlarmIds(alarmIds)).thenReturn(1);
+
+        int deleted = service.deleteRoutesByAlarmIds(alarmIds);
+
+        assertEquals(2, deleted);
+        InOrder order = inOrder(cidIndexMapper);
+        order.verify(cidIndexMapper).deleteHotByAlarmIds(alarmIds);
+        order.verify(cidIndexMapper).deleteStaleByAlarmIds(alarmIds);
+    }
 }

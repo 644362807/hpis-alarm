@@ -2,7 +2,6 @@ package com.hpis.alarm.controller;
 
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.dto.AlarmQueryParameter;
 import com.hpis.alarm.service.IAlarmService;
@@ -13,8 +12,6 @@ import com.hpis.common.core.web.page.TableDataInfo;
 import com.hpis.common.log.annotation.Log;
 import com.hpis.common.log.enums.BusinessType;
 import com.hpis.common.security.annotation.PreAuthorize;
-import com.hpis.common.security.service.TokenService;
-import com.hpis.system.api.model.LoginUser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -25,10 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 【请填写功能名称】Controller
- *
- * @author ruoyi
- * @date 2023-03-21
+ * 报警记录 Controller。
  */
 @Slf4j
 @RestController
@@ -77,10 +71,10 @@ public class AlarmController extends BaseController
         return AjaxResult.success(alarmService.getPictureByPath(alarm));
     }
     /**
-     * 导出【请填写功能名称】列表
+     * 导出报警记录列表。
      */
     @PreAuthorize(hasPermi = "alarm:alarm:export")
-    @Log(title = "【请填写功能名称】", businessType = BusinessType.EXPORT)
+    @Log(title = "报警记录", businessType = BusinessType.EXPORT)
     @PostMapping("/export")
     public void export(HttpServletResponse response, Alarm alarm) throws IOException
     {

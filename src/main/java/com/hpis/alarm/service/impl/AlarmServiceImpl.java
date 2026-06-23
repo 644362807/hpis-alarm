@@ -99,10 +99,10 @@ import java.util.stream.Collectors;
 
 
 /**
- * 【请填写功能名称】Service业务层处理
+ * 报警记录业务实现。
  *
- * @author ruoyi
- * @date 2023-03-21
+ * <p>该类仍承载历史 HTTP 接口、MQ start 写入、分片写入和部分 direct stop 兼容路径。
+ * MQ stop 的可靠关闭主链路在 {@link AlarmStopEventService} 中实现。</p>
  */
 @Slf4j
 @Service
@@ -143,9 +143,6 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Autowired
 	private RemoteTmActionService remoteTmActionService;
-//
-//	@Autowired
-//	private RemoteElectrolyticSequenceService remoteElectrolyticSequenceService;
 
 	@Autowired
 	private RemoteDUnitInfoService remoteDUnitInfoService;
@@ -194,37 +191,14 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	@Autowired
 	private PlatformTransactionManager transactionManager;
 
-//	private static HashMap<String, Integer> handleSceneMap = new HashMap<>();
-//	private static HashMap<String, Integer> ecSceneMap = new HashMap<>();
-//	private static HashMap<String, Integer> pdSceneMap = new HashMap<>();
-//
-//	//有关行业 再主表 处理表的记录 key：1.一般行业;2.电解槽行业;3.集热器行业;4.回转窑行业;5.电力行业;6.局放行业;11.维耶里行业  1：ture 0:flase
-//	static	{
-//		//报警处理表
-//		handleSceneMap.put("1", 1);
-//		handleSceneMap.put("2", 1);
-//		handleSceneMap.put("6", 0);
-//		handleSceneMap.put("11",0);
-//
-//		ecSceneMap.put("1", 1);
-//		ecSceneMap.put("2", 0);
-//		ecSceneMap.put("6", 0);
-//		ecSceneMap.put("11", 0);
-//
-//		pdSceneMap.put("1", 1);
-//		pdSceneMap.put("2",0);
-//		pdSceneMap.put("6", 0);
-//		pdSceneMap.put("11", 0);
-//	}
-
 	private static final Snowflake snowflake = new Snowflake(5, 5);
 
 
 	/**
-	 * 查询【请填写功能名称】
+	 * 按内部报警 ID 查询单条报警。
 	 *
-	 * @param alarmId 【请填写功能名称】ID
-	 * @return 【请填写功能名称】
+	 * @param alarmId 内部报警 ID
+	 * @return 报警记录
 	 */
 	@Override
 	public Alarm selectAlarmById(Long alarmId)
@@ -324,10 +298,10 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 
 	/**
-	 * 查询【请填写功能名称】列表
+	 * 查询报警列表。
 	 *
-	 * @param alarm 【请填写功能名称】
-	 * @return 【请填写功能名称】
+	 * @param alarm 查询条件
+	 * @return 报警列表
 	 */
 	@Override
 	public List<Alarm> selectAlarmList(Alarm alarm,Long customerId)
@@ -1618,21 +1592,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 //	 * 报警推送
 //	 * @param device ：deviceId,constomerId
 //	 * @param alarm :封装好的报警对象
-//	 */
-//	public void alarmPush(DeviceKeyInfoDTO device, Alarm alarm) {
-//		log.info("报警推送消息开始---------------------------------");
-//		WechatAlarmData wechatAlarmData = new WechatAlarmData();
-//		wechatAlarmData.setAlarmId(alarm.getAlarmId());
-//		wechatAlarmData.setAlarmType(DictUtil.getDictLabelByTypeAndValue(Alarm.DICT_ALARM_TYPE, alarm.getAlarmType()));
-//		wechatAlarmData.setAlarmRank(DictUtil.getDictLabelByTypeAndValue(Alarm.DICT_ALARM_RANK, alarm.getAlarmType()));
-//		wechatAlarmData.setAlarmBegintime(alarm.getAlarmBegintime());
-//		wechatAlarmData.setTargetName(alarm.getTargetName());
-//		wechatAlarmData.setDeviceName(device.getDeviceName());
-//		wechatAlarmData.setMaxTemp(alarm.getMaxTemp());
-//		alarmSendService.sendRemote(device.getDeviceId(), device.getCustomerId(), alarm.getAlarmType(), wechatAlarmData);
-//	}
-
-
+	/**
+	 * HTTP/direct 兼容消警入口。
+	 *
+	 * <p>MQ stop 主路径已经迁移到 {@link AlarmStopEventService} 的可靠事件链路。该方法保留直接更新语义，
+	 * 本轮只标注边界，不迁移为 stop event，避免改变现有 HTTP 调用方行为。</p>
+	 */
 	@Transactional(rollbackFor = Exception.class)
 	@Override
 	public void alarmStop(JSONObject object) {
@@ -1816,9 +1781,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	}
 
 	/**
-	 * 修改【请填写功能名称】
+	 * 修改报警记录。
 	 *
-	 * @param alarm 【请填写功能名称】
+	 * @param alarm 报警记录
 	 * @return 结果
 	 */
 	@Override
@@ -1829,27 +1794,42 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	}
 
 	/**
-	 * 批量删除【请填写功能名称】
+	 * 批量删除报警记录。
 	 *
-	 * @param alarmIds 需要删除的【请填写功能名称】ID
+	 * @param alarmIds 需要删除的报警 ID
 	 * @return 结果
 	 */
 	@Override
+	@Transactional(rollbackFor = Exception.class)
 	public int deleteAlarmByIds(Long[] alarmIds)
 	{
-		return alarmMapper.deleteAlarmByIds(alarmIds);
+		if (alarmIds == null || alarmIds.length == 0) {
+			return 0;
+		}
+		int alarmRows = alarmMapper.deleteAlarmByIds(alarmIds);
+		alarmHandleMapper.deleteAlarmHandleByAlarmIds(alarmIds);
+		iAlarmElectrolyticCellService.deleteAlarmElectrolyticCellByIds(alarmIds);
+		iAlarmPartialDischargeService.deleteAlarmPartialDischargeByIds(alarmIds);
+		if (alarmCidIndexService != null) {
+			alarmCidIndexService.deleteRoutesByAlarmIds(Arrays.asList(alarmIds));
+		}
+		return alarmRows;
 	}
 
 	/**
-	 * 删除【请填写功能名称】信息
+	 * 删除单条报警记录。
 	 *
-	 * @param alarmId 【请填写功能名称】ID
+	 * @param alarmId 报警 ID
 	 * @return 结果
 	 */
 	@Override
+	@Transactional(rollbackFor = Exception.class)
 	public int deleteAlarmById(Long alarmId)
 	{
-		return alarmMapper.deleteAlarmById(alarmId);
+		if (alarmId == null) {
+			return 0;
+		}
+		return deleteAlarmByIds(new Long[]{alarmId});
 	}
 
 	/**

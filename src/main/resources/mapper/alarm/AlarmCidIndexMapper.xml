@@ -249,6 +249,22 @@
         </foreach>
     </delete>
 
+    <delete id="deleteHotByAlarmIds">
+        delete from alarm_cid_index
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </delete>
+
+    <delete id="deleteStaleByAlarmIds">
+        delete from alarm_cid_stale_index
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+    </delete>
+
     <delete id="deleteClosedHot">
         delete from alarm_cid_index
         where route_status = 'CLOSED'

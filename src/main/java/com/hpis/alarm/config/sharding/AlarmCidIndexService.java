@@ -269,6 +269,19 @@ public class AlarmCidIndexService {
         return cidIndexMapper.deleteClosedHot(now, limit) + cidIndexMapper.deleteClosedStale(now, limit);
     }
 
+    public int deleteRoutesByAlarmIds(Collection<Long> alarmIds) {
+        List<Long> ids = normalizeAlarmIds(alarmIds);
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        int deleted = 0;
+        for (List<Long> chunk : chunk(ids, AlarmBatchChunker.MAX_BATCH_SIZE)) {
+            deleted += cidIndexMapper.deleteHotByAlarmIds(chunk);
+            deleted += cidIndexMapper.deleteStaleByAlarmIds(chunk);
+        }
+        return deleted;
+    }
+
     private AlarmCidRoute buildRoute(Alarm alarm, String tableSuffix) {
         AlarmCidRoute route = new AlarmCidRoute();
         route.setAlarmCid(alarm.getAlarmCid());
@@ -312,6 +325,19 @@ public class AlarmCidIndexService {
             }
         }
         return new ArrayList<>(cids);
+    }
+
+    private List<Long> normalizeAlarmIds(Collection<Long> alarmIds) {
+        if (alarmIds == null || alarmIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        for (Long alarmId : alarmIds) {
+            if (alarmId != null) {
+                ids.add(alarmId);
+            }
+        }
+        return new ArrayList<>(ids);
     }
 
     private <T> List<List<T>> chunk(List<T> values, int batchSize) {
