@@ -28,6 +28,9 @@ public class AlarmHandle extends BaseEntity
     @TableId(type = IdType.AUTO)
     private Long alarmId;
 
+    /** 关联工单ID，直接处理为空，工单处理完成时填写 */
+    private Long workorderId;
+
     /** 报警处理人id */
     @Excel(name = "报警处理人id")
     private Long handlerId;
@@ -149,6 +152,14 @@ public class AlarmHandle extends BaseEntity
 
     public void setAlarmId(Long alarmId) {
         this.alarmId = alarmId;
+    }
+
+    public Long getWorkorderId() {
+        return workorderId;
+    }
+
+    public void setWorkorderId(Long workorderId) {
+        this.workorderId = workorderId;
     }
 
     public Long getHandlerId() {
@@ -334,6 +345,7 @@ public class AlarmHandle extends BaseEntity
         return "AlarmHandle{" +
                 "alarmHandleId=" + alarmHandleId +
                 ", alarmId=" + alarmId +
+                ", workorderId=" + workorderId +
                 ", handlerId=" + handlerId +
                 ", handleUserOrder='" + handleUserOrder + '\'' +
                 ", deviceId=" + deviceId +

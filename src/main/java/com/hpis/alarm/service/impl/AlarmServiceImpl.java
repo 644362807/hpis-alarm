@@ -2393,15 +2393,22 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		if (!pushOpen){
 			return;
 		}
-		if (isRemoteCallStubEnabled()) {
-			// push 最终会被其他服务消费；内部压测只记录 payload，不投递到跨服务推送链路。
-			logRemoteCallStub("RabbitMQAlarmPushProducer.sendCustomPushMessage", jsonObject);
+		Alarm alarmOBJ1 = getAlarmObject(jsonObject);
+		AlarmConfigure alarmConfigure = resolvePushAlarmConfigure(jsonObject, alarmOBJ1);
+		if (alarmConfigure != null && "0".equals(alarmConfigure.getPushEnabled())) {
+			log.info("报警配置禁用推送，alarmId={}, tenantId={}, sceneType={}, deviceSn={}, alarmType={}",
+					alarmOBJ1 == null ? null : alarmOBJ1.getAlarmId(),
+					alarmOBJ1 == null ? jsonObject.getLong("tenantId") : alarmOBJ1.getTenantId(),
+					alarmOBJ1 == null ? jsonObject.getString("sceneType") : alarmOBJ1.getSceneType(),
+					alarmOBJ1 == null ? jsonObject.getString("deviceSn") : alarmOBJ1.getDeviceSn(),
+					jsonObject.getString("alarmType"));
 			return;
 		}
 		// 异步执行耗时操作
 		//发送json-报警 报警类型 租户 设备sn 报警区域名称 报警时间 -附加jsonObject（报警原信息）
 		JSONObject pushMessage = new JSONObject();
 		pushMessage.put("data",jsonObject);
+		pushMessage.put("messageType", resolvePushMessageType(jsonObject, alarmOBJ1, alarmConfigure));
 		if(AlarmTypeEnums.ALARM_TYPE_ENUMS_1.getKey().equals(jsonObject.getString("alarmType"))){
 			pushMessage.put("alarmType","高温报警");
 		} else if (AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey().equals(jsonObject.getString("alarmType"))) {
@@ -2409,12 +2416,66 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		}else {
 			pushMessage.put("alarmType",AlarmTypeEnums.getValue(jsonObject.getString("alarmType")));
 		}
-		Alarm alarmOBJ1 = (Alarm) jsonObject.get("alarmOBJ");
-		pushMessage.put("tenantId",alarmOBJ1.getTenantId());
-		pushMessage.put("areaName",alarmOBJ1.getTargetName());
+		if (alarmOBJ1 != null) {
+			pushMessage.put("tenantId",alarmOBJ1.getTenantId());
+			pushMessage.put("areaName",alarmOBJ1.getTargetName());
+			pushMessage.put("deviceSn",alarmOBJ1.getDeviceSn());
+		}
 		pushMessage.put("time",jsonObject.getString("time"));
-		pushMessage.put("deviceSn",alarmOBJ1.getDeviceSn());
+		if (isRemoteCallStubEnabled()) {
+			// push 最终会被其他服务消费；内部压测只记录 payload，不投递到跨服务推送链路。
+			logRemoteCallStub("RabbitMQAlarmPushProducer.sendCustomPushMessage", pushMessage);
+			return;
+		}
 		rabbitMQAlarmPushProducer.sendCustomPushMessage(pushMessage);
+	}
+
+	private Alarm getAlarmObject(JSONObject jsonObject) {
+		Object rawAlarm = jsonObject.get("alarmOBJ");
+		if (rawAlarm instanceof Alarm) {
+			return (Alarm) rawAlarm;
+		}
+		if (rawAlarm instanceof JSONObject) {
+			return ((JSONObject) rawAlarm).toJavaObject(Alarm.class);
+		}
+		return jsonObject.getObject("alarmOBJ", Alarm.class);
+	}
+
+	private AlarmConfigure resolvePushAlarmConfigure(JSONObject jsonObject, Alarm alarm) {
+		if (iAlarmConfigureService == null) {
+			return null;
+		}
+		Long tenantId = alarm == null ? jsonObject.getLong("tenantId") : alarm.getTenantId();
+		String sceneType = alarm == null ? jsonObject.getString("sceneType") : alarm.getSceneType();
+		String deviceSn = alarm == null ? jsonObject.getString("deviceSn") : alarm.getDeviceSn();
+		String alarmType = jsonObject.getString("alarmType");
+		if (StringUtils.isBlank(alarmType) && alarm != null) {
+			alarmType = alarm.getAlarmType();
+		}
+		if (tenantId == null || StringUtils.isBlank(sceneType) || StringUtils.isBlank(deviceSn)
+				|| StringUtils.isBlank(alarmType)) {
+			return null;
+		}
+		try {
+			List<AlarmConfigure> configures =
+					iAlarmConfigureService.selectEnabledForAlarm(tenantId, sceneType, deviceSn, alarmType);
+			return configures == null || configures.isEmpty() ? null : configures.get(0);
+		} catch (Exception ex) {
+			log.warn("解析报警推送配置失败，按兼容策略继续推送，tenantId={}, sceneType={}, deviceSn={}, alarmType={}, error={}",
+					tenantId, sceneType, deviceSn, alarmType, ex.getMessage(), ex);
+			return null;
+		}
+	}
+
+	private String resolvePushMessageType(JSONObject jsonObject, Alarm alarm, AlarmConfigure alarmConfigure) {
+		if (alarmConfigure != null && StringUtils.isNotBlank(alarmConfigure.getPushMessageType())) {
+			return alarmConfigure.getPushMessageType();
+		}
+		String alarmType = jsonObject.getString("alarmType");
+		if (StringUtils.isNotBlank(alarmType)) {
+			return alarmType;
+		}
+		return alarm == null ? null : alarm.getAlarmType();
 	}
 
 	private boolean isRemoteCallStubEnabled() {

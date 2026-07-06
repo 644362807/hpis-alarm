@@ -23,6 +23,14 @@ public interface AlarmHandleMapper  extends BaseMapper<AlarmHandle>
     public AlarmHandle selectAlarmHandleById(Long alarmHandleId);
 
     /**
+     * 按报警ID查询处理记录。
+     *
+     * @param alarmId 报警ID
+     * @return 处理记录
+     */
+    AlarmHandle selectAlarmHandleByAlarmId(Long alarmId);
+
+    /**
      * 查询【请填写功能名称】列表
      *
      * @param alarmHandle 【请填写功能名称】

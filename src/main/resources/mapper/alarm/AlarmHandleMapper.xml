@@ -7,6 +7,7 @@
     <resultMap type="AlarmHandle" id="AlarmHandleResult">
         <result property="alarmHandleId"    column="alarm_handle_id"    />
         <result property="alarmId"    column="alarm_id"    />
+        <result property="workorderId"    column="workorder_id"    />
         <result property="handlerId"    column="handler_id"    />
 
         <result property="handleStatus"    column="handle_status"    />
@@ -24,7 +25,7 @@
     </resultMap>
 
     <sql id="selectAlarmHandleVo">
-        select h.alarm_handle_id, a.alarm_id, a.device_id, a.alarm_type, a.alarm_rank, a.alarm_status,  h.identify, h.opinion, a.alarm_beginTime,h.update_time, h.update_by
+        select h.alarm_handle_id, a.alarm_id, h.workorder_id, a.device_id, a.alarm_type, a.alarm_rank, a.alarm_status,  h.identify, h.opinion, a.alarm_beginTime,h.update_time, h.update_by
     </sql>
 
     <select id="selectAlarmHandleList" parameterType="AlarmHandle" resultMap="AlarmHandleResult">
@@ -54,11 +55,21 @@
         where alarm_handle_id = #{alarmHandleId}
     </select>
 
+    <select id="selectAlarmHandleByAlarmId" parameterType="Long" resultMap="AlarmHandleResult">
+        select alarm_handle_id, alarm_id, workorder_id, handler_id, handle_status, del_flag, identify,
+               opinion, create_time, create_by, update_time, update_by, handle_time,
+               confirm_user_id, apparatus_id, handler_name, alarm_beginTime
+        from alarm_handle
+        where alarm_id = #{alarmId}
+        limit 1
+    </select>
+
     <insert id="insertAlarmHandle" parameterType="AlarmHandle">
         insert into alarm_handle
         <trim prefix="(" suffix=")" suffixOverrides=",">
             <if test="alarmHandleId != null">alarm_handle_id,</if>
             <if test="alarmId != null">alarm_id,</if>
+            <if test="workorderId != null">workorder_id,</if>
             <if test="handlerId != null and handlerId != ''">handler_id,</if>
 
             <if test="handleStatus != null and handleStatus != ''">handle_status,</if>
@@ -78,6 +89,7 @@
         <trim prefix="values (" suffix=")" suffixOverrides=",">
             <if test="alarmHandleId != null">#{alarmHandleId},</if>
             <if test="alarmId != null">#{alarmId},</if>
+            <if test="workorderId != null">#{workorderId},</if>
             <if test="handlerId != null and handlerId != ''">#{handlerId},</if>
 
             <if test="handleStatus != null and handleStatus != ''">#{handleStatus},</if>
@@ -114,6 +126,7 @@
         <trim prefix="SET" suffixOverrides=",">
 
             <if test="handlerId != null and handlerId != ''">handler_id = #{handlerId},</if>
+            <if test="workorderId != null">workorder_id = #{workorderId},</if>
 
             <if test="handleStatus != null and handleStatus != ''">handle_status = #{handleStatus},</if>
             <if test="delFlag != null and delFlag != ''">del_flag = #{delFlag},</if>

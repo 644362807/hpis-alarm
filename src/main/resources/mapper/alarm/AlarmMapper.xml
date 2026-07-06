@@ -24,10 +24,12 @@
         <result property="alarmCid"     column="alarm_cid"     />
         <result property="irmsSn"     column="irms_sn"     />
         <result property="targetName"     column="target_name"     />
+        <result property="tenantId"     column="tenant_id"     />
+        <result property="sceneType"     column="scene_type"     />
     </resultMap>
 
     <sql id="selectAlarmVo">
-        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time, h.update_time, a.create_by, a.update_by,a.scene_type ,h.identify,h.opinion,a.alarm_cid,a.irms_sn,a.target_name,a.remark_data from alarm a
+        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time, h.update_time, a.create_by, a.update_by,a.scene_type,a.tenant_id,h.identify,h.opinion,a.alarm_cid,a.irms_sn,a.target_name,a.remark_data from alarm a
                                                                                                                                                                                                                                                         left join alarm_handle h on a.alarm_id = h.alarm_id
     </sql>
 

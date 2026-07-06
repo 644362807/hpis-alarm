@@ -70,6 +70,18 @@ public class AlarmConfigure extends BaseEntity
     /** 重复报警检测周期**/
     private Integer repeatCycleNumber;
 
+    /** 是否进入报警推送：0不推送 1推送 */
+    private String pushEnabled;
+
+    /** 推送策略编码，对应推送配置 message_type */
+    private String pushMessageType;
+
+    /** 报警工单推送策略编码，对应推送配置 message_type */
+    private String workorderPushMessageType;
+
+    /** 关联报警工单模板ID */
+    private Long workorderConfigId;
+
     private String sequenceUid;
 
     private String irmsSn;
@@ -92,6 +104,10 @@ public class AlarmConfigure extends BaseEntity
                 ", deviceSet=" + deviceSet +
                 ", deviceIds=" + Arrays.toString(deviceIds) +
                 ", repeatCycleNumber=" + repeatCycleNumber +
+                ", pushEnabled='" + pushEnabled + '\'' +
+                ", pushMessageType='" + pushMessageType + '\'' +
+                ", workorderPushMessageType='" + workorderPushMessageType + '\'' +
+                ", workorderConfigId=" + workorderConfigId +
                 '}';
     }
 }

@@ -351,4 +351,9 @@ public class AlarmConfigureServiceImpl extends ServiceImpl<AlarmConfigureMapper,
     public List<AlarmConfigure> selectDeviceConfigureByCustomer(AlarmConfigure alarmConfigure){
        return alarmConfigureMapper.selectDeviceConfigureByCustomer(alarmConfigure);
     }
+
+    @Override
+    public List<AlarmConfigure> selectEnabledForAlarm(Long tenantId, String sceneType, String deviceSn, String alarmType) {
+        return alarmConfigureMapper.selectEnabledForAlarm(tenantId, sceneType, deviceSn, alarmType);
+    }
 }

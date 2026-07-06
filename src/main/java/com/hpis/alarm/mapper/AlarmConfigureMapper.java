@@ -91,6 +91,20 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
 
     public List<AlarmConfigure> selectDeviceConfigureByCustomer(AlarmConfigure alarmConfigure);
 
+    public List<AlarmConfigure> selectEnabledForAlarm(@Param("tenantId") Long tenantId,
+                                                      @Param("sceneType") String sceneType,
+                                                      @Param("deviceSn") String deviceSn,
+                                                      @Param("alarmType") String alarmType);
+
+    public int countEnabledDuplicateConfigureByDevices(@Param("tenantId") Long tenantId,
+                                                       @Param("sceneType") String sceneType,
+                                                       @Param("deviceSns") List<String> deviceSns,
+                                                       @Param("allDeviceSelected") boolean allDeviceSelected,
+                                                       @Param("alarmType") String alarmType,
+                                                       @Param("excludeAlarmConfigureId") Long excludeAlarmConfigureId);
+
+    public List<String> selectDeviceSnsByConfigureId(@Param("alarmConfigureId") Long alarmConfigureId);
+
     /**
      * 删除关联表信息
      * @param alarmConfigureId

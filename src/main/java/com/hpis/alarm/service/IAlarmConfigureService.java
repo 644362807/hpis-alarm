@@ -79,4 +79,15 @@ public interface IAlarmConfigureService  extends IService<AlarmConfigure>
      * @return
      */
     public List<AlarmConfigure> selectDeviceConfigureByCustomer(AlarmConfigure alarmConfigure);
+
+    /**
+     * 按报警上下文解析当前启用的报警配置。
+     *
+     * @param tenantId 租户ID
+     * @param sceneType 行业/场景
+     * @param deviceSn 设备SN
+     * @param alarmType 报警类型
+     * @return 按精确设备优先、全设备兜底排序后的配置
+     */
+    List<AlarmConfigure> selectEnabledForAlarm(Long tenantId, String sceneType, String deviceSn, String alarmType);
 }

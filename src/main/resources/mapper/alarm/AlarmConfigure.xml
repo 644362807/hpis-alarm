@@ -20,6 +20,10 @@
         <result property="sceneType"    column="scene_type"    />
         <result property="tenantId"    column="tenant_id"    />
         <result property="repeatCycleNumber"    column="repeat_cycle_number"    />
+        <result property="pushEnabled"    column="push_enabled"    />
+        <result property="pushMessageType"    column="push_message_type"    />
+        <result property="workorderPushMessageType"    column="workorder_push_message_type"    />
+        <result property="workorderConfigId"    column="workorder_config_id"    />
         <collection property="alarmConfigureTimeList"
                     ofType="com.hpis.alarm.domain.AlarmConfigureTime" column="alarm_configure_id" select="queryList1">
         </collection>
@@ -29,12 +33,15 @@
         </collection>
     </resultMap>
 
+    <resultMap type="com.hpis.alarm.domain.AlarmConfigure" id="AlarmConfigureForAlarmResult" extends="AlarmConfigureResult" autoMapping="true">
+    </resultMap>
+
     <select id="queryList1" resultType="com.hpis.alarm.domain.AlarmConfigureTime" >
         select alarm_configure_starttime ,alarm_configure_endtime from alarm_configure_time where alarm_configure_id = #{alarm_configure_id} and del_flag = "0"
     </select>
 
     <sql id="selectAlarmConfigureVo">
-        select alarm_configure_id, alarm_configure_name, alarm_type, device_sn, device_alarm_control, alarm_configure_period, del_flag, create_time, create_by, update_time, update_by,repeat_alarm_duration,scene_type,tenant_id,repeat_cycle_number from alarm_configure
+        select alarm_configure_id, alarm_configure_name, alarm_type, device_sn, device_alarm_control, alarm_configure_period, del_flag, create_time, create_by, update_time, update_by,repeat_alarm_duration,scene_type,tenant_id,repeat_cycle_number,push_enabled,push_message_type,workorder_push_message_type,workorder_config_id from alarm_configure
     </sql>
 
     <select id="selectAlarmConfigureList" parameterType="AlarmConfigure" resultMap="AlarmConfigureResult">
@@ -62,7 +69,7 @@
 
     
     <select id="selectDeviceConfigureByCustomer" resultMap="AlarmConfigureResult">
-        select d.device_sn,c.repeat_cycle_number,c.alarm_configure_id,alarm_configure_name,alarm_type,device_alarm_control,alarm_configure_period,repeat_alarm_duration,scene_type,tenant_id
+        select d.device_sn,c.repeat_cycle_number,c.alarm_configure_id,alarm_configure_name,alarm_type,device_alarm_control,alarm_configure_period,repeat_alarm_duration,scene_type,tenant_id,c.push_enabled,c.push_message_type,c.workorder_push_message_type,c.workorder_config_id
         from  alarm_configure c left join alarm_device_configure d on c.alarm_configure_id = d.alarm_configure_id
         <where>
             <if test="alarmConfigureName != null  and alarmConfigureName != ''"> and alarm_configure_name like concat('%', #{alarmConfigureName}, '%')</if>
@@ -76,12 +83,43 @@
 
     </select>
 
+    <select id="selectEnabledForAlarm" resultMap="AlarmConfigureForAlarmResult">
+        select c.alarm_configure_id, c.alarm_configure_name, c.alarm_type, c.device_sn,
+               c.device_alarm_control, c.alarm_configure_period, c.del_flag, c.create_time,
+               c.create_by, c.update_time, c.update_by, c.repeat_alarm_duration, c.scene_type,
+               c.tenant_id, c.repeat_cycle_number, c.push_enabled, c.push_message_type,
+               c.workorder_push_message_type, c.workorder_config_id,
+               adc.device_sn as matched_device_sn
+        from alarm_configure c
+        join alarm_device_configure adc
+          on adc.alarm_configure_id = c.alarm_configure_id
+         and adc.device_sn is not null
+         and (
+             adc.device_sn = #{deviceSn}
+             or adc.device_sn in ('ALL', '*')
+         )
+        where c.del_flag = '0'
+          and c.device_alarm_control = '1'
+          and c.tenant_id = #{tenantId}
+          and c.scene_type = #{sceneType}
+          and (
+              c.alarm_type = #{alarmType}
+              or c.alarm_type is null
+              or c.alarm_type = ''
+              or c.alarm_type in ('ALL', '*', '0')
+          )
+        order by case when adc.device_sn = #{deviceSn} then 0
+                      when adc.device_sn in ('ALL', '*') then 1
+                      else 2 end,
+                 c.update_time desc,
+                 c.create_time desc
+    </select>
+
     <insert id="insertAlarmConfigure" parameterType="com.hpis.alarm.domain.AlarmConfigure" useGeneratedKeys="true" keyProperty="alarmConfigureId">
         insert into alarm_configure
         <trim prefix="(" suffix=")" suffixOverrides=",">
             <if test="alarmConfigureName != null and alarmConfigureName != ''">alarm_configure_name,</if>
             <if test="alarmType != null and alarmType != ''">alarm_type,</if>
-            <if test="deviceSn != null and deviceSn != ''">device_sn,</if>
             <if test="deviceAlarmControl != null and deviceAlarmControl != ''">device_alarm_control,</if>
             <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">alarm_configure_period,</if>
             <if test="delFlag != null and delFlag != ''">del_flag,</if>
@@ -94,11 +132,14 @@
             <if test="sceneType != null">scene_type,</if>
             <if test="tenantId != null">tenant_id,</if>
             <if test="repeatCycleNumber != null">repeat_cycle_number,</if>
+            <if test="pushEnabled != null and pushEnabled != ''">push_enabled,</if>
+            <if test="pushMessageType != null and pushMessageType != ''">push_message_type,</if>
+            <if test="workorderPushMessageType != null and workorderPushMessageType != ''">workorder_push_message_type,</if>
+            <if test="workorderConfigId != null">workorder_config_id,</if>
         </trim>
         <trim prefix="values (" suffix=")" suffixOverrides=",">
             <if test="alarmConfigureName != null and alarmConfigureName != ''">#{alarmConfigureName},</if>
             <if test="alarmType != null and alarmType != ''">#{alarmType},</if>
-            <if test="deviceSn != null and deviceSn != ''">#{deviceSn},</if>
             <if test="deviceAlarmControl != null and deviceAlarmControl != ''">#{deviceAlarmControl},</if>
             <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">#{alarmConfigurePeriod},</if>
             <if test="delFlag != null and delFlag != ''">#{delFlag},</if>
@@ -111,6 +152,10 @@
             <if test="sceneType != null">#{sceneType},</if>
             <if test="tenantId != null">#{tenantId},</if>
             <if test="repeatCycleNumber != null">#{repeatCycleNumber},</if>
+            <if test="pushEnabled != null and pushEnabled != ''">#{pushEnabled},</if>
+            <if test="pushMessageType != null and pushMessageType != ''">#{pushMessageType},</if>
+            <if test="workorderPushMessageType != null and workorderPushMessageType != ''">#{workorderPushMessageType},</if>
+            <if test="workorderConfigId != null">#{workorderConfigId},</if>
         </trim>
     </insert>
 
@@ -132,7 +177,6 @@
         <trim prefix="SET" suffixOverrides=",">
             <if test="alarmConfigureName != null and alarmConfigureName != ''">alarm_configure_name = #{alarmConfigureName},</if>
             <if test="alarmType != null and alarmType != ''">alarm_type = #{alarmType},</if>
-            <if test="deviceSn != null and deviceSn != ''">device_sn = #{deviceSn},</if>
             <if test="deviceAlarmControl != null and deviceAlarmControl != ''">device_alarm_control = #{deviceAlarmControl},</if>
             <if test="alarmConfigurePeriod != null and alarmConfigurePeriod != ''">alarm_configure_period = #{alarmConfigurePeriod},</if>
             <if test="createTime != null">create_time = #{createTime},</if>
@@ -144,6 +188,10 @@
             <if test="sceneType != null and sceneType != '' ">scene_type = #{sceneType},</if>
             <if test="tenantId != null">tenant_id = #{tenantId},</if>
             <if test="repeatCycleNumber != null">repeat_cycle_number = #{repeatCycleNumber},</if>
+            <if test="pushEnabled != null and pushEnabled != ''">push_enabled = #{pushEnabled},</if>
+            <if test="pushMessageType != null">push_message_type = #{pushMessageType},</if>
+            <if test="workorderPushMessageType != null">workorder_push_message_type = #{workorderPushMessageType},</if>
+            <if test="workorderConfigId != null">workorder_config_id = #{workorderConfigId},</if>
         </trim>
         where alarm_configure_id = #{alarmConfigureId}
     </update>
@@ -169,6 +217,51 @@
             (#{item},#{alarmConfigureId})
         </foreach>
     </insert>
+
+    <select id="countEnabledDuplicateConfigureByDevices" resultType="int">
+        select count(distinct c.alarm_configure_id)
+        from alarm_configure c
+        join alarm_device_configure adc
+          on adc.alarm_configure_id = c.alarm_configure_id
+         and adc.device_sn is not null
+        where c.del_flag = '0'
+          and c.device_alarm_control = '1'
+          <choose>
+              <when test="tenantId != null">and c.tenant_id = #{tenantId}</when>
+              <otherwise>and c.tenant_id is null</otherwise>
+          </choose>
+          <choose>
+              <when test="sceneType != null and sceneType != ''">and c.scene_type = #{sceneType}</when>
+              <otherwise>and (c.scene_type is null or c.scene_type = '')</otherwise>
+          </choose>
+          <choose>
+              <when test="alarmType != null and alarmType != ''">and c.alarm_type = #{alarmType}</when>
+              <otherwise>and (c.alarm_type is null or c.alarm_type = '')</otherwise>
+          </choose>
+          <if test="excludeAlarmConfigureId != null">
+              and c.alarm_configure_id != #{excludeAlarmConfigureId}
+          </if>
+          <choose>
+              <when test="allDeviceSelected">
+                  and adc.device_sn is not null
+              </when>
+              <otherwise>
+                  and (
+                      adc.device_sn in ('ALL', '*')
+                      or adc.device_sn in
+                      <foreach collection="deviceSns" item="deviceSn" open="(" separator="," close=")">
+                          #{deviceSn}
+                      </foreach>
+                  )
+              </otherwise>
+          </choose>
+    </select>
+
+    <select id="selectDeviceSnsByConfigureId" resultType="string">
+        select device_sn
+        from alarm_device_configure
+        where alarm_configure_id = #{alarmConfigureId}
+    </select>
 
 
     <delete id="deleteAlarmConfigureDeviceById" parameterType="Long">
