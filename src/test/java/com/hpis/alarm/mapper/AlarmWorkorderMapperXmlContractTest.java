@@ -64,7 +64,10 @@ public class AlarmWorkorderMapperXmlContractTest {
         assertFalse(insertSql.contains("#{deviceSn},"));
         assertFalse(updateSql.contains("device_sn = #{deviceSn}"));
         assertFalse(duplicateCheckSql.contains("device_sn = #{deviceSn}"));
-        assertTrue(selectDeviceSnsSql.contains("select device_sn from alarm_device_configure where alarm_configure_id = #{alarmConfigureId}"));
+        assertTrue(selectDeviceSnsSql.contains("from alarm_device_configure adc join alarm_configure c"));
+        assertTrue(selectDeviceSnsSql.contains("adc.alarm_configure_id = #{alarmConfigureId}"));
+        assertTrue(selectDeviceSnsSql.contains("c.tenant_id = #{tenantId}"));
+        assertTrue(selectDeviceSnsSql.contains("c.del_flag = '0'"));
     }
 
     @Test

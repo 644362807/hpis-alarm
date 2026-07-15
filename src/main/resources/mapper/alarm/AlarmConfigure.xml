@@ -65,6 +65,8 @@
     <select id="selectAlarmConfigureById" parameterType="Long" resultMap="AlarmConfigureResult">
         <include refid="selectAlarmConfigureVo"/>
         where alarm_configure_id = #{alarmConfigureId}
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
     </select>
 
     
@@ -194,19 +196,35 @@
             <if test="workorderConfigId != null">workorder_config_id = #{workorderConfigId},</if>
         </trim>
         where alarm_configure_id = #{alarmConfigureId}
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
     </update>
 
     <delete id="deleteAlarmConfigureById" parameterType="Long">
-        delete from alarm_configure where alarm_configure_id = #{alarmConfigureId}
+        update alarm_configure
+        set del_flag = '2'
+        where alarm_configure_id = #{alarmConfigureId}
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
     </delete>
 
     <delete id="deleteConfigTime" parameterType="Long">
         delete from alarm_configure_time where alarm_configure_id = #{alarmConfigureId}
     </delete>
 
+    <delete id="deleteConfigTimeByConfigureIds">
+        delete from alarm_configure_time where alarm_configure_id in
+        <foreach item="alarmConfigureId" collection="alarmConfigureIds" open="(" separator="," close=")">
+            #{alarmConfigureId}
+        </foreach>
+    </delete>
+
     <delete id="deleteAlarmConfigureByIds" parameterType="String">
-        update alarm_configure set del_flag=2 where alarm_configure_id in
-        <foreach item="alarmConfigureId" collection="array" open="(" separator="," close=")">
+        update alarm_configure set del_flag=2
+        where tenant_id = #{tenantId}
+          and del_flag = '0'
+          and alarm_configure_id in
+        <foreach item="alarmConfigureId" collection="alarmConfigureIds" open="(" separator="," close=")">
             #{alarmConfigureId}
         </foreach>
     </delete>
@@ -258,13 +276,34 @@
     </select>
 
     <select id="selectDeviceSnsByConfigureId" resultType="string">
-        select device_sn
-        from alarm_device_configure
-        where alarm_configure_id = #{alarmConfigureId}
+        select adc.device_sn
+        from alarm_device_configure adc
+        join alarm_configure c on c.alarm_configure_id = adc.alarm_configure_id
+        where adc.alarm_configure_id = #{alarmConfigureId}
+          and c.tenant_id = #{tenantId}
+          and c.del_flag = '0'
     </select>
 
 
     <delete id="deleteAlarmConfigureDeviceById" parameterType="Long">
         delete from alarm_device_configure where alarm_configure_id = #{alarmConfigureId}
     </delete>
+
+    <delete id="deleteAlarmConfigureDeviceByIds">
+        delete from alarm_device_configure where alarm_configure_id in
+        <foreach item="alarmConfigureId" collection="alarmConfigureIds" open="(" separator="," close=")">
+            #{alarmConfigureId}
+        </foreach>
+    </delete>
+
+    <select id="selectExistingIdsByTenant" resultType="long">
+        select alarm_configure_id
+        from alarm_configure
+        where tenant_id = #{tenantId}
+          and del_flag = '0'
+          and alarm_configure_id in
+        <foreach item="alarmConfigureId" collection="alarmConfigureIds" open="(" separator="," close=")">
+            #{alarmConfigureId}
+        </foreach>
+    </select>
 </mapper>

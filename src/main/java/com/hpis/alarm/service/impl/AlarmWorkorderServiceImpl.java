@@ -86,7 +86,8 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
             throw new CustomException("报警未确认，不能创建工单");
         }
         AlarmConfigure configure = resolveWorkorderConfigure(alarm);
-        if (configure == null || configure.getWorkorderConfigId() == null) {
+        if (configure == null || configure.getWorkorderConfigId() == null
+                || configure.getWorkorderConfigId() <= 0) {
             throw new CustomException("当前报警配置未关联工单模板，不能创建工单");
         }
 

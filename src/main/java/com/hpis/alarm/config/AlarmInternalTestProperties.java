@@ -25,4 +25,9 @@ public class AlarmInternalTestProperties {
      * true：只记录调用目标和 payload，不请求外部服务；本开关会改变副作用执行结果，只允许本地测试或压测使用。</p>
      */
     private boolean remoteCallStubEnabled = false;
+
+    /**
+     * PUSH_ALARM MQ 鎶曢€掓祴璇曟寮€鍏炽€?
+     */
+    private boolean pushMqStubEnabled = false;
 }

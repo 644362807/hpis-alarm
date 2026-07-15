@@ -1,0 +1,220 @@
+### Alarm -> Push 当前基线请求集
+### 权威说明和实测结果：hpis-alarm/doc/报警Push接口测试用例-全新环境.md
+### 本文件不包含 pushBindingId、企业微信、工单转派和 messageType=25。
+
+@alarmBaseUrl = http://127.0.0.1:18806
+@pushBaseUrl = http://127.0.0.1:8812
+@receiverBaseUrl = http://127.0.0.1:19010
+@rabbitManagementBaseUrl = http://127.0.0.1:15672
+@token = replace-with-valid-token
+@tenantId = 799001
+@userId = 799001
+@otherToken = replace-with-other-tenant-token
+@otherUserId = 799002
+@deviceId = 79900101
+@deviceSn = CODEX-E2E-DEVICE-MANUAL
+@gatewaySn = CODEX-E2E-GATEWAY-MANUAL
+@runId = 20260714225038
+@alarmConfigureId = 0
+@pushConfigId = 0
+
+### 0. 清空接收器
+DELETE {{receiverBaseUrl}}/_events
+
+### AC-01 新增 Alarm 配置（tenantId 即使传入也会被服务端当前租户覆盖）
+POST {{alarmBaseUrl}}/configure/add
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "alarmConfigureName": "e2e-alarm-manual",
+  "alarmType": "10",
+  "deviceAlarmControl": "1",
+  "alarmConfigurePeriod": "0",
+  "sceneType": "1",
+  "deviceIds": [{{deviceId}}],
+  "pushEnabled": "1",
+  "pushMessageType": "10",
+  "workorderConfigId": 0,
+  "tenantId": 1
+}
+
+### AC-02 列表；从 rows 回填 alarmConfigureId
+GET {{alarmBaseUrl}}/configure/list?pageNum=1&pageSize=100&alarmConfigureName=e2e-alarm-manual
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### AC-03 详情；必须返回 deviceIds/deviceSet
+GET {{alarmBaseUrl}}/configure/{{alarmConfigureId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### AC-04 修改；不传 deviceIds=保留，[] = 清空，非空数组=替换
+PUT {{alarmBaseUrl}}/configure/update
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "alarmConfigureId": {{alarmConfigureId}},
+  "alarmConfigureName": "e2e-alarm-manual-u",
+  "alarmType": "10",
+  "deviceAlarmControl": "1",
+  "alarmConfigurePeriod": "0",
+  "sceneType": "1",
+  "deviceIds": [{{deviceId}}],
+  "pushEnabled": "1",
+  "pushMessageType": "10",
+  "workorderConfigId": 0
+}
+
+### PC-01 新增禁用的 HTTP Push 配置
+POST {{pushBaseUrl}}/pushConfig/add
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "messageType": "10",
+  "pushChannelType": "10",
+  "enabled": false,
+  "pushAddress": "127.0.0.1:19010/codex/alarm-10",
+  "isPassive": "0",
+  "configName": "e2e-push-manual",
+  "deviceSns": ["{{deviceSn}}"],
+  "tenantId": 1
+}
+
+### PC-02 列表；从 rows 回填 pushConfigId
+GET {{pushBaseUrl}}/pushConfig/list?pageNum=1&pageSize=100&configName=e2e-push-manual
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### PC-03 详情
+GET {{pushBaseUrl}}/pushConfig/{{pushConfigId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### PC-04 修改并启用
+POST {{pushBaseUrl}}/pushConfig/update
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "activePushConfigId": {{pushConfigId}},
+  "messageType": "10",
+  "pushChannelType": "10",
+  "enabled": true,
+  "pushAddress": "127.0.0.1:19010/codex/alarm-10",
+  "isPassive": "0",
+  "configName": "e2e-push-manual-u",
+  "deviceSns": ["{{deviceSn}}"]
+}
+
+### AP-01 HTTP 报警入口；当前接口返回空 2xx，以最终接收为准
+POST {{alarmBaseUrl}}/alarm/alarmAdd
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "alarmId": "CODEX-E2E-HTTP-{{runId}}",
+  "deviceSn": "{{deviceSn}}",
+  "gatewaySn": "{{gatewaySn}}",
+  "alarmType": "10",
+  "alarmDegree": "1",
+  "sceneType": "1",
+  "cameraType": "1",
+  "tenantId": {{tenantId}},
+  "time": "2026-07-14 22:51:08"
+}
+
+### AP-02 查询 HTTP 最终接收
+GET {{receiverBaseUrl}}/_events
+
+### AP-03 真实 RabbitMQ alarm_queue 消息
+### RabbitMQ 管理 API 需要 Basic Auth；payload 内的 cmdSeq 必须是 int。
+POST {{rabbitManagementBaseUrl}}/api/exchanges/%2F/amq.default/publish
+Authorization: Basic guest guest
+Content-Type: application/json
+
+{
+  "properties": {
+    "content_type": "application/json",
+    "delivery_mode": 2
+  },
+  "routing_key": "alarm_queue",
+  "payload_encoding": "string",
+  "payload": "{\"cmd\":\"dataSync\",\"cmdData\":{\"confItems\":1000,\"deviceSn\":\"{{gatewaySn}}\",\"operCode\":259,\"rawData\":{\"alarmDegree\":\"1\",\"alarmId\":\"CODEX-E2E-MQ-{{runId}}\",\"alarmType\":\"10\",\"cameraType\":\"1\",\"deviceSn\":\"{{deviceSn}}\",\"gatewaySn\":\"{{gatewaySn}}\",\"sceneType\":\"1\",\"time\":\"2026-07-14 22:51:08\"},\"version\":1},\"cmdSeq\":1,\"servId\":\"manual-e2e\",\"times\":1}"
+}
+
+### AP-04 再查接收器；计数应比 AP-02 增加 1
+GET {{receiverBaseUrl}}/_events
+
+### TI-01 隔离租户查不到 Alarm 配置
+GET {{alarmBaseUrl}}/configure/list?pageNum=1&pageSize=100&alarmConfigureName=e2e-alarm-manual
+Authorization: Bearer {{otherToken}}
+user_id: {{otherUserId}}
+username: manual-e2e-other
+
+### TI-02 隔离租户查不到 Push 配置
+GET {{pushBaseUrl}}/pushConfig/list?pageNum=1&pageSize=100&configName=e2e-push-manual
+Authorization: Bearer {{otherToken}}
+user_id: {{otherUserId}}
+username: manual-e2e-other
+
+### PC-05 禁用；执行后再发一条新报警，接收器计数不得增加
+POST {{pushBaseUrl}}/pushConfig/update
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+Content-Type: application/json
+
+{
+  "activePushConfigId": {{pushConfigId}},
+  "messageType": "10",
+  "pushChannelType": "10",
+  "enabled": false,
+  "pushAddress": "127.0.0.1:19010/codex/alarm-10",
+  "isPassive": "0",
+  "configName": "e2e-push-manual-u",
+  "deviceSns": ["{{deviceSn}}"]
+}
+
+### PC-06 API 删除 Push 配置
+DELETE {{pushBaseUrl}}/pushConfig/{{pushConfigId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### PC-07 删除后详情必须 data=null
+GET {{pushBaseUrl}}/pushConfig/{{pushConfigId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### AC-05 API 删除 Alarm 配置
+DELETE {{alarmBaseUrl}}/configure/delete/{{alarmConfigureId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### AC-06 删除后详情必须 data=null
+GET {{alarmBaseUrl}}/configure/{{alarmConfigureId}}
+Authorization: Bearer {{token}}
+user_id: {{userId}}
+username: manual-e2e
+
+### 最后清空接收器
+DELETE {{receiverBaseUrl}}/_events

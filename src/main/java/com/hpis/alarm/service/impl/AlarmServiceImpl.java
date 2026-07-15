@@ -122,6 +122,13 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	@Value("${push.open:false}")
 	private boolean pushOpen;
 
+	/**
+	 * 默认要求报警命中服务端配置后才推送，避免旧兼容回退掩盖配置缺失。
+	 * 生产回滚时可临时设置为 false，恢复按原始 alarmType 推送的旧行为。
+	 */
+	@Value("${alarm.push.require-matched-config:true}")
+	private boolean requireMatchedPushConfig;
+
 	@Autowired
 	private RemoteFileService remoteFileService ;
 
@@ -2395,6 +2402,15 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		}
 		Alarm alarmOBJ1 = getAlarmObject(jsonObject);
 		AlarmConfigure alarmConfigure = resolvePushAlarmConfigure(jsonObject, alarmOBJ1);
+		if (alarmConfigure == null && requireMatchedPushConfig) {
+			log.info("报警未匹配到当前租户服务端配置，跳过配置推送，alarmId={}, tenantId={}, sceneType={}, deviceSn={}, alarmType={}",
+					alarmOBJ1 == null ? null : alarmOBJ1.getAlarmId(),
+					alarmOBJ1 == null ? jsonObject.getLong("tenantId") : alarmOBJ1.getTenantId(),
+					alarmOBJ1 == null ? jsonObject.getString("sceneType") : alarmOBJ1.getSceneType(),
+					alarmOBJ1 == null ? jsonObject.getString("deviceSn") : alarmOBJ1.getDeviceSn(),
+					jsonObject.getString("alarmType"));
+			return;
+		}
 		if (alarmConfigure != null && "0".equals(alarmConfigure.getPushEnabled())) {
 			log.info("报警配置禁用推送，alarmId={}, tenantId={}, sceneType={}, deviceSn={}, alarmType={}",
 					alarmOBJ1 == null ? null : alarmOBJ1.getAlarmId(),
@@ -2422,7 +2438,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			pushMessage.put("deviceSn",alarmOBJ1.getDeviceSn());
 		}
 		pushMessage.put("time",jsonObject.getString("time"));
-		if (isRemoteCallStubEnabled()) {
+		if (isPushMqStubEnabled()) {
 			// push 最终会被其他服务消费；内部压测只记录 payload，不投递到跨服务推送链路。
 			logRemoteCallStub("RabbitMQAlarmPushProducer.sendCustomPushMessage", pushMessage);
 			return;
@@ -2480,6 +2496,10 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	private boolean isRemoteCallStubEnabled() {
 		return internalTestProperties != null && internalTestProperties.isRemoteCallStubEnabled();
+	}
+
+	private boolean isPushMqStubEnabled() {
+		return internalTestProperties != null && internalTestProperties.isPushMqStubEnabled();
 	}
 
 	private void logRemoteCallStub(String target, Object payload) {

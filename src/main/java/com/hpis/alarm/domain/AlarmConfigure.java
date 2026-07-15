@@ -1,11 +1,11 @@
 package com.hpis.alarm.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.hpis.common.core.annotation.Excel;
 import com.hpis.common.core.web.domain.BaseEntity;
 import lombok.Data;
-import org.springframework.data.annotation.Transient;
 
 import java.util.Arrays;
 import java.util.List;
@@ -50,6 +50,7 @@ public class AlarmConfigure extends BaseEntity
     private String delFlag;
 
     /**  设置时间段*/
+    @TableField(exist = false)
     private List<AlarmConfigureTime> alarmConfigureTimeList;
 
     /**重复报警时长**/
@@ -62,9 +63,10 @@ public class AlarmConfigure extends BaseEntity
     /** 客户id**/
     private Long tenantId ;
 
-    @Transient
+    @TableField(exist = false)
     private Set<String> deviceSet;
 
+    @TableField(exist = false)
     private Long[] deviceIds;
 
     /** 重复报警检测周期**/
@@ -82,8 +84,10 @@ public class AlarmConfigure extends BaseEntity
     /** 关联报警工单模板ID */
     private Long workorderConfigId;
 
+    @TableField(exist = false)
     private String sequenceUid;
 
+    @TableField(exist = false)
     private String irmsSn;
 
 

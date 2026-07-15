@@ -20,6 +20,8 @@ public enum AlarmTypeEnums {
     //断线报警
     ALARM_TYPE_ENUMS_6("6", "3"),
     ALARM_TYPE_ENUMS_7("7", "颜色报警"),
+    // 紧急报警类型由字典配置为 10，推送组装阶段也必须能够安全解析。
+    ALARM_TYPE_ENUMS_10("10", "紧急报警"),
     //电解槽电压报警
     ALARM_TYPE_ENUMS_14("14", "电压报警"),
     ALARM_TYPE_ENUMS_100("20","重复报警");
@@ -40,7 +42,9 @@ public enum AlarmTypeEnums {
     }
 
     public static String getValue(String key) {
-        return fromKey(key).description;
+        AlarmTypeEnums value = fromKey(key);
+        // 字典可能先于代码扩展新报警类型；未知值沿用原始 key，不能阻断报警持久化后的推送。
+        return value == null ? key : value.description;
     }
 
     public static AlarmTypeEnums fromKey(String key) {

@@ -1,6 +1,7 @@
 package com.hpis.alarm.service.impl;
 
 import com.alibaba.fastjson.JSONObject;
+import com.hpis.alarm.config.AlarmInternalTestProperties;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmConfigure;
 import com.hpis.alarm.service.IAlarmConfigureService;
@@ -32,12 +33,17 @@ public class AlarmServicePushFilterTest {
 
     private AlarmServiceImpl alarmService;
 
+    private AlarmInternalTestProperties internalTestProperties;
+
     @Before
     public void setUp() {
         alarmService = new AlarmServiceImpl();
         ReflectionTestUtils.setField(alarmService, "pushOpen", true);
+        ReflectionTestUtils.setField(alarmService, "requireMatchedPushConfig", true);
         ReflectionTestUtils.setField(alarmService, "iAlarmConfigureService", alarmConfigureService);
         ReflectionTestUtils.setField(alarmService, "rabbitMQAlarmPushProducer", pushProducer);
+        internalTestProperties = new AlarmInternalTestProperties();
+        ReflectionTestUtils.setField(alarmService, "internalTestProperties", internalTestProperties);
     }
 
     @Test
@@ -87,6 +93,83 @@ public class AlarmServicePushFilterTest {
         ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
         verify(pushProducer).sendCustomPushMessage(captor.capture());
         assertEquals("6", captor.getValue().getString("messageType"));
+    }
+
+    @Test
+    public void remoteCallStubDoesNotSuppressPushMqByDefault() {
+        internalTestProperties.setRemoteCallStubEnabled(true);
+        Alarm alarm = alarm("1");
+        JSONObject payload = payload(alarm);
+        AlarmConfigure configure = new AlarmConfigure();
+        configure.setPushEnabled("1");
+        configure.setPushMessageType("10");
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configure));
+
+        alarmService.pushAlarmToPushService(payload);
+
+        verify(pushProducer).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test
+    public void pushMqStubSkipsPushMqOnlyWhenExplicitlyEnabled() {
+        internalTestProperties.setPushMqStubEnabled(true);
+        Alarm alarm = alarm("1");
+        JSONObject payload = payload(alarm);
+        AlarmConfigure configure = new AlarmConfigure();
+        configure.setPushEnabled("1");
+        configure.setPushMessageType("10");
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configure));
+
+        alarmService.pushAlarmToPushService(payload);
+
+        verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test
+    public void alarmType10UsesEmergencyLabelWithoutBreakingConfiguredPush() {
+        Alarm alarm = alarm("10");
+        JSONObject payload = payload(alarm);
+        AlarmConfigure configure = new AlarmConfigure();
+        configure.setPushEnabled("1");
+        configure.setPushMessageType("10");
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "10"))
+                .thenReturn(Collections.singletonList(configure));
+
+        alarmService.pushAlarmToPushService(payload);
+
+        ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
+        verify(pushProducer).sendCustomPushMessage(captor.capture());
+        assertEquals("10", captor.getValue().getString("messageType"));
+        assertEquals("紧急报警", captor.getValue().getString("alarmType"));
+    }
+
+    @Test
+    public void matchedConfigIsRequiredByDefaultPolicy() {
+        Alarm alarm = alarm("1");
+        JSONObject payload = payload(alarm);
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.emptyList());
+
+        alarmService.pushAlarmToPushService(payload);
+
+        verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test
+    public void legacyFallbackCanBeRestoredBySwitch() {
+        ReflectionTestUtils.setField(alarmService, "requireMatchedPushConfig", false);
+        Alarm alarm = alarm("UNKNOWN_TYPE");
+        JSONObject payload = payload(alarm);
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "UNKNOWN_TYPE"))
+                .thenReturn(Collections.emptyList());
+
+        alarmService.pushAlarmToPushService(payload);
+
+        ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
+        verify(pushProducer).sendCustomPushMessage(captor.capture());
+        assertEquals("UNKNOWN_TYPE", captor.getValue().getString("alarmType"));
     }
 
     private JSONObject payload(Alarm alarm) {

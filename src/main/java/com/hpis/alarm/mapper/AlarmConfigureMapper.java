@@ -22,7 +22,8 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
      * @param alarmConfigureId 报警配置ID
      * @return 报警配置
      */
-    public AlarmConfigure selectAlarmConfigureById(Long alarmConfigureId);
+    public AlarmConfigure selectAlarmConfigureById(@Param("alarmConfigureId") Long alarmConfigureId,
+                                                     @Param("tenantId") Long tenantId);
 
     /**
      * 查询报警配置列表
@@ -59,13 +60,17 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
     public int updateAlarmConfigure(AlarmConfigure alarmConfigure);
 
     public int deleteConfigTime(Long alarmConfigureId);
+
+    /** 按配置 ID 批量清理时间段，调用方已经完成当前租户配置校验。 */
+    public int deleteConfigTimeByConfigureIds(@Param("alarmConfigureIds") Long[] alarmConfigureIds);
     /**
      * 删除报警配置
      * 
      * @param alarmConfigureId 报警配置ID
      * @return 结果
      */
-    public int deleteAlarmConfigureById(Long alarmConfigureId);
+    public int deleteAlarmConfigureById(@Param("alarmConfigureId") Long alarmConfigureId,
+                                        @Param("tenantId") Long tenantId);
 
     /**
      * 批量删除报警配置
@@ -73,7 +78,12 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
      * @param alarmConfigureIds 需要删除的数据ID
      * @return 结果
      */
-    public int deleteAlarmConfigureByIds(Long[] alarmConfigureIds);
+    public int deleteAlarmConfigureByIds(@Param("alarmConfigureIds") Long[] alarmConfigureIds,
+                                         @Param("tenantId") Long tenantId);
+
+    /** 批量筛出当前租户可操作的未删除配置 ID。 */
+    public List<Long> selectExistingIdsByTenant(@Param("alarmConfigureIds") Long[] alarmConfigureIds,
+                                                @Param("tenantId") Long tenantId);
 
     /**
      * 插入报警配置与设备关联表
@@ -103,7 +113,8 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
                                                        @Param("alarmType") String alarmType,
                                                        @Param("excludeAlarmConfigureId") Long excludeAlarmConfigureId);
 
-    public List<String> selectDeviceSnsByConfigureId(@Param("alarmConfigureId") Long alarmConfigureId);
+    public List<String> selectDeviceSnsByConfigureId(@Param("alarmConfigureId") Long alarmConfigureId,
+                                                      @Param("tenantId") Long tenantId);
 
     /**
      * 删除关联表信息
@@ -111,4 +122,7 @@ public interface AlarmConfigureMapper  extends BaseMapper<AlarmConfigure>
      * @return
      */
     public int deleteAlarmConfigureDeviceById(Long alarmConfigureId);
+
+    /** 按已通过租户校验的配置 ID 批量清理设备关系，避免循环执行 SQL。 */
+    public int deleteAlarmConfigureDeviceByIds(@Param("alarmConfigureIds") Long[] alarmConfigureIds);
 }
