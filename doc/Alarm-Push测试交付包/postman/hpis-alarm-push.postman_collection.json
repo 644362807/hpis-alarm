@@ -1,0 +1,388 @@
+{
+  "info": {
+    "_postman_id": "2a8d863d-d7e8-42aa-8aa1-53e67a358f8c",
+    "name": "HPIS Alarm Push API - Fresh Environment",
+    "description": "覆盖 /configure、/pushConfig、/alarm/alarmAdd、/handle/update、/workorder。报警配置和推送配置全部通过 API 创建、更新、查询和删除；internalAlarmId 需要通过 alarm-push-api-check.sql 查询后回填。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{token}}", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.environment.get('runId')) {",
+          "  pm.environment.set('runId', new Date().toISOString().replace(/[-:.TZ]/g, ''));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Receiver",
+      "item": [
+        {
+          "name": "Clear messageType 10 events",
+          "request": { "auth": { "type": "noauth" }, "method": "DELETE", "url": "{{receiver10BaseUrl}}/_events" }
+        },
+        {
+          "name": "Clear messageType 25 events",
+          "request": { "auth": { "type": "noauth" }, "method": "DELETE", "url": "{{receiver25BaseUrl}}/_events" }
+        }
+      ]
+    },
+    {
+      "name": "01 - Alarm Configure",
+      "item": [
+        {
+          "name": "Create emergency alarm configure",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmConfigureName\": \"api-push-e2e-emergency\",\n  \"alarmType\": \"10\",\n  \"deviceAlarmControl\": \"1\",\n  \"alarmConfigurePeriod\": \"0\",\n  \"sceneType\": \"1\",\n  \"deviceIds\": [{{deviceAId}}, {{deviceBId}}],\n  \"pushEnabled\": \"1\",\n  \"pushMessageType\": \"10\",\n  \"workorderPushMessageType\": \"25\",\n  \"workorderConfigId\": {{workorderConfigId}}\n}"
+            },
+            "description": "/configure/add 创建报警配置。必填：alarmConfigureName、alarmType、deviceAlarmControl、alarmConfigurePeriod、sceneType、deviceIds；本用例还必须设置 pushEnabled、pushMessageType、workorderPushMessageType、workorderConfigId。",
+            "url": "{{alarmBaseUrl}}/configure/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('emergency configure created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Create normal alarm configure",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmConfigureName\": \"api-push-e2e-normal\",\n  \"alarmType\": \"6\",\n  \"deviceAlarmControl\": \"1\",\n  \"alarmConfigurePeriod\": \"0\",\n  \"sceneType\": \"1\",\n  \"deviceIds\": [{{normalDeviceId}}],\n  \"pushEnabled\": \"1\",\n  \"pushMessageType\": \"22\",\n  \"workorderPushMessageType\": null,\n  \"workorderConfigId\": null\n}"
+            },
+            "description": "/configure/add 创建普通报警负向配置。必填：alarmConfigureName、alarmType、deviceAlarmControl、alarmConfigurePeriod、sceneType、deviceIds、pushEnabled、pushMessageType；本用例不使用工单字段，也不使用 SQL 写配置。",
+            "url": "{{alarmBaseUrl}}/configure/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('normal configure created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+        },
+        {
+          "name": "List alarm configures and capture IDs",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/configure/list?pageNum=1&pageSize=100&alarmConfigureName=api-push-e2e" },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const rows = (pm.response.json().rows || []);",
+                  "const emergency = rows.find(x => x.alarmConfigureName === 'api-push-e2e-emergency');",
+                  "const normal = rows.find(x => x.alarmConfigureName === 'api-push-e2e-normal');",
+                  "pm.test('alarm configures exist', () => { pm.expect(emergency).to.exist; pm.expect(normal).to.exist; });",
+                  "if (emergency) pm.environment.set('emergencyAlarmConfigureId', String(emergency.alarmConfigureId));",
+                  "if (normal) pm.environment.set('normalAlarmConfigureId', String(normal.alarmConfigureId));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get emergency alarm configure by ID",
+          "request": {
+            "method": "GET",
+            "description": "通过 /configure/{id} 查询 API 创建后的完整报警配置。设备关联仍需由 check.sql 核对 alarm_device_configure。",
+            "url": "{{alarmBaseUrl}}/configure/{{emergencyAlarmConfigureId}}"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const data = pm.response.json().data || {};", "pm.test('emergency configure fields are correct', () => { pm.expect(data.alarmConfigureName).to.eql('api-push-e2e-emergency'); pm.expect(data.pushMessageType).to.eql('10'); pm.expect(data.workorderPushMessageType).to.eql('25'); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "02 - Push Config",
+      "item": [
+        {
+          "name": "Create HTTP config messageType 10",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19010/codex/emergency-10\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-10\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
+            },
+            "description": "/pushConfig/add 必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns。pushAddress 不得包含 http://，当前 PushHttpConsumer 会自行补充协议。",
+            "url": "{{pushBaseUrl}}/pushConfig/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 10 created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Create HTTP config messageType 25",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
+            },
+            "description": "/pushConfig/add 创建工单推送配置。必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns；messageType=25，HTTP 接收器端口 19025，pushAddress 不带协议。",
+            "url": "{{pushBaseUrl}}/pushConfig/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 25 created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+        },
+        {
+          "name": "List configs and capture IDs",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/pushConfig/list?pageNum=1&pageSize=100" },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const rows = (pm.response.json().rows || []);",
+                  "const config10 = rows.find(x => x.configName === 'api-push-e2e-http-10');",
+                  "const config25 = rows.find(x => x.configName === 'api-push-e2e-http-25');",
+                  "pm.test('10 and 25 configs exist', () => { pm.expect(config10).to.exist; pm.expect(config25).to.exist; });",
+                  "if (config10) pm.environment.set('pushConfig10Id', String(config10.activePushConfigId));",
+                  "if (config25) pm.environment.set('pushConfig25Id', String(config25.activePushConfigId));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get push config 25 by ID",
+          "request": {
+            "method": "GET",
+            "description": "通过 /pushConfig/{id} 查询 API 创建后的 25 完整配置，确认 messageType、enabled、pushAddress 和 deviceSns。",
+            "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig25Id}}"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const data = pm.response.json().data || {};", "pm.test('push config 25 fields are correct', () => { pm.expect(String(data.messageType)).to.eql('25'); pm.expect(data.enabled).to.eql(true); pm.expect(data.pushAddress).to.eql('127.0.0.1:19025/codex/workorder-25'); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "03 - Alarm messageType 10",
+      "item": [
+        {
+          "name": "Case 1 - Create emergency alarm device A",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-A-{{runId}}\",\n  \"deviceSn\": \"{{deviceASn}}\",\n  \"gatewaySn\": \"{{deviceAGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
+            },
+            "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('alarm add accepted', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Verify device A arrived at receiver 10",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const events = pm.response.json().events || [];",
+            "pm.test('device A messageType 10 received', () => pm.expect(events.some(e => e.body && e.body.messageType === '10' && e.body.deviceSn === pm.environment.get('deviceASn'))).to.be.true);"
+          ] } }]
+        },
+        {
+          "name": "Case 2 - Create emergency alarm device B",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-B-{{runId}}\",\n  \"deviceSn\": \"{{deviceBSn}}\",\n  \"gatewaySn\": \"{{deviceBGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
+            },
+            "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
+          }
+        },
+        {
+          "name": "Verify device B arrived at receiver 10",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const events = pm.response.json().events || [];",
+            "pm.test('device B messageType 10 received', () => pm.expect(events.some(e => e.body && e.body.messageType === '10' && e.body.deviceSn === pm.environment.get('deviceBSn'))).to.be.true);"
+          ] } }]
+        },
+        {
+          "name": "Case 3 - Create normal alarm negative control",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-NORMAL-{{runId}}\",\n  \"deviceSn\": \"{{normalDeviceSn}}\",\n  \"gatewaySn\": \"CODX-EMERG-10-NORMAL-GW\",\n  \"alarmType\": \"6\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
+            },
+            "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
+          }
+        },
+        {
+          "name": "Verify normal alarm did not enter receiver 10",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const events = pm.response.json().events || [];",
+            "pm.test('normal alarm excluded from receiver 10', () => pm.expect(events.some(e => e.body && e.body.deviceSn === pm.environment.get('normalDeviceSn'))).to.be.false);"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "04 - Workorder messageType 25",
+      "description": "先运行 alarm-push-api-check.sql，把设备 A 的内部 alarm_id 写入环境变量 internalAlarmId。",
+      "item": [
+        {
+          "name": "Case 4 - Confirm alarm",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"alarmIds\": [{{internalAlarmId}}],\n  \"handleStatus\": \"2\",\n  \"opinion\": \"Alarm Push API test confirmed\"\n}" },
+            "url": "{{alarmBaseUrl}}/handle/update"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('alarm confirmed', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Case 4 - Create workorder",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"API Push E2E workorder\",\n  \"content\": \"API Push E2E workorder content\",\n  \"assigneeId\": {{userId}},\n  \"assigneeName\": \"api-push-e2e-user\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('workorder created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Verify workorder arrived at receiver 25",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver25BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const events = pm.response.json().events || [];",
+            "pm.test('messageType 25 workorder event received', () => pm.expect(events.some(e => e.body && e.body.messageType === '25' && e.body.data && e.body.data.eventType === 'ALARM_WORKORDER_CREATED')).to.be.true);"
+          ] } }]
+        },
+        {
+          "name": "Verify receiver 10 has no workorder event",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const events = pm.response.json().events || [];",
+            "pm.test('10 and 25 routes are isolated', () => pm.expect(events.some(e => e.body && e.body.data && e.body.data.eventType === 'ALARM_WORKORDER_CREATED')).to.be.false);"
+          ] } }]
+        },
+        {
+          "name": "Case 10 - Duplicate workorder must fail",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"API Push E2E duplicate workorder\",\n  \"content\": \"duplicate request must not push\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder"
+          },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "let failed = pm.response.code >= 400;",
+            "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}",
+            "pm.test('duplicate workorder rejected', () => pm.expect(failed).to.be.true);"
+          ] } }]
+        },
+        {
+          "name": "Query workorders by alarmId",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{internalAlarmId}}" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const body = pm.response.json();",
+            "pm.test('exactly one workorder remains', () => pm.expect(body.data || []).to.have.lengthOf(1));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "05 - Negative Config and Failure",
+      "item": [
+        {
+          "name": "Case 7 - Disable config 25",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{pushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": false,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}" },
+            "description": "禁用后使用新的已确认报警创建工单；alarm 仍发送 25，但不能回退到 10/22。update 必须带完整对象。",
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Restore config 25",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{pushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}" },
+            "description": "/pushConfig/update 恢复 25 路由。update 额外必填 activePushConfigId，且必须携带 messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns 完整对象。",
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Case 11 - Set unreachable HTTP 25 address",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{pushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19925/codex/unreachable-workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}" },
+            "description": "使用新的已确认报警建单，随后用 check.sql 验证工单已提交且 push_message_log 留下失败记录。",
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Restore reachable HTTP 25 address",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{pushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}" },
+            "description": "/pushConfig/update 将不可达地址恢复为 19025。必须发送含 activePushConfigId 的完整对象，避免测试结束时配置停留在失败地址。",
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Case 8 - Set workorderPushMessageType null through API",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmConfigureId\": {{emergencyAlarmConfigureId}},\n  \"alarmConfigureName\": \"api-push-e2e-emergency\",\n  \"alarmType\": \"10\",\n  \"deviceAlarmControl\": \"1\",\n  \"alarmConfigurePeriod\": \"0\",\n  \"sceneType\": \"1\",\n  \"deviceIds\": [{{deviceAId}}, {{deviceBId}}],\n  \"pushEnabled\": \"1\",\n  \"pushMessageType\": \"10\",\n  \"workorderPushMessageType\": null,\n  \"workorderConfigId\": {{workorderConfigId}}\n}" },
+            "description": "/configure/update 额外必填 alarmConfigureId，并必须携带完整对象。传 null 后用详情/API 证据确认是否真正置空；当前动态更新会忽略 null，本用例用于暴露该能力门禁，不能误报通过。",
+            "url": "{{alarmBaseUrl}}/configure/update"
+          }
+        },
+        {
+          "name": "Restore workorderPushMessageType 25",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmConfigureId\": {{emergencyAlarmConfigureId}},\n  \"alarmConfigureName\": \"api-push-e2e-emergency\",\n  \"alarmType\": \"10\",\n  \"deviceAlarmControl\": \"1\",\n  \"alarmConfigurePeriod\": \"0\",\n  \"sceneType\": \"1\",\n  \"deviceIds\": [{{deviceAId}}, {{deviceBId}}],\n  \"pushEnabled\": \"1\",\n  \"pushMessageType\": \"10\",\n  \"workorderPushMessageType\": \"25\",\n  \"workorderConfigId\": {{workorderConfigId}}\n}" },
+            "description": "/configure/update 恢复工单推送类型为 25。update 额外必填 alarmConfigureId，并发送名称、报警类型、开关、时段、场景、设备、push 类型和模板 ID 的完整对象。",
+            "url": "{{alarmBaseUrl}}/configure/update"
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Cleanup",
+      "item": [
+        {
+          "name": "Delete push config 10 through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig10Id}}" }
+        },
+        {
+          "name": "Delete push config 25 through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig25Id}}" }
+        },
+        {
+          "name": "Delete normal alarm configure through API",
+          "request": { "method": "DELETE", "url": "{{alarmBaseUrl}}/configure/delete/{{normalAlarmConfigureId}}" }
+        },
+        {
+          "name": "Delete emergency alarm configure through API",
+          "request": { "method": "DELETE", "url": "{{alarmBaseUrl}}/configure/delete/{{emergencyAlarmConfigureId}}" }
+        },
+        {
+          "name": "Clear receiver 10",
+          "request": { "auth": { "type": "noauth" }, "method": "DELETE", "url": "{{receiver10BaseUrl}}/_events" }
+        },
+        {
+          "name": "Clear receiver 25",
+          "request": { "auth": { "type": "noauth" }, "method": "DELETE", "url": "{{receiver25BaseUrl}}/_events" }
+        }
+      ]
+    }
+  ]
+}
