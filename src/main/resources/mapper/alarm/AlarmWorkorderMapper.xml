@@ -37,6 +37,13 @@
           and del_flag = '0'
     </select>
 
+    <select id="selectAlarmWorkorderByIdAndTenant" resultMap="AlarmWorkorderResult">
+        <include refid="selectAlarmWorkorderVo"/>
+        where workorder_id = #{workorderId}
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
+    </select>
+
     <select id="selectAlarmWorkorderByAlarmId" parameterType="Long" resultMap="AlarmWorkorderResult">
         <include refid="selectAlarmWorkorderVo"/>
         where alarm_id = #{alarmId}
@@ -112,6 +119,20 @@
             <if test="updateTime != null">update_time = #{updateTime},</if>
         </trim>
         where workorder_id = #{workorderId}
+    </update>
+
+    <update id="updateAssigneeByIdAndTenant">
+        update alarm_workorder
+        set assignee_id = #{workorder.assigneeId},
+            assignee_name = #{workorder.assigneeName},
+            <if test="workorder.status != null and workorder.status != ''">
+                status = #{workorder.status},
+            </if>
+            update_by = #{workorder.updateBy},
+            update_time = #{workorder.updateTime}
+        where workorder_id = #{workorder.workorderId}
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
     </update>
 
     <update id="deleteAlarmWorkorderByIds" parameterType="String">

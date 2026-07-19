@@ -1,8 +1,11 @@
 package com.hpis.alarm.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hpis.alarm.domain.AlarmConfigure;
 import com.hpis.alarm.domain.AlarmHandle;
+import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 
@@ -37,6 +40,9 @@ public interface AlarmHandleMapper  extends BaseMapper<AlarmHandle>
      * @return 【请填写功能名称】集合
      */
     public List<AlarmHandle> selectAlarmHandleList(AlarmHandle alarmHandle);
+
+    Page<AlarmHandle> selectAlarmHandlePage(Page<AlarmHandle> page,
+                                            @Param("ew") Wrapper<AlarmHandle> wrapper);
 
     /**
      * 新增【请填写功能名称】

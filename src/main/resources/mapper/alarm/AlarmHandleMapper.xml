@@ -25,8 +25,18 @@
     </resultMap>
 
     <sql id="selectAlarmHandleVo">
-        select h.alarm_handle_id, a.alarm_id, h.workorder_id, a.device_id, a.alarm_type, a.alarm_rank, a.alarm_status,  h.identify, h.opinion, a.alarm_beginTime,h.update_time, h.update_by
+        select h.alarm_handle_id, a.alarm_id, h.workorder_id, h.handle_status, a.alarm_type, a.alarm_rank, a.alarm_status, h.identify, h.opinion, a.alarm_beginTime, h.update_time, h.update_by
     </sql>
+
+    <select id="selectAlarmHandlePage" resultMap="AlarmHandleResult">
+        <include refid="selectAlarmHandleVo"/>
+        ,a.irms_sn,a.area_sn,a.target_name
+        from alarm a left join alarm_handle h on a.alarm_id = h.alarm_id
+        <where>
+            ${ew.sqlSegment}
+        </where>
+        order by a.alarm_beginTime desc,a.alarm_id desc
+    </select>
 
     <select id="selectAlarmHandleList" parameterType="AlarmHandle" resultMap="AlarmHandleResult">
         <include refid="selectAlarmHandleVo"/>

@@ -60,6 +60,24 @@
         where a.alarm_id = #{alarmId}
     </select>
 
+    <select id="selectAlarmByIdAndTenant" resultMap="AlarmResult">
+        <include refid="selectAlarmVo"/>
+        where a.alarm_id = #{alarmId}
+          and a.tenant_id = #{tenantId}
+          and a.del_flag = '0'
+    </select>
+
+    <select id="selectExistingIdsByTenant" resultType="java.lang.Long">
+        select alarm_id
+        from alarm
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
+    </select>
+
     <select id="selectAlarmByQueryParameter" resultMap="AlarmResult" >
         select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time,  a.create_by, a.update_by ,a.alarm_cid,a.irms_sn from alarm a
 

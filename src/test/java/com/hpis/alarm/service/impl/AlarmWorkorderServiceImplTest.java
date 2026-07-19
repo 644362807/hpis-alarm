@@ -29,6 +29,7 @@ import java.util.Collections;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,7 +57,7 @@ public class AlarmWorkorderServiceImplTest {
     @Before
     public void setUp() {
         clearTransactionSynchronization();
-        service = new AlarmWorkorderServiceImpl();
+        service = new TestAlarmWorkorderServiceImpl(10L);
         ReflectionTestUtils.setField(service, "alarmWorkorderMapper", workorderMapper);
         ReflectionTestUtils.setField(service, "alarmMapper", alarmMapper);
         ReflectionTestUtils.setField(service, "alarmHandleMapper", alarmHandleMapper);
@@ -106,6 +107,7 @@ public class AlarmWorkorderServiceImplTest {
         AlarmHandle confirmedHandle = confirmedHandle();
         AlarmConfigure configure = configuredWorkorder(900L, "25");
         AlarmWorkorder request = request();
+        request.setAssigneeId(77L);
 
         when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle);
@@ -137,6 +139,8 @@ public class AlarmWorkorderServiceImplTest {
         assertEquals("WO-200", pushMessage.getString("workorderNo"));
         assertEquals(Long.valueOf(900L), pushMessage.getLong("workorderConfigId"));
         assertEquals("0", pushMessage.getString("status"));
+        assertEquals(Long.valueOf(77L), pushMessage.getLong("assigneeId"));
+        assertEquals("ALARM_WORKORDER_CREATED", pushMessage.getString("eventType"));
         assertEquals("ALARM_WORKORDER_CREATED", pushMessage.getJSONObject("data").getString("eventType"));
     }
 
@@ -156,6 +160,18 @@ public class AlarmWorkorderServiceImplTest {
         assertEquals(1, service.createWorkorder(request));
 
         verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test
+    public void workorderMessageWithoutAssigneeFailsClosedInsteadOfFallingBackToGroup() {
+        AlarmWorkorder workorder = request();
+        workorder.setWorkorderId(300L);
+
+        JSONObject message = ReflectionTestUtils.invokeMethod(service,
+                "buildWorkorderCreatedPushMessage", alarm(), workorder, configuredWorkorder(900L, "25"));
+
+        assertEquals(Long.valueOf(0L), message.getLong("assigneeId"));
+        assertEquals(Long.valueOf(0L), message.getJSONObject("data").getLong("assigneeId"));
     }
 
     @Test
@@ -200,20 +216,75 @@ public class AlarmWorkorderServiceImplTest {
     }
 
     @Test
-    public void transferWorkorderOnlyUpdatesCurrentWorkorder() {
+    public void transferWorkorderUpdatesTenantOwnedAssigneeAndPublishesAfterCommit() {
+        ReflectionTestUtils.setField(service, "pushOpen", true);
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setWorkorderNo("WO-200");
+        existing.setTenantId(10L);
         AlarmWorkorder request = new AlarmWorkorder();
         request.setWorkorderId(300L);
         request.setStatus("1");
         request.setAssigneeId(88L);
         request.setAssigneeName("张三");
-        when(workorderMapper.updateAlarmWorkorder(any(AlarmWorkorder.class))).thenReturn(1);
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+        when(workorderMapper.updateAssigneeByIdAndTenant(any(AlarmWorkorder.class), eq(10L))).thenReturn(1);
+
+        TransactionSynchronizationManager.initSynchronization();
 
         int result = service.transferWorkorder(request);
 
         assertEquals(1, result);
-        verify(workorderMapper).updateAlarmWorkorder(request);
+        verify(workorderMapper).updateAssigneeByIdAndTenant(request, 10L);
+        verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+        for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+            synchronization.afterCommit();
+        }
+        ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
+        verify(pushProducer).sendCustomPushMessage(captor.capture());
+        JSONObject pushMessage = captor.getValue();
+        assertEquals("25", pushMessage.getString("messageType"));
+        assertEquals(Long.valueOf(88L), pushMessage.getLong("assigneeId"));
+        assertEquals("ALARM_WORKORDER_TRANSFERRED", pushMessage.getString("eventType"));
+        assertEquals("ALARM_WORKORDER_TRANSFERRED", pushMessage.getJSONObject("data").getString("eventType"));
         verify(alarmHandleMapper, never()).insertAlarmHandle(any(AlarmHandle.class));
         verify(alarmHandleMapper, never()).updateAlarmHandle(any(AlarmHandle.class));
+    }
+
+    @Test
+    public void transferWorkorderRollbackDoesNotPublish() {
+        ReflectionTestUtils.setField(service, "pushOpen", true);
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setTenantId(10L);
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setAssigneeId(88L);
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+        when(workorderMapper.updateAssigneeByIdAndTenant(any(AlarmWorkorder.class), eq(10L))).thenReturn(1);
+
+        TransactionSynchronizationManager.initSynchronization();
+        assertEquals(1, service.transferWorkorder(request));
+        TransactionSynchronizationManager.clearSynchronization();
+
+        verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test(expected = CustomException.class)
+    public void transferWorkorderRejectsInvalidAssignee() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setAssigneeId(0L);
+
+        service.transferWorkorder(request);
     }
 
     @Test
@@ -269,6 +340,19 @@ public class AlarmWorkorderServiceImplTest {
     private void clearTransactionSynchronization() {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    private static class TestAlarmWorkorderServiceImpl extends AlarmWorkorderServiceImpl {
+        private final Long tenantId;
+
+        private TestAlarmWorkorderServiceImpl(Long tenantId) {
+            this.tenantId = tenantId;
+        }
+
+        @Override
+        protected Long currentTenantId() {
+            return tenantId;
         }
     }
 }

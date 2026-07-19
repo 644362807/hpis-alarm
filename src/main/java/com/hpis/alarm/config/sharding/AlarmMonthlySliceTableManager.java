@@ -594,6 +594,12 @@ public class AlarmMonthlySliceTableManager {
                         + " ADD COLUMN alarm_beginTime datetime DEFAULT NULL COMMENT '报警开始时间，用于时间分片路由'");
             }
         }
+
+        if ("alarm_electrolytic_cell".equals(logicTableName)
+                && !columnExists(connection, physicalTableName, "del_flag")) {
+            statement.execute("ALTER TABLE " + physicalTableName
+                    + " ADD COLUMN del_flag char(2) NOT NULL DEFAULT '0' COMMENT '删除标志（0代表存在 2代表删除）'");
+        }
     }
 
     private String findTemplateTable(Connection connection, String logicTableName) throws SQLException {

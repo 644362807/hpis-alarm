@@ -18,6 +18,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -107,12 +108,13 @@ public class AlarmMonthlySliceTableManagerActualDataNodesTest {
         ResultSet ecTemplateExists = resultSet(true);
         ResultSet handleBeginTimeMissing = resultSet(false);
         ResultSet ecBeginTimeMissing = resultSet(false);
+        ResultSet ecDelFlagMissing = resultSet(false);
         when(metaData.getTables(isNull(), isNull(), anyString(), any(String[].class))).thenReturn(
                 physicalAlarmMissing, alarmTemplateExists,
                 physicalHandleMissing, handleTemplateExists,
                 physicalEcMissing, ecTemplateExists);
         when(metaData.getColumns(isNull(), isNull(), anyString(), anyString())).thenReturn(
-                handleBeginTimeMissing, ecBeginTimeMissing);
+                handleBeginTimeMissing, ecBeginTimeMissing, ecDelFlagMissing);
         AlarmMonthlySliceTableManager manager =
                 new AlarmMonthlySliceTableManager(dataSource, properties, refreshProvider);
         ReflectionTestUtils.setField(manager, "initialized", true);
@@ -121,6 +123,8 @@ public class AlarmMonthlySliceTableManagerActualDataNodesTest {
 
         assertThat(created).isTrue();
         verify(statement, times(3)).execute(org.mockito.ArgumentMatchers.startsWith("CREATE TABLE IF NOT EXISTS"));
+        verify(statement, times(1)).execute(argThat(sql -> sql.startsWith(
+                "ALTER TABLE alarm_electrolytic_cell_202608_01 ADD COLUMN del_flag")));
         verify(refreshService, times(1)).requestRefreshAfterCommit("table-created:202608_01");
     }
 
@@ -145,12 +149,13 @@ public class AlarmMonthlySliceTableManagerActualDataNodesTest {
         ResultSet ecTemplateExists = resultSet(true);
         ResultSet handleBeginTimeMissing = resultSet(false);
         ResultSet ecBeginTimeMissing = resultSet(false);
+        ResultSet ecDelFlagMissing = resultSet(false);
         when(metaData.getTables(isNull(), isNull(), anyString(), any(String[].class))).thenReturn(
                 physicalAlarmMissing, alarmTemplateExists,
                 physicalHandleMissing, handleTemplateExists,
                 physicalEcMissing, ecTemplateExists);
         when(metaData.getColumns(isNull(), isNull(), anyString(), anyString())).thenReturn(
-                handleBeginTimeMissing, ecBeginTimeMissing);
+                handleBeginTimeMissing, ecBeginTimeMissing, ecDelFlagMissing);
         AlarmMonthlySliceTableManager manager =
                 new AlarmMonthlySliceTableManager(dataSource, properties, refreshProvider);
         ReflectionTestUtils.setField(manager, "initialized", true);
@@ -185,12 +190,13 @@ public class AlarmMonthlySliceTableManagerActualDataNodesTest {
         ResultSet ecTemplateExists = resultSet(true);
         ResultSet handleBeginTimeMissing = resultSet(false);
         ResultSet ecBeginTimeMissing = resultSet(false);
+        ResultSet ecDelFlagMissing = resultSet(false);
         when(metaData.getTables(isNull(), isNull(), anyString(), any(String[].class))).thenReturn(
                 physicalAlarmMissing, alarmTemplateExists,
                 physicalHandleMissing, handleTemplateExists,
                 physicalEcMissing, ecTemplateExists);
         when(metaData.getColumns(isNull(), isNull(), anyString(), anyString())).thenReturn(
-                handleBeginTimeMissing, ecBeginTimeMissing);
+                handleBeginTimeMissing, ecBeginTimeMissing, ecDelFlagMissing);
         AlarmMonthlySliceTableManager manager =
                 new AlarmMonthlySliceTableManager(dataSource, properties, refreshProvider);
         ReflectionTestUtils.setField(manager, "initialized", true);

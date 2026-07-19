@@ -215,24 +215,30 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Override
 	public Page<Alarm> selectAlarmPage(Alarm alarm) {
-//		Long currentTenantId = SecurityUtils.getCurrentTenantId();
-		alarm.setTenantId(123L);
+		alarm.setTenantId(currentTenantId());
 		QueryWrapper<Alarm> queryWrapper = new QueryWrapper<>();
-		queryWrapper.eq(StringUtils.isNotBlank(alarm.getSceneType()), "a.scene_type", alarm.getSceneType())
+		queryWrapper.eq("a.del_flag", "0")
+				.eq(StringUtils.isNotBlank(alarm.getSceneType()), "a.scene_type", alarm.getSceneType())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmType()), "a.alarm_type", alarm.getAlarmType())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmRank()), "a.alarm_rank", alarm.getAlarmRank())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmStatus()), "a.alarm_status", alarm.getAlarmStatus())
 				.eq(alarm.getDeviceSn() != null, "a.device_sn", alarm.getDeviceSn())
 				.eq(alarm.getTenantId() != null, "a.tenant_id", alarm.getTenantId())
 				.like(StringUtils.isNotBlank(alarm.getTargetName()), "a.target_name", alarm.getTargetName());
-		// 添加开始时间条件
-		if (alarm.getStartTime() != null) {
-			queryWrapper.gt("a.alarm_beginTime", alarm.getStartTime());
-		}
-
-		// 添加结束时间条件
-		if (alarm.getEndTime() != null) {
-			queryWrapper.lt("a.alarm_beginTime", alarm.getEndTime());
+		boolean useDefaultTimeRange = alarm.getStartTime() == null && alarm.getEndTime() == null;
+		if (useDefaultTimeRange) {
+			Date defaultEndTime = currentTime();
+			Date defaultStartTime = DateUtil.offsetDay(defaultEndTime, -30);
+			queryWrapper.ge("a.alarm_beginTime", defaultStartTime)
+					.le("a.alarm_beginTime", defaultEndTime);
+		} else {
+			// 调用方显式传入单边或双边时间时，保持现有开放区间语义。
+			if (alarm.getStartTime() != null) {
+				queryWrapper.gt("a.alarm_beginTime", alarm.getStartTime());
+			}
+			if (alarm.getEndTime() != null) {
+				queryWrapper.lt("a.alarm_beginTime", alarm.getEndTime());
+			}
 		}
 
 		Page<Alarm> alarmPage = this.baseMapper.selectAlarmListPage(new Page<>(alarm.getPageNum(), alarm.getPageSize()), queryWrapper);
@@ -274,6 +280,18 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		}
 
 		return alarmPage;
+	}
+
+	protected Long currentTenantId() {
+		Long tenantId = SecurityUtils.getCurrentTenantId();
+		if (tenantId == null) {
+			throw new CustomException("当前租户不能为空");
+		}
+		return tenantId;
+	}
+
+	protected Date currentTime() {
+		return DateUtils.getNowDate();
 	}
 
 //	void sceneTypeShowHandle(Alarm alarm)
@@ -1813,12 +1831,17 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		if (alarmIds == null || alarmIds.length == 0) {
 			return 0;
 		}
-		int alarmRows = alarmMapper.deleteAlarmByIds(alarmIds);
-		alarmHandleMapper.deleteAlarmHandleByAlarmIds(alarmIds);
-		iAlarmElectrolyticCellService.deleteAlarmElectrolyticCellByIds(alarmIds);
-		iAlarmPartialDischargeService.deleteAlarmPartialDischargeByIds(alarmIds);
+		List<Long> existingIds = alarmMapper.selectExistingIdsByTenant(alarmIds, currentTenantId());
+		if (existingIds == null || existingIds.isEmpty()) {
+			return 0;
+		}
+		Long[] scopedAlarmIds = existingIds.toArray(new Long[0]);
+		int alarmRows = alarmMapper.deleteAlarmByIds(scopedAlarmIds);
+		alarmHandleMapper.deleteAlarmHandleByAlarmIds(scopedAlarmIds);
+		iAlarmElectrolyticCellService.deleteAlarmElectrolyticCellByIds(scopedAlarmIds);
+		iAlarmPartialDischargeService.deleteAlarmPartialDischargeByIds(scopedAlarmIds);
 		if (alarmCidIndexService != null) {
-			alarmCidIndexService.deleteRoutesByAlarmIds(Arrays.asList(alarmIds));
+			alarmCidIndexService.deleteRoutesByAlarmIds(existingIds);
 		}
 		return alarmRows;
 	}

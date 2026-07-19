@@ -15,6 +15,7 @@ import com.hpis.alarm.service.IAlarmWorkorderService;
 import com.hpis.alarm.transfer.RabbitMQAlarmPushProducer;
 import com.hpis.common.core.exception.CustomException;
 import com.hpis.common.core.utils.DateUtils;
+import com.hpis.common.core.utils.SecurityUtils;
 import com.hpis.common.core.utils.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +37,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         implements IAlarmWorkorderService {
 
     private static final String WORKORDER_CREATED_EVENT_TYPE = "ALARM_WORKORDER_CREATED";
+    private static final String WORKORDER_TRANSFERRED_EVENT_TYPE = "ALARM_WORKORDER_TRANSFERRED";
 
     @Resource
     private AlarmWorkorderMapper alarmWorkorderMapper;
@@ -126,13 +128,34 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         return alarmWorkorderMapper.updateAlarmWorkorder(alarmWorkorder);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public int transferWorkorder(AlarmWorkorder alarmWorkorder) {
+        if (alarmWorkorder != null
+                && (alarmWorkorder.getAssigneeId() == null || alarmWorkorder.getAssigneeId() <= 0)) {
+            throw new CustomException("新负责人ID必须为正整数");
+        }
         if (alarmWorkorder == null || alarmWorkorder.getWorkorderId() == null) {
             throw new CustomException("工单ID不能为空");
         }
+        Long tenantId = currentTenantId();
+        AlarmWorkorder existing = alarmWorkorderMapper.selectAlarmWorkorderByIdAndTenant(
+                alarmWorkorder.getWorkorderId(), tenantId);
+        if (existing == null) {
+            throw new CustomException("工单不存在或不属于当前租户");
+        }
+        Alarm alarm = alarmMapper.selectAlarmByIdAndTenant(existing.getAlarmId(), tenantId);
+        if (alarm == null) {
+            throw new CustomException("工单关联报警不存在或不属于当前租户");
+        }
+        AlarmConfigure configure = resolveWorkorderConfigure(alarm);
+        alarmWorkorder.setTenantId(tenantId);
         alarmWorkorder.setUpdateTime(DateUtils.getNowDate());
-        return alarmWorkorderMapper.updateAlarmWorkorder(alarmWorkorder);
+        int updated = alarmWorkorderMapper.updateAssigneeByIdAndTenant(alarmWorkorder, tenantId);
+        if (updated > 0) {
+            publishWorkorderTransferredAfterCommit(alarm, existing, alarmWorkorder, configure);
+        }
+        return updated;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -210,6 +233,8 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
 
     private JSONObject buildWorkorderCreatedPushMessage(Alarm alarm, AlarmWorkorder alarmWorkorder,
                                                         AlarmConfigure configure) {
+        Long directAssigneeId = alarmWorkorder.getAssigneeId() == null
+                ? 0L : alarmWorkorder.getAssigneeId();
         JSONObject data = new JSONObject();
         data.put("eventType", WORKORDER_CREATED_EVENT_TYPE);
         data.put("tenantId", alarm.getTenantId());
@@ -223,6 +248,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         data.put("status", alarmWorkorder.getStatus());
         data.put("title", alarmWorkorder.getTitle());
         data.put("content", alarmWorkorder.getContent());
+        data.put("assigneeId", directAssigneeId);
 
         JSONObject pushMessage = new JSONObject();
         pushMessage.put("messageType", configure.getWorkorderPushMessageType());
@@ -233,9 +259,80 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         pushMessage.put("workorderNo", alarmWorkorder.getWorkorderNo());
         pushMessage.put("workorderConfigId", alarmWorkorder.getWorkorderConfigId());
         pushMessage.put("status", alarmWorkorder.getStatus());
+        pushMessage.put("assigneeId", directAssigneeId);
+        pushMessage.put("eventType", WORKORDER_CREATED_EVENT_TYPE);
+        pushMessage.put("title", alarmWorkorder.getTitle());
+        pushMessage.put("content", alarmWorkorder.getContent());
         pushMessage.put("time", DateUtils.getTime());
         pushMessage.put("data", data);
         return pushMessage;
+    }
+
+    private void publishWorkorderTransferredAfterCommit(Alarm alarm,
+                                                         AlarmWorkorder existing,
+                                                         AlarmWorkorder transfer,
+                                                         AlarmConfigure configure) {
+        if (!pushOpen || configure == null || StringUtils.isBlank(configure.getWorkorderPushMessageType())) {
+            return;
+        }
+        if (rabbitMQAlarmPushProducer == null) {
+            log.warn("Workorder transfer push skipped because producer is unavailable, workorderId={}",
+                    existing.getWorkorderId());
+            return;
+        }
+        Runnable pushTask = () -> rabbitMQAlarmPushProducer.sendCustomPushMessage(
+                buildWorkorderTransferredPushMessage(alarm, existing, transfer, configure));
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+                @Override
+                public void afterCommit() {
+                    pushTask.run();
+                }
+            });
+            return;
+        }
+        pushTask.run();
+    }
+
+    private JSONObject buildWorkorderTransferredPushMessage(Alarm alarm,
+                                                             AlarmWorkorder existing,
+                                                             AlarmWorkorder transfer,
+                                                             AlarmConfigure configure) {
+        String title = "报警工单已转派";
+        String content = "工单" + existing.getWorkorderNo() + "已转派，请及时处理";
+        JSONObject data = new JSONObject();
+        data.put("eventType", WORKORDER_TRANSFERRED_EVENT_TYPE);
+        data.put("tenantId", alarm.getTenantId());
+        data.put("deviceSn", alarm.getDeviceSn());
+        data.put("alarmId", alarm.getAlarmId());
+        data.put("workorderId", existing.getWorkorderId());
+        data.put("workorderNo", existing.getWorkorderNo());
+        data.put("assigneeId", transfer.getAssigneeId());
+        data.put("title", title);
+        data.put("content", content);
+
+        JSONObject pushMessage = new JSONObject();
+        pushMessage.put("messageType", configure.getWorkorderPushMessageType());
+        pushMessage.put("tenantId", alarm.getTenantId());
+        pushMessage.put("deviceSn", alarm.getDeviceSn());
+        pushMessage.put("alarmId", alarm.getAlarmId());
+        pushMessage.put("workorderId", existing.getWorkorderId());
+        pushMessage.put("workorderNo", existing.getWorkorderNo());
+        pushMessage.put("assigneeId", transfer.getAssigneeId());
+        pushMessage.put("eventType", WORKORDER_TRANSFERRED_EVENT_TYPE);
+        pushMessage.put("title", title);
+        pushMessage.put("content", content);
+        pushMessage.put("time", DateUtils.getTime());
+        pushMessage.put("data", data);
+        return pushMessage;
+    }
+
+    protected Long currentTenantId() {
+        Long tenantId = SecurityUtils.getCurrentTenantId();
+        if (tenantId == null) {
+            throw new CustomException("无法获取当前租户");
+        }
+        return tenantId;
     }
 
     private String buildWorkorderNo(Long alarmId) {

@@ -42,6 +42,11 @@ public interface AlarmMapper  extends BaseMapper<Alarm>
      */
     public Alarm selectAlarmById(Long alarmId);
 
+    Alarm selectAlarmByIdAndTenant(@Param("alarmId") Long alarmId, @Param("tenantId") Long tenantId);
+
+    List<Long> selectExistingIdsByTenant(@Param("alarmIds") Long[] alarmIds,
+                                         @Param("tenantId") Long tenantId);
+
     /**
      * 根据查询条件对alarm主表进行查询
      * @param alarmQueryParameter

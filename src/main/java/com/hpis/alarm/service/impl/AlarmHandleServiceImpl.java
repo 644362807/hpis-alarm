@@ -3,6 +3,7 @@ package com.hpis.alarm.service.impl;
 import com.alibaba.cloud.nacos.NacosDiscoveryProperties;
 import com.alibaba.fastjson.JSONObject;
 import javax.annotation.Nullable;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hpis.alarm.domain.Alarm;
@@ -27,6 +28,7 @@ import com.hpis.common.core.enums.DeviceTypeCodeEnums;
 import com.hpis.common.core.enums.OperCodeEnums;
 import com.hpis.common.core.exception.CustomException;
 import com.hpis.common.core.utils.DateUtils;
+import com.hpis.common.core.utils.SecurityUtils;
 import com.hpis.common.core.utils.StringUtils;
 import com.hpis.common.core.utils.bean.BeanUtils;
 import com.hpis.common.redis.service.RedisService;
@@ -98,7 +100,26 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
 
     @Override
     public Page<AlarmHandle> selectAlarmHandlePage(AlarmHandle alarmHandle) {
-        return null;
+        QueryWrapper<AlarmHandle> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("a.tenant_id", currentTenantId())
+                .eq("a.del_flag", "0")
+                .eq(alarmHandle.getAlarmId() != null, "a.alarm_id", alarmHandle.getAlarmId())
+                .eq(StringUtils.isNotBlank(alarmHandle.getAlarmType()), "a.alarm_type", alarmHandle.getAlarmType())
+                .eq(StringUtils.isNotBlank(alarmHandle.getAlarmRank()), "a.alarm_rank", alarmHandle.getAlarmRank())
+                .eq(StringUtils.isNotBlank(alarmHandle.getAlarmStatus()), "a.alarm_status", alarmHandle.getAlarmStatus())
+                .eq(StringUtils.isNotBlank(alarmHandle.getSceneType()), "a.scene_type", alarmHandle.getSceneType())
+                .ge(alarmHandle.getAlarmBegintime() != null, "a.alarm_beginTime", alarmHandle.getAlarmBegintime())
+                .le(alarmHandle.getAlarmEndtime() != null, "a.alarm_beginTime", alarmHandle.getAlarmEndtime());
+        return alarmHandleMapper.selectAlarmHandlePage(
+                new Page<>(alarmHandle.getPageNum(), alarmHandle.getPageSize()), queryWrapper);
+    }
+
+    protected Long currentTenantId() {
+        Long tenantId = SecurityUtils.getCurrentTenantId();
+        if (tenantId == null) {
+            throw new CustomException("当前租户不能为空");
+        }
+        return tenantId;
     }
 
     /**
@@ -156,6 +177,9 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
     public int updateAlarmHandle(AlarmHandle alarmHandle){
     if (alarmHandle.getHandleStatus().equals(HandleStatusEnums.ALARM_STATUS_ENUMS_2.getKey())){
         LoginUser userInfo = tokenService.getLoginUser();
+        if (userInfo == null) {
+            throw new CustomException("登录状态已失效");
+        }
         alarmHandle.setConfirmUserId(userInfo.getUserid());
 
         Map<Long,Date> confirmAlarm = redisService.getCacheObject(Constants.CONFIRM_ALARM);
