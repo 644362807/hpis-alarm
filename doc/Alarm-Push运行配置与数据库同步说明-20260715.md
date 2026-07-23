@@ -16,7 +16,7 @@
 - 配置数据的新增、查询、修改、删除必须走 Alarm/Push 接口，禁止用 SQL 代替配置 API。
 - SQL 只用于基础库导入、结构迁移、历史业务数据迁移和只读核验。
 - 本轮不新增 Push DDL；全新 Push 库必须导入正式数据库基线，不能根据 Java 实体临时造表。
-- 企业微信、推送绑定组、可选 `pushBindingId` 和工单转派推送属于后续迭代。
+- 企业微信、接收组、工单转派推送和候选负责人接口已进入当前版本；可选 `pushBindingId` 仍属于后续迭代，不混入本次 SQL。
 
 ## 2. 运行依赖与版本
 
@@ -721,14 +721,30 @@ HAVING COUNT(*) > 1;
 
 - `alarm_configure.push_enabled`、`push_message_type`、`workorder_push_message_type`、`workorder_config_id`；
 - `alarm_workorder` 当前事实表；
+- 工单查询索引 `idx_alarm_workorder_tenant_assignee_status(tenant_id, assignee_id, status, create_time)`；
 - 配置解析与设备绑定索引；
 - 当前已存在 `alarm_handle` 及月度分片的 `workorder_id` 和唯一约束。
 
 脚本检测到重复 alarm_id 会主动失败。应先由业务确认重复记录保留规则，不能为了通过迁移直接删除数据。
 
+执行前确认同名索引不存在；执行后必须确认列顺序完整。脚本通过 `information_schema` 存储过程有条件增加该索引，可重复执行索引检查部分，但仍应遵循一次发布一次核验：
+
+```sql
+SELECT index_name, seq_in_index, column_name
+FROM information_schema.statistics
+WHERE table_schema = 'hpis_alarm'
+  AND table_name = 'alarm_workorder'
+  AND index_name = 'idx_alarm_workorder_tenant_assignee_status'
+ORDER BY seq_in_index;
+```
+
+预期依次返回 `tenant_id`、`assignee_id`、`status`、`create_time`。本轮不新增 `alarm_workorder.handle_picture`；完成/关闭图片继续写入 `alarm_handle.handle_picture`。DDL 执行失败时先查当前字段、索引和存储过程状态，再只补缺失项，不能假设整个脚本已事务回滚。
+
 ## 12. Push 数据库基线校验
 
-Push 仓库当前没有建表迁移脚本。全新环境必须导入受控的 `hpis_push` 基础库；本文不根据 Mapper 临时生成生产 DDL。
+Push 仓库没有完整基础库建表脚本。全新环境必须先导入受控的 `hpis_push` 正式基础库，不能根据 Mapper 或实体临时生成生产 DDL。仓库现有 `hpis-push/src/main/resources/sql/20260716_wecom_push_incremental.sql` 只负责企业微信增量对象，不替代基础库。
+
+企业微信增量脚本包含无 `IF NOT EXISTS` 的建表/加列以及唯一索引迁移，不是整体幂等。只在预检确认四张企业微信表、`route_scope`、`recipient_group_id`和推送日志增量字段均未部署时整脚本执行一次；部分对象已经存在时不得重跑整文件，必须由 DBA 按 `information_schema` 结果拆分缺失项。
 
 ### 12.1 表与字段检查
 
@@ -737,7 +753,9 @@ SELECT table_name
 FROM information_schema.tables
 WHERE table_schema = 'hpis_push'
   AND LOWER(table_name) IN
-      ('active_push_config','pushconfigid_devicesn','push_message_log');
+      ('active_push_config','pushconfigid_devicesn','push_message_log',
+       'push_wecom_app_config','push_wecom_user_binding',
+       'push_recipient_group','push_recipient_group_member');
 
 SELECT table_name, column_name, column_type, is_nullable
 FROM information_schema.columns
@@ -746,13 +764,24 @@ WHERE table_schema = 'hpis_push'
     (table_name = 'active_push_config' AND column_name IN (
       'active_push_config_id','message_type','push_channel_type','enabled',
       'push_address','is_passive','tenant_id','config_name','del_flag',
-      'push_key','user_id','mqtt_topic','mqtt_username','mqtt_password','mqtt_qos'
+      'push_key','user_id','mqtt_topic','mqtt_username','mqtt_password','mqtt_qos',
+      'route_scope','recipient_group_id'
     ))
     OR (LOWER(table_name) = 'pushconfigid_devicesn'
         AND column_name IN ('active_push_config_id','device_sn'))
     OR (table_name = 'push_message_log'
         AND column_name IN ('log_id','message_id','active_push_config_id',
-                            'push_channel_type','message_data','push_status'))
+                            'push_channel_type','message_data','push_status',
+                            'del_flag','create_time','update_time'))
+    OR (table_name = 'push_wecom_app_config'
+        AND column_name IN ('id','tenant_id','corp_id','agent_id',
+                            'corp_secret_ciphertext','enabled','del_flag'))
+    OR (table_name = 'push_wecom_user_binding'
+        AND column_name IN ('id','tenant_id','user_id','wecom_user_id','enabled','del_flag'))
+    OR (table_name = 'push_recipient_group'
+        AND column_name IN ('id','tenant_id','group_name','enabled','del_flag'))
+    OR (table_name = 'push_recipient_group_member'
+        AND column_name IN ('id','tenant_id','group_id','user_id','del_flag'))
   )
 ORDER BY table_name, ordinal_position;
 ```
@@ -774,6 +803,8 @@ HAVING COUNT(*) > 1;
 
 当前代码兼容读取 `del_flag='0'` 和历史 `del_flag IS NULL`，新建记录显式写 `0`。本次同步不强制清洗 NULL；如需清洗，必须另立数据治理任务，先统计、备份、灰度执行。
 
+执行企业微信增量前还必须检查 `push_message_log(message_id, active_push_config_id, target)` 是否重复。脚本遇到重复会主动终止唯一索引步骤；不得直接删除重复行，应先保留证据并确认合并规则。执行后核验 `uk_push_delivery`、四张企业微信表唯一键，以及 `active_push_config(tenant_id, recipient_group_id)` 索引。
+
 ## 13. DDL 失败处理原则
 
 - MySQL DDL 不能依赖业务事务整体回滚；脚本失败后部分字段或索引可能已经生效。
@@ -792,6 +823,7 @@ HAVING COUNT(*) > 1;
 - [ ] Alarm 连接 `hpis_alarm`，Push 连接 `hpis_push`。
 - [ ] Alarm 分片基础表、所需字段和索引全部存在。
 - [ ] Push 三张基础表和所需字段存在。
+- [ ] 工单联合索引列顺序正确，`alarm_workorder`没有新增图片列。
 - [ ] Nacos 中两个实例注册健康，8806/8812 正常监听。
 - [ ] `alarm_queue`、`push.alarm` 及已启用配置动态队列的消费者数正常。
 
@@ -802,6 +834,8 @@ HAVING COUNT(*) > 1;
 - [ ] `deviceIds` 能解析为当前租户设备，跨租户设备被拒绝。
 - [ ] 当前租户不能查询、修改或删除其他租户配置。
 - [ ] 所有测试配置最终通过接口清理。
+- [ ] 企业微信应用、用户绑定、接收组和候选负责人均以当前租户接口核验。
+- [ ] 全部工单与我的工单边界正确，跨租户详情和写操作失败。
 
 ### 14.3 最终推送闭环
 
@@ -811,13 +845,21 @@ HAVING COUNT(*) > 1;
 - [ ] 未匹配配置或 `pushEnabled=0` 时不发送。
 - [ ] Push 禁用后停止投递，重新启用后恢复。
 - [ ] HTTP/MQTT/WebSocket 按实际启用通道分别验证，不以“只写入 MQ”代替最终接收。
+- [ ] 工单未分配、转派、负责人完成和异常关闭均按状态机验证；完成图片从 `alarm_handle`回填。
 
 可复用测试入口：
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File 'D:\studyProject\hpis2.0\hpis\hpis-alarm\src\test\resources\scripts\run-alarm-push-postman-e2e.ps1'
+
 powershell -ExecutionPolicy Bypass `
   -File 'D:\studyProject\hpis2.0\hpis\hpis-alarm\src\test\resources\scripts\run-alarm-push-e2e.ps1'
 ```
+
+第一个脚本要求 Nacos、MySQL、Redis、RabbitMQ 和已打包的 Alarm/Push JAR 就绪；它启动隔离服务和 HTTP 接收器，执行 78 请求的完整配置/工单 Collection，不执行 DDL。第二个脚本是较小的 RabbitMQ 入口回归，直接向真实 `alarm_queue`发布并验证最终 HTTP 接收。两者产生的报告和日志均位于 `target`，不得纳入提交。
+
+当前测试库只读检查显示 `idx_alarm_workorder_tenant_assignee_status`不存在。测试脚本不会自动补索引；正式发布前必须按 12.6 节执行 `alarm-configure-workorder-migration.sql`并复核列顺序，不能因本地接口回归通过而跳过结构同步。
 
 完整接口实例、请求响应和测试结果见 `doc/报警Push接口测试用例-全新环境.md`。
 

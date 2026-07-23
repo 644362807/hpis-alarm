@@ -143,8 +143,12 @@ CREATE TABLE IF NOT EXISTS `alarm_workorder` (
   UNIQUE KEY `uk_alarm_workorder_alarm` (`alarm_id`),
   UNIQUE KEY `uk_alarm_workorder_no` (`workorder_no`),
   KEY `idx_alarm_workorder_status` (`tenant_id`, `status`, `create_time`),
-  KEY `idx_alarm_workorder_assignee` (`assignee_id`, `status`)
+  KEY `idx_alarm_workorder_assignee` (`assignee_id`, `status`),
+  KEY `idx_alarm_workorder_tenant_assignee_status` (`tenant_id`, `assignee_id`, `status`, `create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报警工单表';
+
+CALL add_index_if_missing('alarm_workorder', 'idx_alarm_workorder_tenant_assignee_status',
+  'ALTER TABLE `alarm_workorder` ADD KEY `idx_alarm_workorder_tenant_assignee_status` (`tenant_id`, `assignee_id`, `status`, `create_time`)');
 
 CALL add_index_if_missing('alarm_configure', 'idx_alarm_configure_resolve',
   'ALTER TABLE `alarm_configure` ADD KEY `idx_alarm_configure_resolve` (`tenant_id`, `scene_type`, `device_alarm_control`, `del_flag`, `alarm_type`)');

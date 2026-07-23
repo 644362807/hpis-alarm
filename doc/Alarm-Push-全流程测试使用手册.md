@@ -19,7 +19,7 @@
 
 第一次执行只走第 5～7 章“HTTP 基准流程”。它不需要企业微信凭据，可以证明 Alarm → Push 技术链路完整。需要验证“推给谁”时再走第 8 章企业微信流程。
 
-字段含义、完整接口清单和响应结构查 [Alarm-Push API 接口文档](./Alarm-Push-API接口文档.md)。
+字段含义、完整接口清单和响应结构查同一交付包中的 `02-API接口文档.md`。
 
 结果定义：
 
@@ -29,13 +29,15 @@
 
 不要把 HTTP 200、RabbitMQ ACK 或一条发送日志单独判定为推送成功。
 
+本轮工单迭代不强制重复验证企业微信客户端到达：服务端闭环以 MQ 消费、配置路由、候选/接收人解析、发送尝试和 `push_message_log`为证据；报告中标记“企业微信客户端未复测”。只有要声明“客户端到达 PASS”时，才必须再提供目标账号实收和禁收账号未收证据。
+
 ## 2. 整体流程和成功画面
 
 完整成功时应看到：
 
 1. Alarm 配置详情包含正确设备、场景、报警类型和 Push messageType。
 2. Push 配置详情处于启用状态，并指向预期 HTTP 地址或企业微信接收组。
-3. 上报后 `/alarm/list` 能按外部 CID 查到记录，并取得内部 Long `alarmId`。
+3. 上报后 `/alarm/list` 返回的 `rows` 中能按外部 CID 精确匹配记录，并取得内部 Long `alarmId`；当前 SQL 不使用 `alarmCid` 请求参数过滤。
 4. `/alarm/query/{alarmId}` 返回详情。
 5. Push 命中预期 `activePushConfigId`，最终 HTTP 接收器或企业微信收到消息。
 6. 普通企业微信报警由接收组成员收到，组外人员不收到。
@@ -170,6 +172,15 @@ $Headers = @{
 }
 ```
 
+工单转派后完成和异常关闭还需要同租户独立账号，按实际网关要求构造：
+
+```powershell
+$SecondAssigneeToken = Read-Host '输入第二负责人 Token'
+$SecondAssigneeHeaders = @{ Authorization = "Bearer $SecondAssigneeToken" }
+$ClosePermissionToken = Read-Host '输入具备 alarm:workorder:close 权限的 Token'
+$ClosePermissionHeaders = @{ Authorization = "Bearer $ClosePermissionToken" }
+```
+
 不要把 `$Token` 或企业微信 Secret 输出到文件、截图或报告。
 
 ### 6.2 动态 ID 从哪里来
@@ -179,7 +190,7 @@ $Headers = @{
 | `$DeviceId/$DeviceSn` | `/basicInfo/pdList` 选择同一行 |
 | `$PushConfigId` | 新增后按唯一 `configName` 查询 `/pushConfig/list` |
 | `$AlarmConfigureId` | 新增后按唯一 `alarmConfigureName` 查询 `/configure/list` |
-| `$AlarmId` | 上报后按 `$AlarmCid` 查询 `/alarm/list` |
+| `$AlarmId` | 上报后用 `/alarm/list?deviceSn=...` 查询，再在响应 `rows` 中精确匹配 `$AlarmCid`；当前接口不按 alarmCid 过滤 |
 | `$GroupId` | 创建组后 `/recipientGroup/list` 按唯一组名选择 |
 | `$WorkorderId` | 创建工单后 `/workorder/list?alarmId=$AlarmId` |
 
@@ -320,7 +331,7 @@ Invoke-WebRequest -Method Post -Uri "$AlarmBaseUrl/alarm/alarmAdd" `
 $AlarmRow = $null
 for ($attempt = 0; $attempt -lt 20 -and -not $AlarmRow; $attempt++) {
   $result = Invoke-RestMethod -Method Get `
-    -Uri "$AlarmBaseUrl/alarm/list?alarmCid=$([uri]::EscapeDataString($AlarmCid))&pageNum=1&pageSize=10" `
+    -Uri "$AlarmBaseUrl/alarm/list?deviceSn=$([uri]::EscapeDataString($DeviceSn))&pageNum=1&pageSize=200" `
     -Headers $Headers
   $AlarmRow = $result.rows | Where-Object { $_.alarmCid -eq $AlarmCid } | Select-Object -First 1
   if (-not $AlarmRow) { Start-Sleep -Milliseconds 500 }
@@ -392,6 +403,8 @@ if (-not $PublishResult.routed) { throw 'alarm_queue 未路由' }
 ```powershell
 $RabbitPlain = $null
 $RabbitHeaders = $null
+$SecondAssigneeHeaders = $null
+$ClosePermissionHeaders = $null
 ```
 
 ### A-08 禁用 Push 验证“入库但不投递”
@@ -429,7 +442,7 @@ if ($AfterDisableCount -ne $BeforeDisableCount) { throw 'Push 禁用后仍收到
 | 第一负责人 | `$FirstAssigneeId` | `$FirstWecomId` | 收普通报警和创建工单 |
 | 第二负责人 | `$SecondAssigneeId` | `$SecondWecomId` | 收普通报警和转派事件 |
 
-还需 CorpID、AgentID、Secret、应用对三人可见，以及可人工确认“谁收到/谁未收到”。缺任一项标记 `BLOCKED-WECOM`，不要把 RabbitMQ 成功当实收。
+服务端路由测试需要 CorpID、AgentID、Secret、应用可见范围和有效绑定。若本轮还要复测客户端到达，则必须能人工确认“谁收到/谁未收到”；缺人工条件时只标记“客户端未复测”，不影响服务端闭环判定，也不能把 RabbitMQ 成功写成客户端实收。
 
 先把三人的真实测试值保存为变量：
 
@@ -531,17 +544,17 @@ if ($WecomAlarmPushConfigId -le 0) { throw '未回查到普通报警企业微信
 
 重新启用第 7 章的 Alarm 配置后，上报 CID `TEST-$RunId-WECOM-ALARM`，并按 A-05 回查 `$AlarmId`。
 
-PASS：三位组成员均实收，组外人员不收；消息没有 `assigneeId`。记录 CID、内部 Alarm ID、Push messageId、configId、groupId 和三人截图/确认。
+服务端 PASS：消息没有 `assigneeId`，按组解析出三名有效目标，并存在三人的发送尝试/日志。客户端到达 PASS：三位组成员均实收、组外人员不收，并额外记录 CID、内部 Alarm ID、Push messageId、configId、groupId 和三人截图/确认。
 
 ### 8.5 工单前置：确认报警
 
-工单要求当前 Alarm 配置具备正数 `workorderConfigId` 和 `workorderPushMessageType=25`。模板 ID 必须从当前系统已有工单模板接口/页面取得；没有模板时标记 `BLOCKED-WORKORDER-TEMPLATE`，不要编造。
+工单要求当前 Alarm 配置具备正数 `workorderConfigId` 和 `workorderPushMessageType=25`。当前仓库没有工单模板 CRUD 或被引用模板存在性校验，`workorderConfigId` 只是“启用工单并保存来源值”的兼容关联值；使用测试专用正数即可，但测试结果只能证明关联值生效，不能写成“模板内容已应用”。
 
 取得模板 ID 后，用完整 Alarm 配置详情更新：
 
 ```powershell
-$WorkorderConfigId = [long](Read-Host '输入当前租户可用工单模板 ID')
-if ($WorkorderConfigId -le 0) { throw '工单模板 ID 必须为正整数' }
+$WorkorderConfigId = [long](Read-Host '输入测试专用正数 workorderConfigId')
+if ($WorkorderConfigId -le 0) { throw 'workorderConfigId 必须为正整数' }
 $AlarmConfigForWorkorder = (Invoke-RestMethod -Method Get `
   -Uri "$AlarmBaseUrl/configure/$AlarmConfigureId" -Headers $Headers).data
 $AlarmConfigBeforeWorkorder = $AlarmConfigForWorkorder.PSObject.Copy()
@@ -591,7 +604,19 @@ $WorkorderPushConfigId = [long](($WorkorderPushRows | Where-Object {
 if ($WorkorderPushConfigId -le 0) { throw '未回查到工单企业微信配置 ID' }
 ```
 
-负责人会覆盖配置组。
+创建前先验证候选人解析。候选接口使用工单 `messageType=25` 和报警设备 SN，强制当前租户；正常流程只选择 `wecomReachable=true` 的人：
+
+```powershell
+$Candidates = (Invoke-RestMethod -Method Get `
+  -Uri "$PushBaseUrl/recipientGroup/workorderCandidates?messageType=25&deviceSn=$DeviceSn" `
+  -Headers $Headers).data
+$FirstCandidate = $Candidates | Where-Object {
+  $_.userId -eq $FirstAssigneeId -and $_.wecomReachable -eq $true
+}
+if (-not $FirstCandidate) { throw '第一负责人不在可达候选人中' }
+```
+
+正数负责人会覆盖配置组；`0/null/缺失`则保留配置组模式。
 
 ```powershell
 $WorkorderBody = @{
@@ -601,12 +626,12 @@ $WorkorderBody = @{
 Invoke-RestMethod -Method Post -Uri "$AlarmBaseUrl/workorder" `
   -Headers $Headers -ContentType 'application/json' -Body $WorkorderBody
 $Workorders = (Invoke-RestMethod -Method Get `
-  -Uri "$AlarmBaseUrl/workorder/list?alarmId=$AlarmId" -Headers $Headers).data
+  -Uri "$AlarmBaseUrl/workorder/list?alarmId=$AlarmId&pageNum=1&pageSize=20" -Headers $Headers).rows
 $Workorder = $Workorders | Where-Object {$_.alarmId -eq $AlarmId} | Select-Object -First 1
 $WorkorderId = [long]$Workorder.workorderId
 ```
 
-PASS：只有第一负责人收到 `ALARM_WORKORDER_CREATED`；观察者和第二负责人不得收到。
+用第一负责人自己的 Token 调用 `/workorder/my` 和 `/workorder/my/$WorkorderId`，必须能看到该工单；用第二负责人或其他租户 Token 调用“我的详情”必须返回 `data=null` 或拒绝。PASS：只有第一负责人收到 `ALARM_WORKORDER_CREATED`；观察者和第二负责人不得收到。
 
 ### 8.7 工单转派：只发第二负责人
 
@@ -623,15 +648,62 @@ if ($WorkorderAfter.assigneeId -ne $SecondAssigneeId) { throw '负责人未更�
 
 PASS：只有第二负责人收到 `ALARM_WORKORDER_TRANSFERRED`；旧负责人和观察者不得收到。
 
-完成工单：
+完成工单必须换成第二负责人的 Token/用户头；说明和图片都必填，不能提交 `alarmId`、`status` 或负责人字段：
 
 ```powershell
 $CompleteBody = @{
-  workorderId=$WorkorderId;alarmId=$AlarmId;status='2';handleResult="测试完成-$RunId"
+  workorderId=$WorkorderId
+  handleResult="测试完成-$RunId"
+  handlePicture="/test-evidence/$RunId/workorder-complete.jpg"
 } | ConvertTo-Json
 Invoke-RestMethod -Method Put -Uri "$AlarmBaseUrl/workorder/complete" `
-  -Headers $Headers -ContentType 'application/json' -Body $CompleteBody
+  -Headers $SecondAssigneeHeaders -ContentType 'application/json' -Body $CompleteBody
+$Completed = (Invoke-RestMethod -Method Get `
+  -Uri "$AlarmBaseUrl/workorder/$WorkorderId" -Headers $Headers).data
+if ($Completed.status -ne '2' -or $Completed.handleResult -ne "测试完成-$RunId") {
+  throw '工单完成状态或说明错误'
+}
+if ($Completed.handlePicture -ne "/test-evidence/$RunId/workorder-complete.jpg") {
+  throw '处理图片未从 alarm_handle 回填'
+}
 ```
+
+用旧负责人重复完成、用新负责人重复完成、缺说明或缺图片都必须失败，且数据库中不能产生第二次业务写入。
+
+### 8.8 未分配、转派后完成与异常关闭
+
+分别再准备两条不同的已确认报警，得到 `$UnassignedAlarmId` 和 `$CloseAlarmId`。同一报警只能创建一张工单，不能复用前面的 `$AlarmId`。
+
+未分配模式：
+
+```powershell
+$UnassignedBody = @{
+  alarmId=$UnassignedAlarmId;assigneeId=0
+  title="未分配工单-$RunId";content='先按组通知，随后转派'
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$AlarmBaseUrl/workorder" `
+  -Headers $Headers -ContentType 'application/json' -Body $UnassignedBody
+$UnassignedRows = (Invoke-RestMethod -Method Get `
+  -Uri "$AlarmBaseUrl/workorder/list?alarmId=$UnassignedAlarmId&pageNum=1&pageSize=20" `
+  -Headers $Headers).rows
+$UnassignedWorkorderId = [long]($UnassignedRows | Select-Object -First 1).workorderId
+```
+
+断言 `assigneeId=0`、状态 `0`，配置组收到 CREATED 路由；任意用户的 `/workorder/my` 都不包含它，直接 `/complete` 失败。随后调用 `/transfer` 指定正数新负责人，只产生该新负责人的 TRANSFERRED 通知；再由新负责人提交必填说明和图片完成。
+
+异常关闭使用另一张工单：
+
+```powershell
+$CloseBody = @{
+  workorderId=$CloseWorkorderId
+  handleResult="测试异常关闭-$RunId"
+  handlePicture="/test-evidence/$RunId/workorder-close.jpg"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Put -Uri "$AlarmBaseUrl/workorder/close" `
+  -Headers $ClosePermissionHeaders -ContentType 'application/json' -Body $CloseBody
+```
+
+调用账号只需具备现有 `alarm:workorder:close` 权限；代码不额外判断管理员身份。断言状态为 `3`，原因、图片和实际关闭人写入处理记录；再次关闭、转派、完成或删除都失败。本轮不要求完成/关闭后二次通知。
 
 ## 9. 报警配置 CRUD 测试
 
@@ -654,7 +726,7 @@ Invoke-RestMethod -Method Put -Uri "$AlarmBaseUrl/workorder/complete" `
 |---|---|---|
 | AR-C1 | POST `/alarm/alarmAdd` | 按 CID 查到一条内部记录 |
 | AR-C2 | `alarm_queue` 259 | routed 且按 CID 查到记录 |
-| AR-R1 | GET `/alarm/list` | 分页、CID/设备/状态筛选正确 |
+| AR-R1 | GET `/alarm/list` | 分页、设备/状态筛选正确；响应中可读 CID，但当前请求参数 `alarmCid` 不参与过滤 |
 | AR-R2 | GET `/alarm/query/{id}` | 详情 ID/CID/设备/时间正确 |
 | AR-R3 | 图片接口 | 有图片数据时返回路径/内容；无数据标未适用 |
 | AR-R4 | 统计接口 | 时间、设备、租户条件正确 |
@@ -688,10 +760,17 @@ Invoke-RestMethod -Method Put -Uri "$AlarmBaseUrl/workorder/complete" `
 | WO-NOT-CONFIRMED | 未确认直接 POST `/workorder` | 失败“报警未确认” |
 | WO-NO-TEMPLATE | 配置模板 ID 非正数 | 失败“未关联工单模板” |
 | WO-CREATE | 已确认、有模板 | 工单 `status=0`、负责人正确 |
+| WO-CREATE-UNASSIGNED | `assigneeId=0/null/缺失` | 保存为 `0`、不进入任何人的“我的工单”、按组路由 |
 | WO-DUP | 同一报警重复创建 | 失败，不产生第二张工单 |
+| WO-MY | `/workorder/my`、`/workorder/my/{id}` | 仅当前租户、当前正数负责人可见 |
+| WO-CANDIDATE | `/recipientGroup/workorderCandidates` | DEVICE/TENANT 路由正确，按 userId 去重并返回 wecomReachable |
 | WO-TRANSFER | `/workorder/transfer` | 负责人变更、只发新负责人 |
-| WO-COMPLETE | `/workorder/complete` | `status=2`、handleResult 回读 |
-| WO-DELETE | DELETE `/workorder/{ids}` | 本轮工单不可见 |
+| WO-TRANSFER-INVALID | 新负责人 `0/null/负数` | 失败且负责人不变 |
+| WO-COMPLETE | 当前负责人传说明和图片 | `status=2`、结果和图片回读，处理人正确 |
+| WO-COMPLETE-DENY | 未分配/非负责人/缺字段/重复完成 | 失败且无第二次业务写入 |
+| WO-CLOSE | 有 close 权限、原因必填、图片可选 | `status=3`，关闭原因和实际操作人回读 |
+| WO-TERMINAL | 对状态 `2/3` 再编辑/转派/完成/关闭/删除 | 全部失败 |
+| WO-DELETE | DELETE 非终态 `/workorder/{ids}` | 本轮工单不可见；含终态或跨租户 ID 时整批回滚 |
 
 ## 13. Push 配置生命周期和其他通道
 
@@ -722,6 +801,7 @@ Invoke-RestMethod -Method Put -Uri "$AlarmBaseUrl/workorder/complete" `
 3. 跨租户更新/删除整个请求应失败，不能部分成功。
 4. 请求体写租户 A/B 的任意 `tenantId`，服务仍使用当前登录租户。
 5. 缺权限接口返回 403，记录权限编码并交管理员，不改数据库绕过。
+6. 租户 B 不能通过全部详情、我的详情、编辑、转派、完成、关闭或删除访问租户 A 工单。
 
 ## 15. 按现象排障
 
@@ -743,6 +823,27 @@ SQL 仅用于只读核验；优先使用仓库 `hpis-alarm/src/test/resources/sq
 
 ## 16. 测试结果记录模板
 
+### 16.1 2026-07-23 本次自动化执行记录
+
+| 检查项 | 实际结果 | 判定 |
+|---|---|---|
+| Maven 运行时 | JDK `1.8.0_321`，`-Dfile.encoding=UTF-8` | PASS |
+| 工单与候选人聚焦回归 | Alarm 27 个、Push 20 个，共 47 个；0 失败、0 错误 | PASS |
+| Alarm 全量测试 | 168 个；0 失败、0 错误、3 个依赖外部运行参数的 runner 跳过 | PASS |
+| Push 全量测试 | 71 个；0 失败、0 错误、0 跳过 | PASS |
+| Postman 静态校验 | 78 个请求、42 个环境变量；变量引用、脚本语法和 raw JSON 请求体校验通过 | PASS |
+| 本地真实服务启动 | Nacos、Push、Alarm 和两个 HTTP 接收器启动成功；Push 先于 Alarm 启动 | PASS |
+| Postman 接口回归 | 78 个请求、48 个测试脚本、48 个断言；请求和断言均 0 失败 | PASS |
+| 配置 CRUD 与清理 | Alarm 配置、企业微信应用/绑定/接收组和四条 Push 配置均通过 API 创建、查询、修改和删除/禁用；最终启用配置、组、绑定、启用应用计数均为 0 | PASS |
+| 工单与租户闭环 | 跨租户详情不可见、转派失败；工单 `34/36/37` 最终状态为 `2/2/3`，负责人分别为第二负责人、第二负责人、第一负责人 | PASS |
+| `alarm_handle`只读核验 | 三张工单均写入说明、图片和实际处理人；异常关闭记录处理人为关闭操作用户 | PASS |
+| RabbitMQ 真实入口 | `run-alarm-push-e2e.ps1`通过 RabbitMQ 管理接口向 `alarm_queue`发布并到达 HTTP 接收器；全部检查项为 `true` | PASS |
+| Push 投递日志 | HTTP 通道成功 8 次；企业微信通道使用本地假地址产生 8 次失败发送记录，证明配置路由、动态 Consumer、接收人解析和发送尝试已执行 | PASS（服务端范围） |
+| 企业微信客户端到达 | 本轮按约定不使用真实 CorpSecret，不重复取得客户端实收证据 | 未复测，不声明客户端 PASS |
+| 数据库迁移 | 未执行 DDL；当前库缺少 `idx_alarm_workorder_tenant_assignee_status`（只读检查为 0） | 发布前置条件，不能据此上线 |
+
+本次已完成本地真实 Alarm/Push/RabbitMQ/MySQL/Redis 服务端闭环。Postman 使用一次性租户上下文、测试设备缓存和本地假企业微信地址，不包含生产网关鉴权或企业微信客户端实收；报告为 `target/alarm-push-postman-e2e/newman-1784753745.json`。正式发布前必须按第 3 号文档执行并核验工单联合索引迁移，再使用部署环境合法 Token 复跑；只有需要声明“企业微信客户端到达 PASS”时，才补充目标账号实收证据。
+
 | 字段 | 实际值 |
 |---|---|
 | 用例编号 |  |
@@ -755,6 +856,8 @@ SQL 仅用于只读核验；优先使用仓库 `hpis-alarm/src/test/resources/sq
 | alarmCid / alarmId |  |
 | pushConfigId / messageId |  |
 | groupId / workorderId |  |
+| assigneeId / handlerId |  |
+| workorder status / handlePicture |  |
 | 请求与响应摘要 |  |
 | 预期接收人 |  |
 | 禁止接收人 |  |
@@ -765,7 +868,7 @@ SQL 仅用于只读核验；优先使用仓库 `hpis-alarm/src/test/resources/sq
 
 只处理名称或 CID 含本轮 `$RunId` 的对象。推荐顺序：
 
-1. 完成或删除本轮工单。
+1. 完成/关闭后的工单按审计要求保留；仅通过 DELETE 清理仍处于非终态的本轮工单，终态工单不能删除。
 2. 删除本轮处理记录和报警记录。
 3. 将本轮 Push 配置设为 `enabled=false`，确认 Consumer 停止。
 4. 删除本轮 Push 配置，详情回查不可见。
@@ -778,7 +881,7 @@ SQL 仅用于只读核验；优先使用仓库 `hpis-alarm/src/test/resources/sq
 示例：
 
 ```powershell
-if ($WorkorderId) {
+if ($WorkorderId -and $WorkorderStatus -notin @('2','3')) {
   Invoke-RestMethod -Method Delete -Uri "$AlarmBaseUrl/workorder/$WorkorderId" -Headers $Headers
 }
 if ($AlarmId) {

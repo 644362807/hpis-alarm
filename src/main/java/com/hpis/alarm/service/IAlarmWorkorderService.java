@@ -1,6 +1,7 @@
 package com.hpis.alarm.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hpis.alarm.domain.AlarmWorkorder;
 
 import java.util.List;
@@ -14,6 +15,12 @@ public interface IAlarmWorkorderService extends IService<AlarmWorkorder> {
 
     AlarmWorkorder selectAlarmWorkorderByAlarmId(Long alarmId);
 
+    AlarmWorkorder selectMyAlarmWorkorderById(Long workorderId);
+
+    Page<AlarmWorkorder> selectAlarmWorkorderPage(AlarmWorkorder alarmWorkorder);
+
+    Page<AlarmWorkorder> selectMyAlarmWorkorderPage(AlarmWorkorder alarmWorkorder);
+
     List<AlarmWorkorder> selectAlarmWorkorderList(AlarmWorkorder alarmWorkorder);
 
     int createWorkorder(AlarmWorkorder alarmWorkorder);
@@ -23,6 +30,8 @@ public interface IAlarmWorkorderService extends IService<AlarmWorkorder> {
     int transferWorkorder(AlarmWorkorder alarmWorkorder);
 
     int completeWorkorder(AlarmWorkorder alarmWorkorder);
+
+    int closeWorkorder(AlarmWorkorder alarmWorkorder);
 
     int deleteAlarmWorkorderByIds(Long[] workorderIds);
 }

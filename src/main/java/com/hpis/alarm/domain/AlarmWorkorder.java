@@ -1,6 +1,7 @@
 package com.hpis.alarm.domain;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.hpis.common.core.web.domain.BaseEntity;
 import lombok.Data;
@@ -43,6 +44,10 @@ public class AlarmWorkorder extends BaseEntity {
 
     /** 工单处理结果 */
     private String handleResult;
+
+    /** 处理图片，实际存储于 alarm_handle.handle_picture */
+    @TableField(exist = false)
+    private String handlePicture;
 
     /** 租户ID */
     private Long tenantId;

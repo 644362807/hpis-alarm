@@ -2,179 +2,209 @@
 
 ## 1. 使用范围
 
-本文说明如何把交付包中的 Alarm-Push Collection 和 Environment 导入 Postman，并按正确顺序执行 HTTP 报警 `messageType=10`、工单 `messageType=25`、失败场景和清理请求。
+本说明对应当前交付包 Collection，覆盖：
 
-企业微信应用、用户绑定、接收组和收件人路由不在该 Collection 中，必须按[全流程测试使用手册](01-全流程测试使用手册.md)人工执行。
+- Alarm 配置新增、查询、修改、删除；
+- 企业微信租户应用、业务用户绑定、接收组的受支持生命周期；
+- HTTP 与企业微信 `ActivePushConfig` 的新增、查询、修改、删除；
+- 普通报警 `pushMessageType=10`；
+- 工单 `workorderPushMessageType=25`、候选人、具体负责人、未分配、转派、完成和异常关闭；
+- 失败请求、配置恢复和 API 清理。
+
+Collection 只允许在专用测试租户运行。企业微信应用是“每租户一条”的配置且没有 DELETE 接口，绑定也可能覆盖相同业务用户的旧值；共享租户必须改用手工流程并先保存可恢复快照。
 
 ## 2. 导入文件
 
-依次导入：
+1. 导入 `postman/hpis-alarm-push.postman_collection.json`。
+2. 导入 `postman/hpis-alarm-push.postman_environment.json`。
+3. 选择 `HPIS Alarm Push - Fresh Environment` 环境。
+4. 只在 Postman 本地当前值中填写 Token、企业微信 Secret 和真实账号，不把真实值导出、提交或截图。
 
-1. [hpis-alarm-push.postman_collection.json](../postman/hpis-alarm-push.postman_collection.json)
-2. [hpis-alarm-push.postman_environment.json](../postman/hpis-alarm-push.postman_environment.json)
+仓库中的 `src/test/resources/postman` 是自动化测试副本，必须与交付包版本保持字节一致；测试人员只导入交付包文件。
 
-在 Postman 中点击 `Import`，选择文件后确认导入。完成后应看到：
+## 3. 环境变量
 
-- Collection：`HPIS Alarm Push API - Fresh Environment`
-- Environment：`HPIS Alarm Push - Fresh Environment`
+### 3.1 服务和凭据
 
-执行请求前，在右上角环境选择器中选中 `HPIS Alarm Push - Fresh Environment`。如果显示 `No environment`，变量不会生效。
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `alarmBaseUrl` | 是 | Alarm 网关或直连地址，默认示例 `http://127.0.0.1:18806` |
+| `pushBaseUrl` | 是 | Push 网关或直连地址，默认示例 `http://127.0.0.1:8812` |
+| `receiver10BaseUrl` | HTTP 测试必填 | 普通报警 HTTP 接收器 |
+| `receiver25BaseUrl` | 工单 HTTP 测试必填 | 工单 HTTP 接收器 |
+| `token` | 是 | 第一负责人且具备配置、工单接口权限的同租户 Token |
+| `secondAssigneeToken` | 是 | 第二负责人同租户 Token，用于验证完成所有权 |
+| `closePermissionToken` | 是 | 具备 `alarm:workorder:close` 权限的同租户 Token；代码不额外识别管理员身份 |
+| `otherTenantToken` | 跨租户用例必填 | 另一租户用户 Token，只用于验证详情不可见和转派失败 |
+| `tenantId` | 是 | 三个 Token 对应的同一测试租户 |
+| `otherTenantId` | 跨租户用例必填 | `otherTenantToken`对应的另一租户，必须与 `tenantId`不同 |
 
-Apifox 可导入 Postman Collection v2.1 和 Environment；导入后仍需逐项核对变量、鉴权 Header 和测试脚本兼容性。
+Alarm 服务自身的默认端口是 `8806`；Postman Environment 使用 `18806` 作为本地隔离联调端口，避免与 IDEA 中已启动的 `8806` 实例冲突。执行前必须按本次实际启动端口修改 `alarmBaseUrl`：直连默认实例用 `http://127.0.0.1:8806`，由联调脚本启动隔离实例时才保留 `http://127.0.0.1:18806`。
 
-## 3. 环境变量怎么填写
+通过网关执行时由网关建立登录与租户上下文。直连 Alarm/Push 微服务时，Collection 根级预请求脚本会根据当前 `token/userId`注入 `Authorization`、`user_id`和 `username`；第二负责人、关闭用户和跨租户请求使用各自变量覆盖这些头。该方式仅用于受控本地联调，不能代替生产网关鉴权测试。
 
-| 变量 | 示例默认值 | 必须设置为 | 来源 |
-|---|---|---|---|
-| `alarmBaseUrl` | `http://127.0.0.1:18806` | 当前环境 Alarm 网关或直连地址，不要以 `/` 结尾 | 部署人员或网关配置 |
-| `pushBaseUrl` | `http://127.0.0.1:8812` | 当前环境 Push 网关或直连地址，不要以 `/` 结尾 | 部署人员或网关配置 |
-| `receiver10BaseUrl` | `http://127.0.0.1:19010` | 普通报警 HTTP 接收器地址 | 本地接收器或测试回调服务 |
-| `receiver25BaseUrl` | `http://127.0.0.1:19025` | 工单 HTTP 接收器地址 | 本地接收器或测试回调服务 |
-| `token` | `replace-with-valid-token` | 当前测试租户有效 Token，只保存在本机环境变量 | 测试账号登录结果 |
-| `tenantId` | `990010` | 当前测试租户 ID | Token 对应租户信息 |
-| `userId` | `990010` | 当前测试用户 ID，同时作为工单负责人 | 用户中心或当前登录信息 |
-| `deviceAId` | `990101` | 当前租户测试设备 A 的 Long ID | 设备列表接口或设备管理页面 |
-| `deviceASn` | `CODX-EMERG-10-DEV-A` | 设备 A 的真实 SN | 设备列表接口或设备管理页面 |
-| `deviceAGatewaySn` | `CODX-EMERG-10-GW-A` | 设备 A 的真实网关 SN | 设备详情或网关信息 |
-| `deviceBId` | `990102` | 当前租户测试设备 B 的 Long ID | 设备列表接口或设备管理页面 |
-| `deviceBSn` | `CODX-EMERG-10-DEV-B` | 设备 B 的真实 SN | 设备列表接口或设备管理页面 |
-| `deviceBGatewaySn` | `CODX-EMERG-10-GW-B` | 设备 B 的真实网关 SN | 设备详情或网关信息 |
-| `normalDeviceId` | `990103` | 当前租户普通报警负例设备的 Long ID | 设备列表接口或设备管理页面 |
-| `normalDeviceSn` | `CODX-EMERG-10-NORMAL-DEV` | 普通报警负例设备的真实 SN | 设备列表接口或设备管理页面 |
-| `workorderConfigId` | `900` | 当前环境有效且大于 0 的工单模板 ID | 工单模板管理或数据库只读查询 |
-| `runId` | 空 | 本轮唯一标识；留空时 Collection 自动生成时间字符串 | Collection 根级 pre-request script |
-| `internalAlarmId` | 空 | 设备 A 本轮报警入库后生成的内部 Long `alarmId` | `/alarm/list?alarmCid=...` 或证据 SQL |
-| `emergencyAlarmConfigureId` | 空 | Collection 列表请求自动回填 | `01` 文件夹测试脚本 |
-| `normalAlarmConfigureId` | 空 | Collection 列表请求自动回填 | `01` 文件夹测试脚本 |
-| `pushConfig10Id` | 空 | Collection 列表请求自动回填 | `02` 文件夹测试脚本 |
-| `pushConfig25Id` | 空 | Collection 列表请求自动回填 | `02` 文件夹测试脚本 |
+### 3.2 用户和企业微信
 
-注意：
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `userId` | 是 | `token` 对应业务用户 ID、第一负责人 |
+| `secondUserId` | 是 | `secondAssigneeToken` 对应业务用户 ID、转派目标 |
+| `closeUserId` | 是 | `closePermissionToken` 对应业务用户 ID，用于核验异常关闭实际处理人 |
+| `otherUserId` | 跨租户用例必填 | `otherTenantToken`对应业务用户 ID |
+| `wecomCorpId` | 企业微信测试必填 | 专用测试租户 CorpID |
+| `wecomCorpSecret` | 企业微信测试必填 | 只填本地当前值，禁止导出真实 Secret |
+| `wecomAgentId` | 企业微信测试必填 | 正整数 AgentID |
+| `wecomUserId` | 企业微信测试必填 | 第一业务用户的企业微信 UserID |
+| `secondWecomUserId` | 企业微信测试必填 | 第二业务用户的企业微信 UserID |
 
-- Token、密码和企业微信 Secret 不得提交回仓库，也不要截图传播。
-- 三个设备必须属于 `tenantId` 对应租户；不能只修改 SN 而保留其他租户的设备 ID。
-- 重跑前建议清空 `runId` 和五个运行期 ID，避免复用上一轮数据。
-- 请求体中的 `tenantId` 不是租户隔离的可信来源，服务端仍以当前 Token 上下文为准。
+### 3.3 设备和运行变量
+
+| 变量 | 来源/用途 |
+|---|---|
+| `deviceAId/deviceASn/deviceAGatewaySn` | 当前租户设备 A；具体负责人和异常关闭报警 |
+| `deviceBId/deviceBSn/deviceBGatewaySn` | 当前租户设备 B；未分配工单报警 |
+| `normalDeviceId/normalDeviceSn` | 不应命中 `messageType=10` 的负向设备 |
+| `workorderConfigId` | 测试专用正整数兼容关联值；当前代码不校验模板实体存在 |
+| `runId` | 留空，Collection 根脚本自动生成 |
+
+以下变量由 Collection 自动回填，不要预填：
+
+`internalAlarmId`、`unassignedAlarmId`、`closeAlarmId`、`emergencyAlarmConfigureId`、`normalAlarmConfigureId`、`recipientGroupId`、`pushConfig10Id`、`pushConfig25Id`、`wecomPushConfig10Id`、`wecomPushConfig25Id`、`workorderId`、`unassignedWorkorderId`、`closeWorkorderId`。
+
+### 3.4 一键本地回归脚本
+
+先使用 Java 8 打包 Alarm 和 Push，并确认本机 Nacos、MySQL、Redis、RabbitMQ 已启动且 Nacos 配置指向测试库；脚本不会启动 Nacos，也不会执行数据库迁移：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File 'D:\studyProject\hpis2.0\hpis\hpis-alarm\src\test\resources\scripts\run-alarm-push-postman-e2e.ps1'
+```
+
+脚本自动生成一次性租户、四类用户上下文和三台测试设备缓存，启动 Push、Alarm 与两个 HTTP 接收器，使用本地不可达企业微信地址运行 78 个请求，最后清理本轮 Redis 上下文和 API 配置。Newman JSON、导出环境和日志写入各模块 `target`，不得提交；除非使用 `-KeepServices`，脚本会停止自己启动的进程。它验证的是直连微服务的服务端闭环，不验证生产网关鉴权、企业微信客户端实收，也不补做缺失 DDL。
 
 ## 4. 启动本地 HTTP 接收器
 
-仓库提供双端口测试接收器：
+仓库已有接收器脚本时分别监听 19010 和 19025；也可以替换为测试环境可访问的回调服务。Push 的 HTTP `pushAddress` 示例是 `127.0.0.1:19010/...`，不包含 `http://`，因为当前 Consumer 会补协议。
 
-[start-alarm-push-http-receiver.ps1](../../../src/test/resources/scripts/start-alarm-push-http-receiver.ps1)
-
-从 `hpis-alarm` 仓库根目录执行：
+运行前验证：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File '.\src\test\resources\scripts\start-alarm-push-http-receiver.ps1' `
-  -Ports '19010,19025'
+Invoke-RestMethod http://127.0.0.1:19010/_events
+Invoke-RestMethod http://127.0.0.1:19025/_events
 ```
 
-看到 `Alarm push HTTP receiver started` 后保持窗口运行。另开终端检查：
-
-```powershell
-Invoke-RestMethod 'http://127.0.0.1:19010/_events'
-Invoke-RestMethod 'http://127.0.0.1:19025/_events'
-```
-
-两个接口都应返回 `count` 和 `events`。远程测试环境不能访问本机 `127.0.0.1` 时，应使用 Alarm/Push 服务实际可访问的测试回调地址，并同步修改两个 receiver 变量和 Push 配置目标。
+如果 Push 运行在容器或远程主机，`127.0.0.1` 指向 Push 自身，必须把 Collection 中地址改成 Push 可访问的接收器地址。
 
 ## 5. 执行前检查
 
-开始运行 Collection 前逐项确认：
+- [ ] Push 先启动，Alarm 后启动，均连接正确 Nacos、数据库、Redis 和 RabbitMQ。
+- [ ] 已按 `03-运行配置与SQL同步说明.md` 完成结构同步，但未由本测试自动执行 DDL。
+- [ ] `alarm_queue`、`push.alarm` 及动态配置队列具备声明和消费权限。
+- [ ] 三个 Token 属于同一测试租户，且用户 ID 与 Token 身份一致。
+- [ ] 第一、第二用户是专用测试用户，企业微信应用对二人可见。
+- [ ] `push.wecom.secret-key` 已安全配置；Environment 中 CorpSecret 不是占位符。
+- [ ] 设备 ID/SN 属于当前租户，Redis/设备服务能解析。
+- [ ] 已执行只读 `sql/alarm-push-api-setup.sql`，缺表、缺列、缺索引均已处理。
+- [ ] 不存在上一轮 `api-push-e2e-*` 配置；存在时先通过接口清理。
 
-- [ ] Push 服务已启动并能连接 `hpis_push`、Redis 和 RabbitMQ。
-- [ ] Alarm 服务已启动并能连接 `hpis_alarm`、设备服务、Redis 和 RabbitMQ。
-- [ ] `alarm_queue`、`push.alarm` 及动态队列具备声明和消费权限。
-- [ ] 当前 Token 有 Alarm 配置、报警、处理、工单和 Push 配置权限。
-- [ ] 三个设备 ID/SN/网关 SN 属于当前租户。
-- [ ] `workorderConfigId` 对应模板真实存在。
-- [ ] 19010、19025 接收器或替代回调地址可由 Push 服务访问。
-- [ ] 已在测试库执行[环境预检 SQL](../sql/alarm-push-api-setup.sql)，阻断项均已处理。
-- [ ] 不存在上一轮同名 Alarm/Push 配置；如存在先通过 API 清理。
+## 6. Collection 顺序
 
-## 6. Collection 执行顺序
-
-不要整包无确认连续运行。按文件夹顺序执行，每个阶段检查测试断言后再继续。
+Collection 必须按目录顺序单线程执行，不要并发运行。报警写入、动态 Consumer 重建或 MQ 投递较慢时，在相关请求之间配置测试环境允许的延迟，并以查询结果为准。
 
 ### 6.1 `00 - Receiver`
 
-清空 19010 和 19025 的历史事件。两个请求都应返回 HTTP 200，事件计数归零。
+清空 10、25 两个接收器。只清理本地测试接收器内存事件。
 
 ### 6.2 `01 - Alarm Configure`
 
-依次创建紧急报警配置和普通报警负例配置，再查询列表。列表请求根据配置名称自动回填：
+1. 创建紧急和负向 Alarm 配置。
+2. 列表按唯一名称回填两个配置 ID。
+3. 修改紧急配置名称。
+4. 详情读回 `pushMessageType=10`、`workorderPushMessageType=25` 和更新名称。
 
-- `emergencyAlarmConfigureId`
-- `normalAlarmConfigureId`
+所有写入都走 `/configure` 接口。`tenantId`由服务端当前上下文生成；`deviceIds`必须属于当前租户。
 
-最后执行详情请求，确认紧急配置的 `pushMessageType=10`、`workorderPushMessageType=25`，设备关系与当前环境变量一致。
+### 6.3 `02 - WeCom App Binding and Recipient Group`
 
-### 6.3 `02 - Push Config`
+严格按以下资源依赖执行：
 
-分别创建 `messageType=10` 和 `messageType=25` 的 HTTP Push 配置，再执行列表请求自动回填：
+1. PUT 企业微信应用，GET 验证 `secretConfigured=true`且响应无 Secret。
+2. 批量创建两个 `userId → wecomUserId` 绑定。
+3. 禁用再恢复第一绑定，验证修改语义。
+4. 创建接收组和成员，回填 `recipientGroupId`。
+5. PUT 修改组名和成员；重复 userId 应在保存后去重。
+6. GET 详情验证结果。
 
-- `pushConfig10Id`
-- `pushConfig25Id`
+应用、绑定、接收组是独立资源，不能与 ActivePushConfig 合并成一个请求。
 
-详情请求应确认 25 配置已启用，并指向 19025 工单接收器。
+### 6.4 `03 - Push Config`
 
-### 6.4 `03 - Alarm messageType 10`
+创建四条独立配置：
 
-创建设备 A、设备 B 两条紧急报警，并创建一条普通报警负例。每个 `POST /alarm/alarmAdd` 返回空 HTTP 2xx 只表示 Controller 调用结束，不代表报警已经入库或 Push 成功。
+| 配置 | messageType | channel | routeScope | 关系 |
+|---|---:|---:|---|---|
+| HTTP 普通报警 | 10 | 10 | DEVICE | deviceA/deviceB SN |
+| HTTP 工单 | 25 | 10 | DEVICE | deviceA/deviceB SN |
+| 企业微信普通报警 | 10 | 20 | TENANT | recipientGroupId |
+| 企业微信工单 | 25 | 20 | TENANT | recipientGroupId |
 
-必须同时确认：
+列表回填四个配置 ID；随后禁用/恢复企业微信 25 配置，证明更新接口生效。候选接口使用 `messageType=25 + deviceSn`，断言两名用户只出现一次且 `wecomReachable=true`。
 
-1. 设备 A、B 的外部报警 ID 为 `API-PUSH-E2E-A-{runId}`、`API-PUSH-E2E-B-{runId}`。
-2. 19010 接收器收到了设备 A、B 的 `messageType=10`。
-3. 普通报警负例设备没有进入 19010。
-4. 使用 `/alarm/list?alarmCid=API-PUSH-E2E-A-{runId}` 回查内部 `alarmId`。
+### 6.5 `04 - Alarm messageType 10`
 
-将设备 A 的内部 Long `alarmId` 写入环境变量 `internalAlarmId`。也可执行[测试证据查询 SQL](../sql/alarm-push-api-check.sql)，按 `alarm_cid` 找到内部 ID 后回填。
+通过 `/alarm/alarmAdd` 创建具体负责人、未分配、异常关闭三条紧急报警和一条负向报警。最后调用 `/alarm/list`，在响应 `rows` 中按完整 `alarmCid` 精确定位三个内部 Long ID。
 
-### 6.5 `04 - Workorder messageType 25`
+当前 `/alarm/list` 虽返回 `alarmCid`，但请求参数 `alarmCid`不参与分页过滤；Collection 不依赖该无效筛选，也不使用 SQL 回填 ID。
 
-确认 `internalAlarmId` 已填写后再运行。该阶段依次：
+### 6.6 `05 - Workorder Ownership Lifecycle`
 
-1. 将报警处理状态确认到 `handleStatus=2`。
-2. 创建工单并指定 `userId` 为负责人。
-3. 验证 19025 收到 `ALARM_WORKORDER_CREATED`。
-4. 验证 19010 没有收到工单事件。
-5. 重复创建同一报警工单，预期业务失败。
-6. 查询工单，预期只保留一条。
+按顺序验证：
 
-### 6.6 `05 - Negative Config and Failure`
+1. 批量把三条报警确认到 `handleStatus=2`。
+2. 为第一用户创建具体负责人工单，验证“我的工单”。
+3. 使用另一租户上下文查询该工单详情并尝试转派，分别验证不可见和写操作拒绝。
+4. 通用 PUT 只修改标题/内容；请求中的状态、租户、负责人不得生效。
+5. 缺图片完成失败；同一报警重复创建失败。
+6. 转派到第二用户，旧负责人完成失败，第二负责人带说明和图片完成为状态 `2`。
+7. 创建 `assigneeId=0` 未分配工单，验证不进入第一用户“我的工单”且不能完成。
+8. `assigneeId=0` 转派失败；转派给第二用户后由第二用户完成。
+9. 用第三条报警创建工单，使用 close 权限 Token 异常关闭为状态 `3`，重复关闭失败。
 
-按请求名称逐个执行并观察断言：禁用 25 配置、恢复配置、设置不可达地址、恢复地址、清空 `workorderPushMessageType`、恢复字段。每个负例结束后必须执行相邻恢复请求，不能把失败配置留给后续测试。
+完成/关闭不会在本轮自动断言企业微信客户端实收；路由、发送尝试和日志通过只读 SQL/服务日志保存证据。
 
-### 6.7 `06 - Cleanup`
+### 6.7 `06 - Negative Config and Failure`
 
-删除本轮两个 Push 配置和两个 Alarm 配置，再清空两个接收器。删除后分别回查列表或详情，确认配置不可见。
+按请求名称执行 Push 禁用/恢复、HTTP 不可达/恢复、Alarm 工单 messageType 清空能力检查/恢复。每个负例后必须立即执行恢复请求。`workorderPushMessageType=null` 当前动态更新可能被忽略，该请求用于暴露实际契约，不能把 HTTP 200 自动判为字段已清空。
 
-Collection 的清理只删除配置和接收器事件，不代替运行数据清理 SQL。
+### 6.8 `07 - Cleanup`
+
+删除顺序不能改变：企业微信/HTTP Push 配置 → 接收组 → 用户绑定 → 禁用企业微信应用 → Alarm 配置 → 接收器事件。组被配置引用时删除会失败，所以必须先删四条 Push 配置。
+
+完成/关闭工单属于终态，接口设计不允许删除；按审计要求保留，或取得测试库运行数据清理授权后使用交付包清理脚本。企业微信应用没有 DELETE 接口，专用测试租户只将其禁用。
 
 ## 7. 结果判定
 
 | 检查点 | PASS | FAIL |
 |---|---|---|
-| 配置接口 | 新增后能回查、修改生效、删除后不可见 | 响应成功但回查不到，或字段/设备关系错误 |
-| 报警上传 | 能按外部 CID 查到唯一内部 Long ID | 只有 HTTP 2xx，数据库没有记录或出现重复记录 |
-| 普通报警 Push | 19010 收到设备 A/B 的 10，负例未收到 | 目标设备漏推、负例误推或通道错误 |
-| 工单 Push | 19025 收到 CREATED，19010 未收到 | 未推送、推错通道、重复创建仍成功 |
-| 失败场景 | 失败符合预期且恢复请求成功 | 失败场景误成功，或恢复后链路仍不可用 |
-| 清理 | 配置、接收器事件和授权清理的数据均无残留 | 仍有本轮数据或误删其他测试数据 |
+| 配置 CRUD | API 写后读一致、删除后不可见 | 只看 200，或字段/关系未生效 |
+| 租户边界 | 请求体不能切租户，跨租户 ID 不可访问 | 可读写其他租户数据 |
+| 候选人 | 路由命中、userId 去重、可达性正确 | 禁用/跨租户/不匹配成员进入结果 |
+| 工单所有权 | 我的工单、转派、完成操作者符合负责人 | 未分配或非负责人可完成 |
+| 工单终态 | 完成 `2`、关闭 `3`，重复写失败 | 重复写或状态回退 |
+| 处理证据 | 说明、图片、实际处理人同步到 `alarm_handle` | 只更新工单或图片丢失 |
+| Push 闭环 | HTTP 实收；企业微信有路由、发送尝试和日志证据 | 只进入上游 MQ、无配置消费/发送证据 |
+| 清理 | 配置资源通过 API 删除/禁用，无误删 | SQL 代替配置 CRUD 或遗留启用配置 |
 
-依赖服务、权限、设备、模板或回调地址不可用时标记 BLOCKED，并记录具体依赖，不要写成 FAIL 或 PASS。
+依赖服务、权限、设备或测试账号不可用时标记 `BLOCKED` 并写明依赖。Postman 未实际运行时只能记录“集合静态校验通过/待环境执行”，不能写 `PASS`。
 
-## 8. 企业微信测试边界
+## 8. 企业微信验证边界
 
-Postman Collection 不包含以下接口和断言：
+此前链路已验证企业微信客户端到达能力。本轮回归不强制再次取得客户端截图，但必须至少保存：
 
-- `/wecom/app` 企业微信应用配置；
-- `/wecom/userBinding/*` 平台用户与企业微信用户绑定；
-- `/recipientGroup/*` 接收组增删改查；
-- 普通报警向接收组成员推送；
-- 工单创建向负责人推送；
-- 工单转派只向新负责人推送。
+- Alarm/工单消息中的 tenantId、messageType、deviceSn、assigneeId；
+- 命中的 ActivePushConfig、recipientGroupId 和候选人解析结果；
+- RabbitMQ 动态队列消费证据；
+- `push_message_log` 的目标、状态和失败详情；
+- 工单负责人、状态以及 `alarm_handle` 的说明、图片和实际处理人。
 
-这些步骤必须按照全流程测试手册的企业微信章节执行。最终证据至少包括企业微信收件截图或消息标识、平台用户 ID、企业微信用户 ID、接收组成员、工单负责人和转派前后负责人。只有真实目标人员收到消息，企业微信链路才可判定 PASS。
+若本轮仍要声称“企业微信实际到达 PASS”，则必须额外提供目标账号实收证据；路由和发送日志只能证明服务端闭环。

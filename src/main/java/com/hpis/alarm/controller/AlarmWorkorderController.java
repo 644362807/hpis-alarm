@@ -1,9 +1,13 @@
 package com.hpis.alarm.controller;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hpis.alarm.domain.AlarmWorkorder;
+import com.hpis.alarm.dto.WorkorderCloseRequest;
+import com.hpis.alarm.dto.WorkorderCompleteRequest;
 import com.hpis.alarm.service.IAlarmWorkorderService;
 import com.hpis.common.core.web.controller.BaseController;
 import com.hpis.common.core.web.domain.AjaxResult;
+import com.hpis.common.core.web.page.TableDataInfo;
 import com.hpis.common.log.annotation.Log;
 import com.hpis.common.log.enums.BusinessType;
 import com.hpis.common.security.annotation.PreAuthorize;
@@ -17,8 +21,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
-
 /**
  * 报警工单 Controller。
  */
@@ -31,9 +33,22 @@ public class AlarmWorkorderController extends BaseController {
 
     @PreAuthorize(hasPermi = "alarm:workorder:list")
     @GetMapping("/list")
-    public AjaxResult list(AlarmWorkorder alarmWorkorder) {
-        List<AlarmWorkorder> list = alarmWorkorderService.selectAlarmWorkorderList(alarmWorkorder);
-        return AjaxResult.success(list);
+    public TableDataInfo list(AlarmWorkorder alarmWorkorder) {
+        Page<AlarmWorkorder> page = alarmWorkorderService.selectAlarmWorkorderPage(alarmWorkorder);
+        return getDataTable(page);
+    }
+
+    @PreAuthorize(hasPermi = "alarm:workorder:list")
+    @GetMapping("/my")
+    public TableDataInfo my(AlarmWorkorder alarmWorkorder) {
+        Page<AlarmWorkorder> page = alarmWorkorderService.selectMyAlarmWorkorderPage(alarmWorkorder);
+        return getDataTable(page);
+    }
+
+    @PreAuthorize(hasPermi = "alarm:workorder:query")
+    @GetMapping("/my/{workorderId}")
+    public AjaxResult getMyInfo(@PathVariable("workorderId") Long workorderId) {
+        return AjaxResult.success(alarmWorkorderService.selectMyAlarmWorkorderById(workorderId));
     }
 
     @PreAuthorize(hasPermi = "alarm:workorder:query")
@@ -66,8 +81,15 @@ public class AlarmWorkorderController extends BaseController {
     @PreAuthorize(hasPermi = "alarm:workorder:complete")
     @Log(title = "报警工单完成", businessType = BusinessType.UPDATE)
     @PutMapping("/complete")
-    public AjaxResult complete(@RequestBody AlarmWorkorder alarmWorkorder) {
-        return toAjax(alarmWorkorderService.completeWorkorder(alarmWorkorder));
+    public AjaxResult complete(@RequestBody WorkorderCompleteRequest request) {
+        return toAjax(alarmWorkorderService.completeWorkorder(toCommand(request)));
+    }
+
+    @PreAuthorize(hasPermi = "alarm:workorder:close")
+    @Log(title = "报警工单异常关闭", businessType = BusinessType.UPDATE)
+    @PutMapping("/close")
+    public AjaxResult close(@RequestBody WorkorderCloseRequest request) {
+        return toAjax(alarmWorkorderService.closeWorkorder(toCommand(request)));
     }
 
     @PreAuthorize(hasPermi = "alarm:workorder:remove")
@@ -75,5 +97,25 @@ public class AlarmWorkorderController extends BaseController {
     @DeleteMapping("/{workorderIds}")
     public AjaxResult remove(@PathVariable Long[] workorderIds) {
         return toAjax(alarmWorkorderService.deleteAlarmWorkorderByIds(workorderIds));
+    }
+
+    private AlarmWorkorder toCommand(WorkorderCompleteRequest request) {
+        AlarmWorkorder command = new AlarmWorkorder();
+        if (request != null) {
+            command.setWorkorderId(request.getWorkorderId());
+            command.setHandleResult(request.getHandleResult());
+            command.setHandlePicture(request.getHandlePicture());
+        }
+        return command;
+    }
+
+    private AlarmWorkorder toCommand(WorkorderCloseRequest request) {
+        AlarmWorkorder command = new AlarmWorkorder();
+        if (request != null) {
+            command.setWorkorderId(request.getWorkorderId());
+            command.setHandleResult(request.getHandleResult());
+            command.setHandlePicture(request.getHandlePicture());
+        }
+        return command;
     }
 }

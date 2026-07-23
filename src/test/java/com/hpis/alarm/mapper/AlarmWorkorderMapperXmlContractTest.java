@@ -17,6 +17,7 @@ public class AlarmWorkorderMapperXmlContractTest {
         String selectSql = fragmentById(xml, "selectAlarmConfigureVo");
         String insertSql = fragmentById(xml, "insertAlarmConfigure");
         String updateSql = fragmentById(xml, "updateAlarmConfigure");
+        String listSql = fragmentById(xml, "selectAlarmConfigureList");
         String selectEnabledForAlarmSql = fragmentById(xml, "selectEnabledForAlarm");
 
         assertTrue(selectSql.contains("push_enabled"));
@@ -40,6 +41,10 @@ public class AlarmWorkorderMapperXmlContractTest {
         assertTrue(selectEnabledForAlarmSql.contains("and ( adc.device_sn = #{deviceSn} or adc.device_sn in ('ALL', '*') )"));
         assertTrue(selectEnabledForAlarmSql.contains("case when adc.device_sn = #{deviceSn} then 0"));
         assertTrue(selectEnabledForAlarmSql.contains("when adc.device_sn in ('ALL', '*') then 1"));
+        assertFalse(selectSql.contains("device_sn"));
+        assertFalse(containsStandaloneSqlFragment(selectEnabledForAlarmSql, "c.device_sn"));
+        assertTrue(listSql.contains("from alarm_device_configure adc"));
+        assertTrue(listSql.contains("adc.device_sn = #{deviceSn}"));
         assertFalse(containsStandaloneSqlFragment(selectEnabledForAlarmSql, "c.device_sn = #{deviceSn}"));
         assertFalse(containsStandaloneSqlFragment(selectEnabledForAlarmSql, "c.device_sn is null"));
         assertFalse(containsStandaloneSqlFragment(selectEnabledForAlarmSql, "c.device_sn = ''"));
@@ -49,12 +54,16 @@ public class AlarmWorkorderMapperXmlContractTest {
     @Test
     public void alarmConfigureMapperUsesDeviceBindingTableForSaveAndDuplicateCheck() throws Exception {
         String xml = normalizeWhitespace(readMapperXml("AlarmConfigure.xml"));
+        String baseResultMap = fragmentById(xml, "AlarmConfigureResult");
+        String deviceResultMap = fragmentById(xml, "AlarmConfigureForAlarmResult");
         String insertSql = fragmentById(xml, "insertAlarmConfigure");
         String updateSql = fragmentById(xml, "updateAlarmConfigure");
         String duplicateCheckSql = fragmentById(xml, "countEnabledDuplicateConfigureByDevices");
         String selectDeviceSnsSql = fragmentById(xml, "selectDeviceSnsByConfigureId");
 
         assertFalse(xml.contains("id=\"countEnabledDuplicateConfigure\""));
+        assertFalse(baseResultMap.contains("column=\"device_sn\""));
+        assertTrue(deviceResultMap.contains("column=\"device_sn\""));
         assertTrue(xml.contains("id=\"countEnabledDuplicateConfigureByDevices\""));
         assertTrue(duplicateCheckSql.contains("from alarm_configure c join alarm_device_configure adc"));
         assertTrue(duplicateCheckSql.contains("and adc.device_sn is not null"));
@@ -92,12 +101,60 @@ public class AlarmWorkorderMapperXmlContractTest {
 
         assertTrue(xml.contains("namespace=\"com.hpis.alarm.mapper.AlarmWorkorderMapper\""));
         assertTrue(xml.contains("uk_alarm_workorder_alarm"));
-        assertTrue(xml.contains("selectAlarmWorkorderByAlarmId"));
+        assertTrue(xml.contains("selectAlarmWorkorderByAlarmIdAndTenant"));
+        assertFalse(xml.contains("id=\"selectAlarmWorkorderById\""));
         assertTrue(xml.contains("insertAlarmWorkorder"));
-        assertTrue(xml.contains("updateAlarmWorkorder"));
+        assertTrue(xml.contains("updateEditableByIdAndTenant"));
         assertFalse(xml.contains("alarm_workorder_flow"));
         assertFalse(xml.contains("status_before"));
         assertFalse(xml.contains("status_after"));
+    }
+
+    @Test
+    public void alarmWorkorderMapperEnforcesTenantOwnerAndAtomicLifecycleGuards() throws Exception {
+        String xml = normalizeWhitespace(readMapperXml("AlarmWorkorderMapper.xml"));
+        String allPageSql = fragmentById(xml, "selectAlarmWorkorderPage");
+        String myPageSql = fragmentById(xml, "selectMyAlarmWorkorderPage");
+        String editableSql = fragmentById(xml, "updateEditableByIdAndTenant");
+        String transferSql = fragmentById(xml, "updateAssigneeByIdAndTenant");
+        String completeSql = fragmentById(xml, "completeByIdAndOwner");
+        String closeSql = fragmentById(xml, "closeByIdAndTenant");
+        String deleteSql = fragmentById(xml, "deleteByIdsAndTenant");
+
+        assertTrue(allPageSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(myPageSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(myPageSql.contains("assignee_id = #{assigneeId}"));
+        assertTrue(myPageSql.contains("assignee_id &gt; 0"));
+
+        assertTrue(editableSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(editableSql.contains("status not in ('2', '3')"));
+        assertFalse(editableSql.contains("assignee_id ="));
+        assertFalse(editableSql.contains("tenant_id = #{workorder.tenantId}"));
+        assertFalse(editableSql.contains("status = #{workorder.status}"));
+
+        assertTrue(transferSql.contains("status not in ('2', '3')"));
+        assertTrue(transferSql.contains("status = '0'"));
+        assertFalse(transferSql.contains("status = #{workorder.status}"));
+
+        assertTrue(completeSql.contains("assignee_id = #{assigneeId}"));
+        assertTrue(completeSql.contains("status in ('0', '1')"));
+        assertTrue(completeSql.contains("status = '2'"));
+        assertTrue(closeSql.contains("status not in ('2', '3')"));
+        assertTrue(closeSql.contains("status = '3'"));
+        assertTrue(deleteSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(deleteSql.contains("status not in ('2', '3')"));
+    }
+
+    @Test
+    public void alarmHandleMapperSupportsOneBatchPictureLookup() throws Exception {
+        String xml = normalizeWhitespace(readMapperXml("AlarmHandleMapper.xml"));
+        String resultMap = fragmentById(xml, "AlarmHandleResult");
+        String batchSql = fragmentById(xml, "selectAlarmHandlesByAlarmIds");
+
+        assertTrue(resultMap.contains("property=\"handlePicture\" column=\"handle_picture\""));
+        assertTrue(batchSql.contains("handle_picture"));
+        assertTrue(batchSql.contains("alarm_id in"));
+        assertTrue(batchSql.contains("<foreach collection=\"alarmIds\""));
     }
 
     @Test
@@ -110,6 +167,7 @@ public class AlarmWorkorderMapperXmlContractTest {
         assertTrue(sql.contains("workorder_config_id"));
         assertTrue(sql.contains("workorder_id"));
         assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS `alarm_workorder`"));
+        assertTrue(sql.contains("idx_alarm_workorder_tenant_assignee_status"));
         assertFalse(sql.contains("handle_type"));
         assertFalse(sql.contains("status_before"));
         assertFalse(sql.contains("status_after"));
@@ -130,7 +188,7 @@ public class AlarmWorkorderMapperXmlContractTest {
 
     private int firstClosingTagAfter(String xml, int start) {
         int end = -1;
-        String[] closingTags = {"</select>", "</insert>", "</update>", "</delete>"};
+        String[] closingTags = {"</resultMap>", "</sql>", "</select>", "</insert>", "</update>", "</delete>"};
         for (String closingTag : closingTags) {
             int candidate = xml.indexOf(closingTag, start);
             if (candidate >= 0 && (end < 0 || candidate < end)) {

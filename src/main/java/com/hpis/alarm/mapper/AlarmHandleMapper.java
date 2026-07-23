@@ -33,6 +33,8 @@ public interface AlarmHandleMapper  extends BaseMapper<AlarmHandle>
      */
     AlarmHandle selectAlarmHandleByAlarmId(Long alarmId);
 
+    List<AlarmHandle> selectAlarmHandlesByAlarmIds(@Param("alarmIds") List<Long> alarmIds);
+
     /**
      * 查询【请填写功能名称】列表
      *

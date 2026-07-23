@@ -1,6 +1,7 @@
 package com.hpis.alarm.service.impl;
 
 import com.alibaba.fastjson.JSONObject;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmConfigure;
@@ -26,7 +27,14 @@ import org.springframework.transaction.support.TransactionSynchronizationAdapter
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.annotation.Resource;
+import java.util.Collections;
+import java.util.Date;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 报警工单服务实现。
@@ -59,17 +67,59 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
 
     @Override
     public AlarmWorkorder selectAlarmWorkorderById(Long workorderId) {
-        return alarmWorkorderMapper.selectAlarmWorkorderById(workorderId);
+        AlarmWorkorder workorder = alarmWorkorderMapper.selectAlarmWorkorderByIdAndTenant(
+                workorderId, currentTenantId());
+        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        return workorder;
     }
 
     @Override
     public AlarmWorkorder selectAlarmWorkorderByAlarmId(Long alarmId) {
-        return alarmWorkorderMapper.selectAlarmWorkorderByAlarmId(alarmId);
+        AlarmWorkorder workorder = alarmWorkorderMapper.selectAlarmWorkorderByAlarmIdAndTenant(
+                alarmId, currentTenantId());
+        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        return workorder;
+    }
+
+    @Override
+    public AlarmWorkorder selectMyAlarmWorkorderById(Long workorderId) {
+        AlarmWorkorder workorder = alarmWorkorderMapper.selectMyAlarmWorkorderById(
+                workorderId, currentTenantId(), currentUserId());
+        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        return workorder;
+    }
+
+    @Override
+    public Page<AlarmWorkorder> selectAlarmWorkorderPage(AlarmWorkorder alarmWorkorder) {
+        AlarmWorkorder query = normalizeQuery(alarmWorkorder);
+        Long tenantId = currentTenantId();
+        query.setTenantId(tenantId);
+        Page<AlarmWorkorder> page = alarmWorkorderMapper.selectAlarmWorkorderPage(
+                new Page<>(query.getPageNum(), query.getPageSize()), query, tenantId);
+        fillHandlePictures(page.getRecords());
+        return page;
+    }
+
+    @Override
+    public Page<AlarmWorkorder> selectMyAlarmWorkorderPage(AlarmWorkorder alarmWorkorder) {
+        AlarmWorkorder query = normalizeQuery(alarmWorkorder);
+        Long tenantId = currentTenantId();
+        Long userId = currentUserId();
+        query.setTenantId(tenantId);
+        query.setAssigneeId(userId);
+        Page<AlarmWorkorder> page = alarmWorkorderMapper.selectMyAlarmWorkorderPage(
+                new Page<>(query.getPageNum(), query.getPageSize()), query, tenantId, userId);
+        fillHandlePictures(page.getRecords());
+        return page;
     }
 
     @Override
     public List<AlarmWorkorder> selectAlarmWorkorderList(AlarmWorkorder alarmWorkorder) {
-        return alarmWorkorderMapper.selectAlarmWorkorderList(alarmWorkorder);
+        AlarmWorkorder query = alarmWorkorder == null ? new AlarmWorkorder() : alarmWorkorder;
+        query.setTenantId(currentTenantId());
+        List<AlarmWorkorder> workorders = alarmWorkorderMapper.selectAlarmWorkorderList(query);
+        fillHandlePictures(workorders);
+        return workorders;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -78,9 +128,10 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         if (alarmWorkorder == null || alarmWorkorder.getAlarmId() == null) {
             throw new CustomException("报警ID不能为空");
         }
-        Alarm alarm = alarmMapper.selectAlarmById(alarmWorkorder.getAlarmId());
+        Long tenantId = currentTenantId();
+        Alarm alarm = alarmMapper.selectAlarmByIdAndTenant(alarmWorkorder.getAlarmId(), tenantId);
         if (alarm == null) {
-            throw new CustomException("报警不存在，不能创建工单");
+            throw new CustomException("报警不存在或不属于当前租户，不能创建工单");
         }
         AlarmHandle alarmHandle = alarmHandleMapper.selectAlarmHandleByAlarmId(alarmWorkorder.getAlarmId());
         if (alarmHandle == null
@@ -94,20 +145,22 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         }
 
         alarmWorkorder.setWorkorderConfigId(configure.getWorkorderConfigId());
-        alarmWorkorder.setTenantId(alarm.getTenantId());
+        if (alarmWorkorder.getAssigneeId() == null) {
+            alarmWorkorder.setAssigneeId(0L);
+        } else if (alarmWorkorder.getAssigneeId() < 0) {
+            throw new CustomException("负责人ID不能为负数");
+        }
+        alarmWorkorder.setTenantId(tenantId);
         if (StringUtils.isBlank(alarmWorkorder.getWorkorderNo())) {
             alarmWorkorder.setWorkorderNo(buildWorkorderNo(alarmWorkorder.getAlarmId()));
         }
-        if (StringUtils.isBlank(alarmWorkorder.getStatus())) {
-            alarmWorkorder.setStatus("0");
-        }
-        if (StringUtils.isBlank(alarmWorkorder.getDelFlag())) {
-            alarmWorkorder.setDelFlag("0");
-        }
+        alarmWorkorder.setStatus("0");
+        alarmWorkorder.setDelFlag("0");
         if (StringUtils.isBlank(alarmWorkorder.getTitle())) {
             alarmWorkorder.setTitle("报警工单-" + alarmWorkorder.getAlarmId());
         }
         alarmWorkorder.setCreateTime(DateUtils.getNowDate());
+        alarmWorkorder.setCreateBy(currentUsername());
         try {
             int inserted = alarmWorkorderMapper.insertAlarmWorkorder(alarmWorkorder);
             if (inserted > 0) {
@@ -124,8 +177,20 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         if (alarmWorkorder == null || alarmWorkorder.getWorkorderId() == null) {
             throw new CustomException("工单ID不能为空");
         }
+        alarmWorkorder.setTenantId(null);
+        alarmWorkorder.setAssigneeId(null);
+        alarmWorkorder.setAssigneeName(null);
+        alarmWorkorder.setStatus(null);
+        alarmWorkorder.setWorkorderConfigId(null);
+        alarmWorkorder.setHandleResult(null);
+        alarmWorkorder.setDelFlag(null);
+        alarmWorkorder.setUpdateBy(currentUsername());
         alarmWorkorder.setUpdateTime(DateUtils.getNowDate());
-        return alarmWorkorderMapper.updateAlarmWorkorder(alarmWorkorder);
+        int updated = alarmWorkorderMapper.updateEditableByIdAndTenant(alarmWorkorder, currentTenantId());
+        if (updated <= 0) {
+            throw new CustomException("工单不存在、已终态或不属于当前租户");
+        }
+        return updated;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -144,14 +209,20 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         if (existing == null) {
             throw new CustomException("工单不存在或不属于当前租户");
         }
+        ensureNotTerminal(existing);
         Alarm alarm = alarmMapper.selectAlarmByIdAndTenant(existing.getAlarmId(), tenantId);
         if (alarm == null) {
             throw new CustomException("工单关联报警不存在或不属于当前租户");
         }
         AlarmConfigure configure = resolveWorkorderConfigure(alarm);
         alarmWorkorder.setTenantId(tenantId);
+        alarmWorkorder.setStatus(null);
+        alarmWorkorder.setUpdateBy(currentUsername());
         alarmWorkorder.setUpdateTime(DateUtils.getNowDate());
         int updated = alarmWorkorderMapper.updateAssigneeByIdAndTenant(alarmWorkorder, tenantId);
+        if (updated <= 0) {
+            throw new CustomException("工单已终态或并发状态已变化，不能转派");
+        }
         if (updated > 0) {
             publishWorkorderTransferredAfterCommit(alarm, existing, alarmWorkorder, configure);
         }
@@ -161,42 +232,168 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
     @Transactional(rollbackFor = Exception.class)
     @Override
     public int completeWorkorder(AlarmWorkorder alarmWorkorder) {
-        if (alarmWorkorder == null || alarmWorkorder.getWorkorderId() == null || alarmWorkorder.getAlarmId() == null) {
-            throw new CustomException("工单ID和报警ID不能为空");
+        if (alarmWorkorder == null || alarmWorkorder.getWorkorderId() == null) {
+            throw new CustomException("工单ID不能为空");
         }
-        if (StringUtils.isBlank(alarmWorkorder.getStatus())) {
-            alarmWorkorder.setStatus("2");
+        if (StringUtils.isBlank(alarmWorkorder.getHandleResult())) {
+            throw new CustomException("处理说明不能为空");
         }
-        alarmWorkorder.setUpdateTime(DateUtils.getNowDate());
-        int updated = alarmWorkorderMapper.updateAlarmWorkorder(alarmWorkorder);
+        if (StringUtils.isBlank(alarmWorkorder.getHandlePicture())) {
+            throw new CustomException("处理图片不能为空");
+        }
+        Long tenantId = currentTenantId();
+        Long userId = currentUserId();
+        AlarmWorkorder existing = alarmWorkorderMapper.selectAlarmWorkorderByIdAndTenant(
+                alarmWorkorder.getWorkorderId(), tenantId);
+        if (existing == null) {
+            throw new CustomException("工单不存在或不属于当前租户");
+        }
+        if (existing.getAssigneeId() == null || existing.getAssigneeId() <= 0) {
+            throw new CustomException("工单尚未分配负责人，不能完成");
+        }
+        if (!existing.getAssigneeId().equals(userId)) {
+            throw new CustomException("仅当前负责人可以完成工单");
+        }
+        if (!"0".equals(existing.getStatus()) && !"1".equals(existing.getStatus())) {
+            throw new CustomException("当前工单状态不能完成");
+        }
+        Date now = DateUtils.getNowDate();
+        String username = currentUsername();
+        int updated = alarmWorkorderMapper.completeByIdAndOwner(existing.getWorkorderId(), tenantId,
+                userId, alarmWorkorder.getHandleResult().trim(), username, now);
+        if (updated <= 0) {
+            throw new CustomException("工单已被处理或并发状态已变化");
+        }
 
         AlarmHandle alarmHandle = new AlarmHandle();
-        alarmHandle.setAlarmId(alarmWorkorder.getAlarmId());
-        alarmHandle.setWorkorderId(alarmWorkorder.getWorkorderId());
-        alarmHandle.setHandlerId(alarmWorkorder.getAssigneeId());
-        alarmHandle.setHandlerName(alarmWorkorder.getAssigneeName());
+        alarmHandle.setAlarmId(existing.getAlarmId());
+        alarmHandle.setWorkorderId(existing.getWorkorderId());
+        alarmHandle.setHandlerId(userId);
+        alarmHandle.setHandlerName(username);
         alarmHandle.setHandleStatus(HandleStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-        alarmHandle.setOpinion(alarmWorkorder.getHandleResult());
-        alarmHandle.setHandleTime(DateUtils.getNowDate());
-        alarmHandle.setUpdateTime(DateUtils.getNowDate());
-        alarmHandle.setUpdateBy(alarmWorkorder.getUpdateBy());
+        alarmHandle.setOpinion(alarmWorkorder.getHandleResult().trim());
+        alarmHandle.setHandlePicture(alarmWorkorder.getHandlePicture().trim());
+        alarmHandle.setHandleTime(now);
+        alarmHandle.setUpdateTime(now);
+        alarmHandle.setUpdateBy(username);
         int handleUpdated = alarmHandleMapper.updateAlarmHandle(alarmHandle);
         if (handleUpdated <= 0) {
-            alarmHandle.setCreateTime(DateUtils.getNowDate());
-            alarmHandleMapper.insertAlarmHandle(alarmHandle);
+            throw new CustomException("报警处理记录不存在，工单完成已回滚");
         }
         return updated;
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int closeWorkorder(AlarmWorkorder alarmWorkorder) {
+        if (alarmWorkorder == null || alarmWorkorder.getWorkorderId() == null) {
+            throw new CustomException("工单ID不能为空");
+        }
+        if (StringUtils.isBlank(alarmWorkorder.getHandleResult())) {
+            throw new CustomException("关闭原因不能为空");
+        }
+        Long tenantId = currentTenantId();
+        AlarmWorkorder existing = alarmWorkorderMapper.selectAlarmWorkorderByIdAndTenant(
+                alarmWorkorder.getWorkorderId(), tenantId);
+        if (existing == null) {
+            throw new CustomException("工单不存在或不属于当前租户");
+        }
+        ensureNotTerminal(existing);
+        Date now = DateUtils.getNowDate();
+        String username = currentUsername();
+        int updated = alarmWorkorderMapper.closeByIdAndTenant(existing.getWorkorderId(), tenantId,
+                alarmWorkorder.getHandleResult().trim(), username, now);
+        if (updated <= 0) {
+            throw new CustomException("工单已终态或并发状态已变化，不能关闭");
+        }
+
+        AlarmHandle alarmHandle = new AlarmHandle();
+        alarmHandle.setAlarmId(existing.getAlarmId());
+        alarmHandle.setWorkorderId(existing.getWorkorderId());
+        alarmHandle.setHandlerId(currentUserId());
+        alarmHandle.setHandlerName(username);
+        alarmHandle.setOpinion(alarmWorkorder.getHandleResult().trim());
+        if (StringUtils.isNotBlank(alarmWorkorder.getHandlePicture())) {
+            alarmHandle.setHandlePicture(alarmWorkorder.getHandlePicture().trim());
+        }
+        alarmHandle.setHandleTime(now);
+        alarmHandle.setUpdateTime(now);
+        alarmHandle.setUpdateBy(username);
+        if (alarmHandleMapper.updateAlarmHandle(alarmHandle) <= 0) {
+            throw new CustomException("报警处理记录不存在，工单关闭已回滚");
+        }
+        return updated;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public int deleteAlarmWorkorderByIds(Long[] workorderIds) {
-        return alarmWorkorderMapper.deleteAlarmWorkorderByIds(workorderIds);
+        if (workorderIds == null || workorderIds.length == 0) {
+            throw new CustomException("工单ID不能为空");
+        }
+        LinkedHashSet<Long> normalized = new LinkedHashSet<>();
+        for (Long workorderId : workorderIds) {
+            if (workorderId == null || workorderId <= 0) {
+                throw new CustomException("工单ID必须为正整数");
+            }
+            normalized.add(workorderId);
+        }
+        Long[] ids = normalized.toArray(new Long[0]);
+        int deleted = alarmWorkorderMapper.deleteByIdsAndTenant(ids, currentTenantId(),
+                currentUsername(), DateUtils.getNowDate());
+        if (deleted != ids.length) {
+            throw new CustomException("存在其他租户、已删除或已终态工单，删除已回滚");
+        }
+        return deleted;
     }
 
     private AlarmConfigure resolveWorkorderConfigure(Alarm alarm) {
         List<AlarmConfigure> configures = alarmConfigureService.selectEnabledForAlarm(
                 alarm.getTenantId(), alarm.getSceneType(), alarm.getDeviceSn(), alarm.getAlarmType());
         return configures == null || configures.isEmpty() ? null : configures.get(0);
+    }
+
+    private AlarmWorkorder normalizeQuery(AlarmWorkorder query) {
+        AlarmWorkorder normalized = query == null ? new AlarmWorkorder() : query;
+        if (normalized.getPageNum() == null || normalized.getPageNum() <= 0) {
+            normalized.setPageNum(1);
+        }
+        if (normalized.getPageSize() == null || normalized.getPageSize() <= 0) {
+            normalized.setPageSize(20);
+        }
+        return normalized;
+    }
+
+    private void fillHandlePictures(List<AlarmWorkorder> workorders) {
+        if (workorders == null || workorders.isEmpty()) {
+            return;
+        }
+        List<Long> alarmIds = workorders.stream()
+                .filter(Objects::nonNull)
+                .map(AlarmWorkorder::getAlarmId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (alarmIds.isEmpty()) {
+            return;
+        }
+        List<AlarmHandle> handles = alarmHandleMapper.selectAlarmHandlesByAlarmIds(alarmIds);
+        Map<Long, AlarmHandle> byAlarmId = (handles == null ? Collections.<AlarmHandle>emptyList() : handles)
+                .stream()
+                .filter(handle -> handle != null && handle.getAlarmId() != null)
+                .collect(Collectors.toMap(AlarmHandle::getAlarmId, Function.identity(), (left, right) -> left));
+        for (AlarmWorkorder workorder : workorders) {
+            AlarmHandle handle = workorder == null ? null : byAlarmId.get(workorder.getAlarmId());
+            if (handle != null) {
+                workorder.setHandlePicture(handle.getHandlePicture());
+            }
+        }
+    }
+
+    private void ensureNotTerminal(AlarmWorkorder workorder) {
+        if (workorder != null && ("2".equals(workorder.getStatus()) || "3".equals(workorder.getStatus()))) {
+            throw new CustomException("工单已终态，不能再次操作");
+        }
     }
 
     private void publishWorkorderCreatedAfterCommit(Alarm alarm, AlarmWorkorder alarmWorkorder,
@@ -280,8 +477,16 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
                     existing.getWorkorderId());
             return;
         }
-        Runnable pushTask = () -> rabbitMQAlarmPushProducer.sendCustomPushMessage(
-                buildWorkorderTransferredPushMessage(alarm, existing, transfer, configure));
+        Runnable pushTask = () -> {
+            try {
+                rabbitMQAlarmPushProducer.sendCustomPushMessage(
+                        buildWorkorderTransferredPushMessage(alarm, existing, transfer, configure));
+            } catch (Exception ex) {
+                log.error("报警工单已转派提交，但推送转派消息失败，alarmId={}, workorderId={}, assigneeId={}, messageType={}, error={}",
+                        existing.getAlarmId(), existing.getWorkorderId(), transfer.getAssigneeId(),
+                        configure.getWorkorderPushMessageType(), ex.getMessage(), ex);
+            }
+        };
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
                 @Override
@@ -333,6 +538,18 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
             throw new CustomException("无法获取当前租户");
         }
         return tenantId;
+    }
+
+    protected Long currentUserId() {
+        Long userId = SecurityUtils.getUserId();
+        if (userId == null || userId <= 0) {
+            throw new CustomException("无法获取当前用户");
+        }
+        return userId;
+    }
+
+    protected String currentUsername() {
+        return SecurityUtils.getUsername();
     }
 
     private String buildWorkorderNo(Long alarmId) {

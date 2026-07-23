@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2a8d863d-d7e8-42aa-8aa1-53e67a358f8c",
     "name": "HPIS Alarm Push API - Fresh Environment",
-    "description": "覆盖 /configure、/pushConfig、/alarm/alarmAdd、/handle/update、/workorder。报警配置和推送配置全部通过 API 创建、更新、查询和删除；internalAlarmId 需要通过 alarm-push-api-check.sql 查询后回填。",
+    "description": "覆盖 Alarm、Push、企业微信资源、候选负责人和工单闭环。配置数据全部通过 API 增删改查；SQL 仅用于只读证据核验。请仅在专用测试租户使用，并在本地填写 Secret/Token 后禁止导出真实值。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -19,6 +19,12 @@
         "exec": [
           "if (!pm.environment.get('runId')) {",
           "  pm.environment.set('runId', new Date().toISOString().replace(/[-:.TZ]/g, ''));",
+          "}",
+          "if (!pm.request.headers.has('user_id')) {",
+          "  pm.request.headers.upsert({ key: 'user_id', value: pm.environment.get('userId') });",
+          "}",
+          "if (!pm.request.headers.has('username')) {",
+          "  pm.request.headers.upsert({ key: 'username', value: 'codex-postman-primary' });",
           "}"
         ]
       }
@@ -53,7 +59,7 @@
             "description": "/configure/add 创建报警配置。必填：alarmConfigureName、alarmType、deviceAlarmControl、alarmConfigurePeriod、sceneType、deviceIds；本用例还必须设置 pushEnabled、pushMessageType、workorderPushMessageType、workorderConfigId。",
             "url": "{{alarmBaseUrl}}/configure/add"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('emergency configure created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('emergency configure created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
           "name": "Create normal alarm configure",
@@ -67,7 +73,7 @@
             "description": "/configure/add 创建普通报警负向配置。必填：alarmConfigureName、alarmType、deviceAlarmControl、alarmConfigurePeriod、sceneType、deviceIds、pushEnabled、pushMessageType；本用例不使用工单字段，也不使用 SQL 写配置。",
             "url": "{{alarmBaseUrl}}/configure/add"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('normal configure created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('normal configure created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
           "name": "List alarm configures and capture IDs",
@@ -89,18 +95,110 @@
           ]
         },
         {
+          "name": "Update emergency alarm configure",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alarmConfigureId\": {{emergencyAlarmConfigureId}},\n  \"alarmConfigureName\": \"api-push-e2e-emergency-updated\",\n  \"alarmType\": \"10\",\n  \"deviceAlarmControl\": \"1\",\n  \"alarmConfigurePeriod\": \"0\",\n  \"sceneType\": \"1\",\n  \"deviceIds\": [{{deviceAId}}, {{deviceBId}}],\n  \"pushEnabled\": \"1\",\n  \"pushMessageType\": \"10\",\n  \"workorderPushMessageType\": \"25\",\n  \"workorderConfigId\": {{workorderConfigId}}\n}"
+            },
+            "url": "{{alarmBaseUrl}}/configure/update"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('alarm configure updated', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
           "name": "Get emergency alarm configure by ID",
           "request": {
             "method": "GET",
             "description": "通过 /configure/{id} 查询 API 创建后的完整报警配置。设备关联仍需由 check.sql 核对 alarm_device_configure。",
             "url": "{{alarmBaseUrl}}/configure/{{emergencyAlarmConfigureId}}"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["const data = pm.response.json().data || {};", "pm.test('emergency configure fields are correct', () => { pm.expect(data.alarmConfigureName).to.eql('api-push-e2e-emergency'); pm.expect(data.pushMessageType).to.eql('10'); pm.expect(data.workorderPushMessageType).to.eql('25'); });"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('emergency configure fields are correct', () => { pm.expect(responseData.alarmConfigureName).to.eql('api-push-e2e-emergency-updated'); pm.expect(responseData.pushMessageType).to.eql('10'); pm.expect(responseData.workorderPushMessageType).to.eql('25'); });"] } }]
         }
       ]
     },
     {
-      "name": "02 - Push Config",
+      "name": "02 - WeCom App Binding and Recipient Group",
+      "description": "只在专用测试租户执行。企业微信应用没有 DELETE 接口；测试结束通过 PUT enabled=false。Secret 不得保存到导出的结果文件。",
+      "item": [
+        {
+          "name": "Create or update tenant WeCom app",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"corpId\": \"{{wecomCorpId}}\",\n  \"corpSecret\": \"{{wecomCorpSecret}}\",\n  \"agentId\": {{wecomAgentId}},\n  \"enabled\": true\n}" },
+            "url": "{{pushBaseUrl}}/wecom/app"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('wecom app saved without secret echo', () => { pm.expect(responseData.enabled).to.eql(true); pm.expect(responseData.secretConfigured).to.eql(true); pm.expect(JSON.stringify(responseData)).not.to.include(pm.environment.get('wecomCorpSecret')); });"] } }]
+        },
+        {
+          "name": "Read tenant WeCom app",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/wecom/app" },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('wecom app read contract', () => { pm.expect(responseData.corpId).to.eql(pm.environment.get('wecomCorpId')); pm.expect(responseData.secretConfigured).to.eql(true); pm.expect(responseData).not.to.have.property('corpSecret'); });"] } }]
+        },
+        {
+          "name": "Batch create user bindings",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"bindings\": [\n    {\"userId\": {{userId}}, \"wecomUserId\": \"{{wecomUserId}}\", \"enabled\": true},\n    {\"userId\": {{secondUserId}}, \"wecomUserId\": \"{{secondWecomUserId}}\", \"enabled\": true}\n  ]\n}" },
+            "url": "{{pushBaseUrl}}/wecom/userBinding/batch"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('bindings saved', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Update primary binding disabled",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"bindings\": [\n    {\"userId\": {{userId}}, \"wecomUserId\": \"{{wecomUserId}}\", \"enabled\": false}\n  ]\n}" },
+            "url": "{{pushBaseUrl}}/wecom/userBinding/batch"
+          }
+        },
+        {
+          "name": "Restore primary binding enabled",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"bindings\": [\n    {\"userId\": {{userId}}, \"wecomUserId\": \"{{wecomUserId}}\", \"enabled\": true}\n  ]\n}" },
+            "url": "{{pushBaseUrl}}/wecom/userBinding/batch"
+          }
+        },
+        {
+          "name": "List user bindings",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/wecom/userBinding/list" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "pm.test('two enabled bindings exist', () => { pm.expect(rows.some(x => String(x.userId) === pm.environment.get('userId') && x.enabled === true)).to.be.true; pm.expect(rows.some(x => String(x.userId) === pm.environment.get('secondUserId') && x.enabled === true)).to.be.true; });"] } }]
+        },
+        {
+          "name": "Create recipient group and members",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"groupName\": \"api-push-e2e-group-{{runId}}\",\n  \"enabled\": true,\n  \"userIds\": [{{userId}}, {{secondUserId}}]\n}" },
+            "url": "{{pushBaseUrl}}/recipientGroup"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "const rawResponse = pm.response.text();", "const groupIdStart = rawResponse.indexOf('\"groupId\":') + '\"groupId\":'.length;", "const exactGroupId = groupIdStart >= '\"groupId\":'.length ? rawResponse.substring(groupIdStart, rawResponse.indexOf(',', groupIdStart)) : '';", "pm.test('recipient group created', () => pm.expect(exactGroupId).not.to.eql(''));", "if (exactGroupId) pm.environment.set('recipientGroupId', exactGroupId);"] } }]
+        },
+        {
+          "name": "Update recipient group",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"groupId\": {{recipientGroupId}},\n  \"groupName\": \"api-push-e2e-group-updated-{{runId}}\",\n  \"enabled\": true,\n  \"userIds\": [{{userId}}, {{secondUserId}}, {{userId}}]\n}" },
+            "url": "{{pushBaseUrl}}/recipientGroup"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('recipient group updated', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Read recipient group",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/recipientGroup/{{recipientGroupId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('group update and member de-duplication persisted', () => { pm.expect(responseData.groupName).to.eql('api-push-e2e-group-updated-' + pm.environment.get('runId')); pm.expect(responseData.userIds).to.have.lengthOf(2); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "03 - Push Config",
       "item": [
         {
           "name": "Create HTTP config messageType 10",
@@ -114,7 +212,7 @@
             "description": "/pushConfig/add 必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns。pushAddress 不得包含 http://，当前 PushHttpConsumer 会自行补充协议。",
             "url": "{{pushBaseUrl}}/pushConfig/add"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 10 created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 10 created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
           "name": "Create HTTP config messageType 25",
@@ -128,7 +226,27 @@
             "description": "/pushConfig/add 创建工单推送配置。必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns；messageType=25，HTTP 接收器端口 19025，pushAddress 不带协议。",
             "url": "{{pushBaseUrl}}/pushConfig/add"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 25 created', () => pm.expect(pm.response.code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('config 25 created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Create WeCom TENANT config messageType 10",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": true,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-10\",\n  \"deviceSns\": []\n}" },
+            "url": "{{pushBaseUrl}}/pushConfig/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('wecom config 10 created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Create WeCom TENANT config messageType 25",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": true,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-25\",\n  \"deviceSns\": []\n}" },
+            "url": "{{pushBaseUrl}}/pushConfig/add"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('wecom config 25 created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
           "name": "List configs and capture IDs",
@@ -138,12 +256,18 @@
               "listen": "test",
               "script": {
                 "exec": [
+                  "const rawResponse = pm.response.text();",
                   "const rows = (pm.response.json().rows || []);",
+                  "const exactConfigId = name => { const nameIndex = rawResponse.indexOf('\"configName\":\"' + name + '\"'); if (nameIndex < 0) return ''; const prefix = rawResponse.substring(0, nameIndex); const idIndex = prefix.lastIndexOf('\"activePushConfigId\":'); if (idIndex < 0) return ''; const valueStart = idIndex + '\"activePushConfigId\":'.length; return rawResponse.substring(valueStart, rawResponse.indexOf(',', valueStart)); };",
                   "const config10 = rows.find(x => x.configName === 'api-push-e2e-http-10');",
                   "const config25 = rows.find(x => x.configName === 'api-push-e2e-http-25');",
-                  "pm.test('10 and 25 configs exist', () => { pm.expect(config10).to.exist; pm.expect(config25).to.exist; });",
-                  "if (config10) pm.environment.set('pushConfig10Id', String(config10.activePushConfigId));",
-                  "if (config25) pm.environment.set('pushConfig25Id', String(config25.activePushConfigId));"
+                  "const wecom10 = rows.find(x => x.configName === 'api-push-e2e-wecom-10');",
+                  "const wecom25 = rows.find(x => x.configName === 'api-push-e2e-wecom-25');",
+                  "pm.test('HTTP and WeCom 10/25 configs exist', () => { pm.expect(config10).to.exist; pm.expect(config25).to.exist; pm.expect(wecom10).to.exist; pm.expect(wecom25).to.exist; });",
+                  "if (config10) pm.environment.set('pushConfig10Id', exactConfigId(config10.configName));",
+                  "if (config25) pm.environment.set('pushConfig25Id', exactConfigId(config25.configName));",
+                  "if (wecom10) pm.environment.set('wecomPushConfig10Id', exactConfigId(wecom10.configName));",
+                  "if (wecom25) pm.environment.set('wecomPushConfig25Id', exactConfigId(wecom25.configName));"
                 ]
               }
             }
@@ -156,12 +280,35 @@
             "description": "通过 /pushConfig/{id} 查询 API 创建后的 25 完整配置，确认 messageType、enabled、pushAddress 和 deviceSns。",
             "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig25Id}}"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["const data = pm.response.json().data || {};", "pm.test('push config 25 fields are correct', () => { pm.expect(String(data.messageType)).to.eql('25'); pm.expect(data.enabled).to.eql(true); pm.expect(data.pushAddress).to.eql('127.0.0.1:19025/codex/workorder-25'); });"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('push config 25 fields are correct', () => { pm.expect(String(responseData.messageType)).to.eql('25'); pm.expect(responseData.enabled).to.eql(true); pm.expect(responseData.pushAddress).to.eql('127.0.0.1:19025/codex/workorder-25'); });"] } }]
+        },
+        {
+          "name": "Update WeCom 25 disabled",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{wecomPushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": false,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-25\",\n  \"deviceSns\": []\n}" },
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Restore WeCom 25 enabled",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"activePushConfigId\": {{wecomPushConfig25Id}},\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": true,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-25\",\n  \"deviceSns\": []\n}" },
+            "url": "{{pushBaseUrl}}/pushConfig/update"
+          }
+        },
+        {
+          "name": "Resolve workorder candidates",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/recipientGroup/workorderCandidates?messageType=25&deviceSn={{deviceASn}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "pm.test('candidate users are unique and reachable', () => { pm.expect(rows.filter(x => String(x.userId) === pm.environment.get('userId'))).to.have.lengthOf(1); pm.expect(rows.some(x => String(x.userId) === pm.environment.get('userId') && x.wecomReachable === true)).to.be.true; pm.expect(rows.some(x => String(x.userId) === pm.environment.get('secondUserId') && x.wecomReachable === true)).to.be.true; });"] } }]
         }
       ]
     },
     {
-      "name": "03 - Alarm messageType 10",
+      "name": "04 - Alarm messageType 10",
       "item": [
         {
           "name": "Case 1 - Create emergency alarm device A",
@@ -181,7 +328,7 @@
           "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
           "event": [{ "listen": "test", "script": { "exec": [
             "const events = pm.response.json().events || [];",
-            "pm.test('device A messageType 10 received', () => pm.expect(events.some(e => e.body && e.body.messageType === '10' && e.body.deviceSn === pm.environment.get('deviceASn'))).to.be.true);"
+            "pm.test('device A messageType 10 received', () => pm.expect(events.some(e => (e.rawBody || JSON.stringify(e.body || {})).includes('\"messageType\":\"10\"') && (e.rawBody || JSON.stringify(e.body || {})).includes('\"deviceSn\":\"' + pm.environment.get('deviceASn') + '\"'))).to.be.true);"
           ] } }]
         },
         {
@@ -201,7 +348,7 @@
           "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
           "event": [{ "listen": "test", "script": { "exec": [
             "const events = pm.response.json().events || [];",
-            "pm.test('device B messageType 10 received', () => pm.expect(events.some(e => e.body && e.body.messageType === '10' && e.body.deviceSn === pm.environment.get('deviceBSn'))).to.be.true);"
+            "pm.test('device B messageType 10 received', () => pm.expect(events.some(e => (e.rawBody || JSON.stringify(e.body || {})).includes('\"messageType\":\"10\"') && (e.rawBody || JSON.stringify(e.body || {})).includes('\"deviceSn\":\"' + pm.environment.get('deviceBSn') + '\"'))).to.be.true);"
           ] } }]
         },
         {
@@ -221,77 +368,272 @@
           "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
           "event": [{ "listen": "test", "script": { "exec": [
             "const events = pm.response.json().events || [];",
-            "pm.test('normal alarm excluded from receiver 10', () => pm.expect(events.some(e => e.body && e.body.deviceSn === pm.environment.get('normalDeviceSn'))).to.be.false);"
+            "pm.test('normal alarm excluded from receiver 10', () => pm.expect(events.some(e => (e.rawBody || JSON.stringify(e.body || {})).includes('\"deviceSn\":\"' + pm.environment.get('normalDeviceSn') + '\"'))).to.be.false);"
+          ] } }]
+        },
+        {
+          "name": "Create emergency alarm for abnormal close",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-CLOSE-{{runId}}\",\n  \"deviceSn\": \"{{deviceASn}}\",\n  \"gatewaySn\": \"{{deviceAGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}" },
+            "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
+          }
+        },
+        {
+          "name": "Capture three internal alarm IDs through API",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/alarm/list?pageNum=1&pageSize=200" },
+          "event": [{ "listen": "test", "script": { "exec": [
+            "const rawResponse = pm.response.text();",
+            "const rows = pm.response.json().rows || [];",
+            "const exactAlarmId = cid => { const cidIndex = rawResponse.indexOf('\"alarmCid\":\"' + cid + '\"'); if (cidIndex < 0) return ''; const prefix = rawResponse.substring(0, cidIndex); const idIndex = prefix.lastIndexOf('\"alarmId\":'); if (idIndex < 0) return ''; const valueStart = idIndex + '\"alarmId\":'.length; return rawResponse.substring(valueStart, rawResponse.indexOf(',', valueStart)).replace(/\"/g, '').trim(); };",
+            "const runId = pm.environment.get('runId');",
+            "const assigned = rows.find(x => x.alarmCid === 'API-PUSH-E2E-A-' + runId);",
+            "const unassigned = rows.find(x => x.alarmCid === 'API-PUSH-E2E-B-' + runId);",
+            "const closeAlarm = rows.find(x => x.alarmCid === 'API-PUSH-E2E-CLOSE-' + runId);",
+            "pm.test('three alarm IDs resolved by exact CID in response', () => { pm.expect(assigned).to.exist; pm.expect(unassigned).to.exist; pm.expect(closeAlarm).to.exist; });",
+            "if (assigned) pm.environment.set('internalAlarmId', exactAlarmId(assigned.alarmCid));",
+            "if (unassigned) pm.environment.set('unassignedAlarmId', exactAlarmId(unassigned.alarmCid));",
+            "if (closeAlarm) pm.environment.set('closeAlarmId', exactAlarmId(closeAlarm.alarmCid));"
           ] } }]
         }
       ]
     },
     {
-      "name": "04 - Workorder messageType 25",
-      "description": "先运行 alarm-push-api-check.sql，把设备 A 的内部 alarm_id 写入环境变量 internalAlarmId。",
+      "name": "05 - Workorder Ownership Lifecycle",
+      "description": "使用三条不同报警验证具体负责人、未分配后转派和异常关闭。完成请求必须由负责人 Token 发起；企业微信客户端实收不作为本轮自动断言。",
       "item": [
         {
-          "name": "Case 4 - Confirm alarm",
+          "name": "Confirm three alarms",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"alarmIds\": [{{internalAlarmId}}],\n  \"handleStatus\": \"2\",\n  \"opinion\": \"Alarm Push API test confirmed\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"alarmIds\": [{{internalAlarmId}}, {{unassignedAlarmId}}, {{closeAlarmId}}],\n  \"handleStatus\": \"2\",\n  \"opinion\": \"Alarm Push workorder lifecycle confirmed\"\n}" },
             "url": "{{alarmBaseUrl}}/handle/update"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('alarm confirmed', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('three alarms confirmed', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
-          "name": "Case 4 - Create workorder",
+          "name": "Create assigned workorder",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"API Push E2E workorder\",\n  \"content\": \"API Push E2E workorder content\",\n  \"assigneeId\": {{userId}},\n  \"assigneeName\": \"api-push-e2e-user\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"API Push assigned workorder\",\n  \"content\": \"owned by primary user\",\n  \"assigneeId\": {{userId}},\n  \"assigneeName\": \"api-push-primary\"\n}" },
             "url": "{{alarmBaseUrl}}/workorder"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('workorder created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('assigned workorder created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
-          "name": "Verify workorder arrived at receiver 25",
+          "name": "Verify assigned create reached HTTP 25",
           "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver25BaseUrl}}/_events" },
-          "event": [{ "listen": "test", "script": { "exec": [
-            "const events = pm.response.json().events || [];",
-            "pm.test('messageType 25 workorder event received', () => pm.expect(events.some(e => e.body && e.body.messageType === '25' && e.body.data && e.body.data.eventType === 'ALARM_WORKORDER_CREATED')).to.be.true);"
-          ] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["const events = pm.response.json().events || [];", "pm.test('created event carries primary assignee', () => pm.expect(events.some(e => e.body && e.body.messageType === '25' && e.body.data && e.body.data.eventType === 'ALARM_WORKORDER_CREATED' && String(e.body.assigneeId) === pm.environment.get('userId'))).to.be.true);"] } }]
         },
         {
-          "name": "Verify receiver 10 has no workorder event",
-          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
-          "event": [{ "listen": "test", "script": { "exec": [
-            "const events = pm.response.json().events || [];",
-            "pm.test('10 and 25 routes are isolated', () => pm.expect(events.some(e => e.body && e.body.data && e.body.data.eventType === 'ALARM_WORKORDER_CREATED')).to.be.false);"
-          ] } }]
+          "name": "Capture assigned workorder from all list",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{internalAlarmId}}&pageNum=1&pageSize=20" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('one assigned workorder exists', () => { pm.expect(rows).to.have.lengthOf(1); pm.expect(String(rows[0].assigneeId)).to.eql(pm.environment.get('userId')); });", "if (rows[0]) pm.environment.set('workorderId', String(rows[0].workorderId));"] } }]
         },
         {
-          "name": "Case 10 - Duplicate workorder must fail",
+          "name": "Primary user sees assigned workorder in my list",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/my?pageNum=1&pageSize=100" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('my list contains owned workorder', () => pm.expect(rows.some(x => String(x.workorderId) === pm.environment.get('workorderId'))).to.be.true);"] } }]
+        },
+        {
+          "name": "Other tenant cannot read assigned workorder",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{otherTenantToken}}", "type": "string" }] },
+            "method": "GET",
+            "header": [{ "key": "user_id", "value": "{{otherUserId}}" }, { "key": "username", "value": "codex-postman-other-tenant" }],
+            "url": "{{alarmBaseUrl}}/workorder/{{workorderId}}"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('cross-tenant detail is invisible', () => { const crossTenantDetail = pm.response.json(); pm.expect(crossTenantDetail.code !== 200 || !crossTenantDetail.data).to.be.true; });"] } }]
+        },
+        {
+          "name": "Other tenant cannot transfer assigned workorder",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{otherTenantToken}}", "type": "string" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{otherUserId}}" }, { "key": "username", "value": "codex-postman-other-tenant" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"assigneeId\": {{secondUserId}},\n  \"assigneeName\": \"cross-tenant-must-fail\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/transfer"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('cross-tenant transfer rejected', () => pm.expect(failed).to.be.true);"] } }]
+        },
+        {
+          "name": "Edit assigned workorder title and content",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"title\": \"API Push assigned workorder updated\",\n  \"content\": \"editable fields only\",\n  \"status\": \"3\",\n  \"tenantId\": 1,\n  \"assigneeId\": {{secondUserId}}\n}" },
+            "description": "status、tenantId、assigneeId 是越界字段，服务必须忽略；只允许 title/content 生效。",
+            "url": "{{alarmBaseUrl}}/workorder"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('editable fields update accepted', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Read edit and verify protected fields unchanged",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/{{workorderId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('only editable fields changed', () => { pm.expect(responseData.title).to.eql('API Push assigned workorder updated'); pm.expect(responseData.status).to.eql('0'); pm.expect(String(responseData.assigneeId)).to.eql(pm.environment.get('userId')); pm.expect(String(responseData.tenantId)).to.eql(pm.environment.get('tenantId')); });"] } }]
+        },
+        {
+          "name": "Complete without picture must fail",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"missing picture\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/complete"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('missing picture rejected', () => pm.expect(failed).to.be.true);"] } }]
+        },
+        {
+          "name": "Duplicate assigned workorder must fail",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"API Push E2E duplicate workorder\",\n  \"content\": \"duplicate request must not push\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"title\": \"duplicate must fail\"\n}" },
             "url": "{{alarmBaseUrl}}/workorder"
           },
-          "event": [{ "listen": "test", "script": { "exec": [
-            "let failed = pm.response.code >= 400;",
-            "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}",
-            "pm.test('duplicate workorder rejected', () => pm.expect(failed).to.be.true);"
-          ] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('duplicate rejected', () => pm.expect(failed).to.be.true);"] } }]
         },
         {
-          "name": "Query workorders by alarmId",
-          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{internalAlarmId}}" },
-          "event": [{ "listen": "test", "script": { "exec": [
-            "const body = pm.response.json();",
-            "pm.test('exactly one workorder remains', () => pm.expect(body.data || []).to.have.lengthOf(1));"
-          ] } }]
+          "name": "Transfer assigned workorder to second user",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"assigneeId\": {{secondUserId}},\n  \"assigneeName\": \"api-push-second\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/transfer"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('transfer accepted', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Verify transfer reached HTTP 25 for new assignee",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver25BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": ["const events = pm.response.json().events || [];", "pm.test('transferred event carries only new assignee target', () => pm.expect(events.some(e => { const raw = e.rawBody || JSON.stringify(e.body || {}); return raw.includes('\"messageType\":\"25\"') && raw.includes('\"eventType\":\"ALARM_WORKORDER_TRANSFERRED\"') && raw.includes('\"assigneeId\":' + pm.environment.get('secondUserId')); })).to.be.true);"] } }]
+        },
+        {
+          "name": "Old owner cannot complete after transfer",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"old owner must fail\",\n  \"handlePicture\": \"/test/{{runId}}/old-owner.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/complete"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('old owner completion rejected', () => pm.expect(failed).to.be.true);"] } }]
+        },
+        {
+          "name": "Second owner completes assigned workorder",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{secondAssigneeToken}}", "type": "string" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"assigned completed {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/assigned-complete.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/complete"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('current owner completion accepted', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Read completed workorder and picture",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/{{workorderId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('completion result and picture returned', () => { pm.expect(responseData.status).to.eql('2'); pm.expect(responseData.handleResult).to.eql('assigned completed ' + pm.environment.get('runId')); pm.expect(responseData.handlePicture).to.eql('/test/' + pm.environment.get('runId') + '/assigned-complete.jpg'); });"] } }]
+        },
+        {
+          "name": "Create unassigned workorder",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{unassignedAlarmId}},\n  \"assigneeId\": 0,\n  \"title\": \"API Push unassigned workorder\",\n  \"content\": \"group compatibility mode\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder"
+          }
+        },
+        {
+          "name": "Capture unassigned workorder",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{unassignedAlarmId}}&pageNum=1&pageSize=20" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('unassigned persisted as zero', () => { pm.expect(rows).to.have.lengthOf(1); pm.expect(Number(rows[0].assigneeId)).to.eql(0); });", "if (rows[0]) pm.environment.set('unassignedWorkorderId', String(rows[0].workorderId));"] } }]
+        },
+        {
+          "name": "Unassigned workorder is absent from my list",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/my?pageNum=1&pageSize=100" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('unassigned is not owned by current user', () => pm.expect(rows.some(x => String(x.workorderId) === pm.environment.get('unassignedWorkorderId'))).to.be.false);"] } }]
+        },
+        {
+          "name": "Unassigned workorder cannot complete",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"handleResult\": \"must transfer first\",\n  \"handlePicture\": \"/test/{{runId}}/unassigned.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/complete"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('unassigned completion rejected', () => pm.expect(failed).to.be.true);"] } }]
+        },
+        {
+          "name": "Transfer target zero must fail",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"assigneeId\": 0\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/transfer"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('zero transfer target rejected', () => pm.expect(failed).to.be.true);"] } }]
+        },
+        {
+          "name": "Transfer unassigned workorder to second user",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"assigneeId\": {{secondUserId}},\n  \"assigneeName\": \"api-push-second\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/transfer"
+          }
+        },
+        {
+          "name": "Second owner completes formerly unassigned workorder",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{secondAssigneeToken}}", "type": "string" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"handleResult\": \"transferred workorder completed {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/unassigned-complete.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/complete"
+          }
+        },
+        {
+          "name": "Create workorder for abnormal close",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{closeAlarmId}},\n  \"assigneeId\": {{userId}},\n  \"title\": \"API Push close workorder\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder"
+          }
+        },
+        {
+          "name": "Capture close workorder",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{closeAlarmId}}&pageNum=1&pageSize=20" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "if (rows[0]) pm.environment.set('closeWorkorderId', String(rows[0].workorderId));", "pm.test('close workorder captured', () => pm.expect(rows).to.have.lengthOf(1));"] } }]
+        },
+        {
+          "name": "Close workorder abnormally",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{closePermissionToken}}", "type": "string" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{closeUserId}}" }, { "key": "username", "value": "codex-postman-close" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{closeWorkorderId}},\n  \"handleResult\": \"abnormal close {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/abnormal-close.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/close"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('abnormal close accepted', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Repeat close must fail",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{closePermissionToken}}", "type": "string" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{closeUserId}}" }, { "key": "username", "value": "codex-postman-close" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{closeWorkorderId}},\n  \"handleResult\": \"repeat close must fail\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder/close"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('repeat close rejected', () => pm.expect(failed).to.be.true);"] } }]
         }
       ]
     },
     {
-      "name": "05 - Negative Config and Failure",
+      "name": "06 - Negative Config and Failure",
       "item": [
         {
           "name": "Case 7 - Disable config 25",
@@ -356,8 +698,16 @@
       ]
     },
     {
-      "name": "06 - Cleanup",
+      "name": "07 - Cleanup",
       "item": [
+        {
+          "name": "Delete WeCom push config 10 through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{wecomPushConfig10Id}}" }
+        },
+        {
+          "name": "Delete WeCom push config 25 through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{wecomPushConfig25Id}}" }
+        },
         {
           "name": "Delete push config 10 through API",
           "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig10Id}}" }
@@ -365,6 +715,24 @@
         {
           "name": "Delete push config 25 through API",
           "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/pushConfig/{{pushConfig25Id}}" }
+        },
+        {
+          "name": "Delete recipient group through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/recipientGroup/{{recipientGroupId}}" }
+        },
+        {
+          "name": "Delete test user bindings through API",
+          "request": { "method": "DELETE", "url": "{{pushBaseUrl}}/wecom/userBinding/{{userId}},{{secondUserId}}" }
+        },
+        {
+          "name": "Disable tenant WeCom app through API",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"corpId\": \"{{wecomCorpId}}\",\n  \"agentId\": {{wecomAgentId}},\n  \"enabled\": false\n}" },
+            "description": "企业微信应用没有 DELETE 接口；专用测试租户用 PUT 禁用并保留已加密 Secret。共享租户不得执行本 Collection。",
+            "url": "{{pushBaseUrl}}/wecom/app"
+          }
         },
         {
           "name": "Delete normal alarm configure through API",
@@ -381,6 +749,11 @@
         {
           "name": "Clear receiver 25",
           "request": { "auth": { "type": "noauth" }, "method": "DELETE", "url": "{{receiver25BaseUrl}}/_events" }
+        },
+        {
+          "name": "Verify configuration cleanup",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/recipientGroup/list" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rawResponse = pm.response.text();", "pm.test('test recipient group deleted', () => pm.expect(rawResponse.includes('\"groupId\":' + pm.environment.get('recipientGroupId'))).to.be.false);"] } }]
         }
       ]
     }

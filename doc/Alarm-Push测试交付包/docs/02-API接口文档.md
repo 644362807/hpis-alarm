@@ -9,7 +9,7 @@
 1. 第 2～3 章了解整体链路、认证、租户和响应结构。
 2. 第 4～10 章按“报警配置 → 上报 → 记录 → 处理/工单 → Push”的顺序查接口。
 3. 第 13～15 章查字段、枚举以及“为什么推送、推到哪里、推给谁”。
-4. 需要直接执行测试时配合 [Alarm-Push-全流程测试使用手册](./Alarm-Push-全流程测试使用手册.md)。
+4. 需要直接执行测试时配合本交付包的 `01-全流程测试使用手册.md`；仓库 `doc` 根目录保留同步主手册 `Alarm-Push-全流程测试使用手册.md`。
 
 本文以当前源码为准。旧测试报告与源码冲突时，以 Controller、领域对象、Service 校验和 MQ/Push 实现为准。
 
@@ -152,7 +152,7 @@ Content-Type: application/json
 - `pushEnabled="1"` 才进入配置推送。
 - `pushMessageType` 必须与普通报警的 Push 配置 `messageType` 一致。
 - `workorderPushMessageType` 必须与工单 Push 配置 `messageType` 一致。
-- `workorderConfigId=0` 表示不启用工单；创建工单要求正数模板 ID。
+- `workorderConfigId=0` 表示不启用工单；创建工单要求正数关联值。当前仓库没有工单模板 CRUD/表引用校验，代码只把正数作为启用门禁并复制到工单，测试不能宣称已验证模板实体存在。
 
 成功后用唯一名称回查 ID：
 
@@ -237,11 +237,13 @@ Content-Type: application/json
 | tenantId | Long | 建议传 | 最终租户以设备和登录上下文解析结果为准 |
 | time | String | 是 | `yyyy-MM-dd HH:mm:ss` |
 
-输入字段 `alarmId` 最终保存为 `Alarm.alarmCid`；服务生成内部 Long `Alarm.alarmId`。回查：
+输入字段 `alarmId` 最终保存为 `Alarm.alarmCid`；服务生成内部 Long `Alarm.alarmId`。当前 `/alarm/list` 虽接收实体字段，但 Mapper 没有按 `alarmCid` 生成过滤条件，因此下面的 `alarmCid` 只能作为客户端取回 `rows` 后的精确匹配值，不能依赖它缩小 SQL 结果集：
 
 ```http
-GET /alarm/list?alarmCid=TEST-ALARM-CID-20260718-HTTP&pageNum=1&pageSize=10
+GET /alarm/list?deviceSn=TEST-DEVICE-SN-001&pageNum=1&pageSize=200
 ```
+
+在返回的 `rows` 中再以 `row.alarmCid == "TEST-ALARM-CID-20260718-HTTP"` 精确定位，不能直接取第一条。
 
 ### 5.2 RabbitMQ `alarm_queue`
 
@@ -303,7 +305,7 @@ GET /alarm/list?alarmCid=TEST-ALARM-CID-20260718-HTTP&pageNum=1&pageSize=10
 
 | 方法 | 路径 | 输入 | 输出/判定 |
 |---|---|---|---|
-| GET | `/alarm/list` | Alarm 字段 + `pageNum/pageSize` | `rows/total`；推荐按 `alarmCid` 精确查 |
+| GET | `/alarm/list` | Alarm 字段 + `pageNum/pageSize` | `rows/total`；当前不按 `alarmCid`过滤，应结合设备/时间取回后在 `rows` 中精确匹配 |
 | GET | `/alarm/query/{alarmId}` | 内部 Long ID | `AjaxResult.data` 详情 |
 | POST | `/alarm/alarmAdd` | 第 5.1 节 JSON | 空 2xx；必须回查 |
 | PUT | `/alarm` | Alarm JSON，`alarmId` 必填 | 影响行数包装为 AjaxResult |
@@ -405,13 +407,16 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 
 | 方法 | 路径 | 用途 | 权限 |
 |---|---|---|---|
-| GET | `/workorder/list` | 查询 | `alarm:workorder:list` |
-| GET | `/workorder/{workorderId}` | 详情 | `alarm:workorder:query` |
+| GET | `/workorder/list` | 当前租户全部工单分页 | `alarm:workorder:list` |
+| GET | `/workorder/my` | 当前租户、当前用户的工单分页 | `alarm:workorder:list` |
+| GET | `/workorder/{workorderId}` | 当前租户工单详情 | `alarm:workorder:query` |
+| GET | `/workorder/my/{workorderId}` | 当前负责人自己的工单详情 | `alarm:workorder:query` |
 | POST | `/workorder` | 创建 | `alarm:workorder:add` |
-| PUT | `/workorder` | 修改 | `alarm:workorder:edit` |
+| PUT | `/workorder` | 只修改标题、内容 | `alarm:workorder:edit` |
 | PUT | `/workorder/transfer` | 转派 | `alarm:workorder:transfer` |
-| PUT | `/workorder/complete` | 完成 | `alarm:workorder:complete` |
-| DELETE | `/workorder/{workorderIds}` | 删除 | `alarm:workorder:remove` |
+| PUT | `/workorder/complete` | 当前负责人正常完成 | `alarm:workorder:complete` |
+| PUT | `/workorder/close` | 异常关闭 | `alarm:workorder:close` |
+| DELETE | `/workorder/{workorderIds}` | 逻辑删除非终态工单 | `alarm:workorder:remove` |
 
 创建前置：
 
@@ -420,13 +425,39 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 3. 命中的 Alarm 配置 `workorderConfigId>0`。
 4. 工单 Push 需要 `workorderPushMessageType` 非空且存在同 messageType 的 Push 配置。
 
-创建：
+### 8.1 查询边界
+
+`/workorder/list` 和普通详情按当前租户过滤，用于具有列表/查询权限的管理视角；`/workorder/my` 和 `/workorder/my/{id}` 还强制 `assignee_id=当前用户ID`，因此 `assigneeId=0` 的未分配工单不会出现在“我的工单”。两个列表都返回标准分页结构 `rows + total`，不是 `data` 数组。
+
+列表可传 `pageNum`、`pageSize`、`alarmId`、`workorderNo`、`status`；全部列表还可传 `assigneeId`。详情和列表中的 `handlePicture` 从 `alarm_handle.handle_picture` 批量回填，不在 `alarm_workorder` 新增图片列，也不会逐工单循环查询。
+
+### 8.2 创建
 
 ```json
 {"alarmId":671599294431815216,"assigneeId":502,"assigneeName":"pete","title":"测试报警工单","content":"处理测试报警"}
 ```
 
-未传 `workorderNo` 时服务生成；未传 `status` 时为 `0`；同一报警重复创建失败。成功产生 `ALARM_WORKORDER_CREATED`，顶层 `assigneeId=502`。
+| 字段 | 必填性 | 实际规则 |
+|---|---|---|
+| alarmId | 必填 | 必须是当前租户报警，且已有 `handleStatus=2` 的确认记录 |
+| assigneeId | 可选 | 正数表示具体负责人；`0/null/缺失`统一保存为 `0`，表示未分配并按配置接收组推送；负数拒绝 |
+| assigneeName | 可选 | 负责人展示名；不作为所有权判定依据 |
+| title | 可选 | 空值由服务端生成 `报警工单-{alarmId}` |
+| content | 可选 | 工单说明 |
+| workorderNo | 兼容可选 | 空值由服务端生成；调用方通常不传 |
+| workorderConfigId/status/tenantId/delFlag/handleResult | 禁止客户端控制 | 分别由匹配配置、服务端状态机、当前租户和生命周期生成 |
+
+同一报警只允许一张工单。创建时服务端按该报警重新匹配 Alarm 配置并取得 `workorderConfigId`、`workorderPushMessageType`；不能用请求体绕过。正数负责人产生 `ALARM_WORKORDER_CREATED` 并只通知该负责人；未分配模式的事件携带 `assigneeId=0`，企业微信按该 Push 配置的接收组解析。
+
+### 8.3 通用编辑和转派
+
+通用编辑只接受 `workorderId`、`title`、`content`：
+
+```json
+{"workorderId":990001,"title":"测试报警工单-更新","content":"更新后的处理说明"}
+```
+
+即使客户端提交 `tenantId`、`assigneeId`、`assigneeName`、`status`、`workorderConfigId`、`handleResult` 或 `delFlag`，服务也会清除这些字段；负责人和状态必须走专用接口。终态工单不能编辑。
 
 转派：
 
@@ -436,15 +467,31 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 
 新负责人 ID 必须为正整数。成功产生 `ALARM_WORKORDER_TRANSFERRED`；只通知新负责人，不通知旧负责人。
 
-完成：
+### 8.4 正常完成
 
 ```json
-{"workorderId":990001,"alarmId":671599294431815216,"status":"2","handleResult":"测试完成"}
+{"workorderId":990001,"handleResult":"现场复核并恢复设备","handlePicture":"/upload/alarm/2026/07/result-990001.jpg"}
 ```
 
-当前完成动作不应被测试文档解释为一定产生额外 Push。
+请求对象只定义三个字段，且均必填：`workorderId`、非空 `handleResult`、非空 `handlePicture`。`alarmId`、`assigneeId`、`tenantId`和目标状态不接收客户端指定。只有当前租户的当前负责人可以把状态 `0/1` 原子更新为 `2`；未分配、非负责人、终态和重复完成均失败。
+
+同一事务还会把说明、图片、当前用户 ID/名称和处理时间写回报警处理记录：`alarm_workorder.handle_result`、`alarm_handle.opinion`、`alarm_handle.handle_picture`、`handler_id`、`handler_name`。处理记录不存在时整个完成事务回滚。本轮正常完成不发送二次 Push，也不修改报警本体状态或结束时间。
+
+### 8.5 异常关闭
+
+```json
+{"workorderId":990002,"handleResult":"重复告警产生的无效工单","handlePicture":"/upload/alarm/2026/07/close-990002.jpg"}
+```
+
+`workorderId`和非空 `handleResult`必填，`handlePicture`选填。接口只依赖已有 `alarm:workorder:close` 权限，不在代码中额外识别“系统管理员/租户管理员”身份。当前租户任意非终态工单可原子进入状态 `3`，关闭原因和实际操作人同步写入 `alarm_handle`；已完成、已关闭和重复关闭均失败。
+
+### 8.6 删除和状态规则
+
+状态：`0`待处理、`1`处理中、`2`已完成、`3`已关闭、`4`退回。状态 `2/3`是终态，禁止编辑、转派、完成、关闭和删除。删除只对当前租户非终态工单设置 `del_flag=2`；批量 ID 中只要存在越租户、已删除或终态记录，事务整体回滚。
 
 ## 9. Push 配置接口 `/pushConfig`
+
+`ActivePushConfig` 是一条“消息路由 + 单一推送通道”配置，不是包含多个通道的组合配置。一条记录只有一个 `pushChannelType`，所以 HTTP 与企业微信必须创建为两条独立配置；它们可以使用相同 `messageType`，并在同一报警上同时命中。
 
 ### 9.1 接口清单
 
@@ -479,6 +526,8 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 
 当前 HTTP Consumer 会补 `http://`，所以 `pushAddress` 写 `host:port/path`，不要包含协议头。
 
+HTTP DEVICE 的调用方必填项为 `messageType`、`pushChannelType=10`、`enabled`、`routeScope=DEVICE`、`configName`、`pushAddress` 和至少一个 `deviceSns`。其中当前 Service 只硬校验启用的 DEVICE 必须有关联设备，尚未硬校验 `messageType`、`configName`、通道枚举和 `pushAddress`；调用方仍必须按本契约传值，否则可能出现“数据库保存成功但没有 HTTP Consumer”的配置。
+
 ### 9.3 企业微信 TENANT 配置
 
 ```json
@@ -493,17 +542,96 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 }
 ```
 
-校验规则：
+企业微信 TENANT 的调用方必填项为 `messageType`、`pushChannelType=20`、`enabled`、`routeScope=TENANT`、`configName`、`recipientGroupId`，并明确传 `deviceSns=[]`。启用时 Service 会校验接收组属于当前租户且已启用，但不会在保存 Push 配置时校验企业微信应用、组成员数量和成员绑定完整性。
+
+### 9.4 对象边界与绑定关系
+
+```text
+当前租户 tenantId
+├─ 1 条企业微信应用 push_wecom_app_config
+├─ N 条用户绑定 push_wecom_user_binding
+│    └─ 业务 userId → 企业微信 wecomUserId
+├─ N 个接收组 push_recipient_group
+│    └─ N 条组成员 push_recipient_group_member(groupId, userId)
+└─ N 条推送配置 active_push_config
+     ├─ DEVICE → pushconfigid_devicesn(activePushConfigId, deviceSn)
+     └─ 企业微信 → recipientGroupId → push_recipient_group.id
+```
+
+同一请求能否一起提交：
+
+| 对象组合 | 是否支持 | 实际接口与说明 |
+|---|---|---|
+| HTTP 配置 + 企业微信配置 | 否 | 分别调用两次 `POST /pushConfig/add`；一条配置只能有一个通道 |
+| 接收组 + 组成员 | 是 | `POST /recipientGroup` 同时传 `groupName`、`enabled`、`userIds` |
+| 多个用户绑定 | 是 | `PUT /wecom/userBinding/batch` 的 `bindings` 可包含多名用户 |
+| 用户绑定 + 接收组 | 否 | 先保存绑定，再创建/更新接收组 |
+| 接收组 + ActivePushConfig | 否 | 先创建接收组取得 `groupId`，再把它作为 `recipientGroupId` 创建企业微信配置 |
+| 企业微信应用 + ActivePushConfig | 否 | 先保存并读回应用，再创建企业微信配置 |
+
+这些关系均受当前登录租户控制。请求体中的 `tenantId` 不能用于指定或切换租户；Push 配置、应用、绑定和接收组分别从安全上下文强制取得当前租户。
+
+### 9.5 ActivePushConfig 字段契约
+
+下表区分“调用方必须遵守”和“当前代码已强制”。“调用方必填”不等于数据库列已经设为 `NOT NULL`；历史 `active_push_config` 的多数列仍允许 NULL。
+
+| 字段 | 类型 | 新增/修改契约 | 默认、覆盖与当前校验 |
+|---|---|---|---|
+| activePushConfigId | Long | 新增不传；修改必填 | 新增由服务生成；修改按当前租户校验归属 |
+| messageType | String | 启用配置调用方必填，最长 5 字符 | 路由匹配键；当前 Service 未硬校验非空，数据库允许 NULL |
+| pushChannelType | String | 启用配置调用方必填；本章使用 `10` 或 `20` | 当前未统一拒绝未知值；未知值可保存但不会创建有效 Consumer |
+| enabled | Boolean | 新增建议明确传；修改可省略 | 只有 `true` 生效；新增省略会保存为非启用状态，修改省略保留旧值 |
+| routeScope | String | 可省略；只允许 `DEVICE`、`TENANT` | 新增空值默认 `DEVICE`；修改空值保留旧值；不区分大小写并统一转大写 |
+| deviceSns | String[] | `enabled=true + DEVICE` 至少一个；`TENANT` 必须为空 | 新增会去空、去重；修改为 `null` 保留原关系，传 `[]` 清空全部关系 |
+| pushAddress | String | 启用的 HTTP `10` 调用方必填 | 写 `host:port/path`，不要带协议；当前保存接口未硬校验，空值不会启动 HTTP Consumer |
+| isPassive | String | HTTP 示例可传 `0`，当前路由不依赖此字段 | HTTP Consumer 由 `pushChannelType=10` 选择；该字段属于历史兼容字段 |
+| recipientGroupId | Long | 启用的企业微信 `20` 必填；其他通道不应传 | 校验当前租户启用组；修改传 `null` 会保留旧值，当前接口不能显式清空 |
+| configName | String | 调用方必填，最长 50 字符，建议当前租户内唯一 | 当前 Service 未硬校验，数据库也没有唯一键；唯一名称用于新增后回查 ID |
+| tenantId | Long | 不传/只读 | 新增、查询、修改、删除均强制使用当前租户 |
+| pushKey | String | 不在新增/修改中手工传 | 通过 `/bindPushConfigIds` 生成，通过 `/UnbindPushConfigIds` 解绑 |
+| mqttTopic/mqttUsername/mqttPassword/mqttQos | 混合 | 仅 MQTT `11` 使用 | HTTP/企业微信不传；敏感字段不得写入测试文档和日志 |
+| userId/createBy/updateBy/createTime/updateTime/delFlag | 混合 | 不传/只读 | 由登录上下文、Service 或数据库维护 |
+| deviceSnGroup/groupIds | 混合 | 不传 | 当前实体中的非持久化兼容字段，本流程未使用 |
+
+当前校验规则：
 
 - `routeScope` 只允许 `DEVICE`、`TENANT`；空值默认 `DEVICE`。
 - 启用的 DEVICE 配置至少关联一个设备。
 - 启用的 TENANT 配置不能关联设备。
 - 启用的企业微信配置必须关联当前租户启用接收组。
-- 禁用配置不创建有效运行 Consumer，可先保存再补全。
+- `enabled=false` 的配置只校验 `routeScope`，其余设备、接收组和通道前置条件会跳过；可作为草稿保存，但启用前必须补全并重新读回。
 - 新增强制当前租户、`delFlag=0`；更新必须带 `activePushConfigId`。
-- 修改推荐使用详情完整对象，避免丢失设备或通道字段。
+- 新增接口通常只返回影响行数，不返回生成的配置 ID；需要通过列表回查并调用详情确认。由于 `configName` 当前没有唯一约束，调用方必须自行使用不重复的名称。
 
-新增接口通常只返回影响行数。用唯一 `configName` 列表回查 ID，再调用详情确认。
+### 9.6 新增、修改、禁用与删除流程
+
+新增两个共存通道：
+
+1. 按第 10 章完成企业微信应用、用户绑定和接收组；HTTP 不依赖这些对象。
+2. 调用一次 `POST /pushConfig/add` 创建 HTTP DEVICE 配置。
+3. 再调用一次 `POST /pushConfig/add` 创建企业微信 TENANT 配置。
+4. 两条配置使用相同 `messageType`；HTTP 配置绑定设备，企业微信配置使用 `deviceSns=[]` 并关联组。
+5. 分别通过 `/pushConfig/list` 和 `/pushConfig/{id}` 读回，确认字段和设备关系。
+6. 检查两个配置专属 RabbitMQ 队列；启用配置应各有对应 Consumer。
+7. 产生一条匹配设备和 `messageType` 的报警，分别核验 HTTP 接收结果和企业微信实收。
+
+运行时路由会合并 `deviceSn#messageType` 和 `*#messageType` 对应的配置 ID。因此设备存在且 DEVICE 关系匹配时，HTTP 与企业微信两条配置都会收到；事件没有设备 SN 时只能命中 TENANT 配置。同一路由存在重复配置会产生多次业务投递，测试前必须查询同租户、同 `messageType` 的所有启用配置。
+
+修改单条配置：
+
+1. 先 `GET /pushConfig/{activePushConfigId}` 读取当前对象。
+2. 修改目标字段后调用 `POST` 或 `PUT /pushConfig/update`，必须保留正确 ID。
+3. 普通持久化字段传 `null` 通常表示不更新；`routeScope`、`pushChannelType`、`recipientGroupId`、`enabled` 的空值由 Service 明确保留旧值。
+4. `deviceSns=null` 保留原设备；`deviceSns=[]` 删除全部设备关系。
+5. 修改提交后再次读回，并检查运行队列和 Consumer。数据库事务提交后的运行态刷新失败只记录日志，不能只看 HTTP 成功响应。
+
+不要通过把同一条 HTTP 配置改成企业微信配置来实现“双通道”。需要双通道时始终保留两条配置。当前 `recipientGroupId=null` 无法清除旧关联，通道切换可能遗留接收组引用；如必须切换，低风险方式是新建目标通道配置、验证成功后删除旧配置。
+
+禁用和删除：
+
+1. 修改配置为 `enabled=false`，读回并确认专属 Consumer 已停止。
+2. 删除前确认不再需要该配置的历史路由；`DELETE /pushConfig/{ids}` 会删除配置及设备关系，并在事务提交后清理运行态。
+3. 删除企业微信接收组前，必须先删除所有引用该组的 ActivePushConfig；即使 Push 配置已禁用，只要仍引用该组，组删除也会被拒绝。
 
 pushKey 绑定/解绑请求体为配置 ID 数组：
 
@@ -513,6 +641,8 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 
 ## 10. 企业微信应用、用户绑定和接收组
 
+企业微信接收链路不是把企业微信 UserID 直接写进 `ActivePushConfig`。普通报警按 `recipientGroupId → userIds → 当前租户启用绑定 → wecomUserId` 解析；工单消息存在正整数 `assigneeId` 时，直接按 `tenantId + assigneeId` 查询绑定并只通知该负责人。
+
 ### 10.1 应用
 
 | 方法 | 路径 | 用途 |
@@ -521,10 +651,18 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 | PUT | `/wecom/app` | 新增或更新 |
 
 ```json
-{"corpId":"ww-test-corp","corpSecret":"通过安全输入提供","agentId":1000002,"enabled":true}
+{"corpId":"ww-example-corp","corpSecret":"${WECOM_CORP_SECRET}","agentId":1000002,"enabled":true}
 ```
 
-首次配置必须提供 `corpSecret`；更新时 Secret 为空表示保留。启用前还需要服务端企业微信密钥主密钥配置。
+| 字段 | 类型 | 必填性 | 实际规则 |
+|---|---|---|---|
+| corpId | String | 每次 PUT 必填 | 非空；数据库最长 64 字符 |
+| corpSecret | String | 首次必填；更新可空 | 非空时使用服务端主密钥加密保存；GET 永不返回明文；更新为空保留旧 Secret |
+| agentId | Long | 每次 PUT 必填 | 必须为正整数 |
+| enabled | Boolean | 建议每次 PUT 明确传 | 只有 `true` 启用；省略会被保存为 `false`，不是保留旧值 |
+| tenantId/id/secretConfigured | 混合 | 不传/只读 | 当前租户下每租户一条应用；GET 以 `secretConfigured` 表示是否已有 Secret |
+
+服务端 `push.wecom.secret-key` 必须是 Base64 编码的 32 字节密钥。保存或替换 Secret 时需要它完成加密，实际发送时需要它解密；示例占位符不得原样提交，必须通过安全方式注入真实 Secret。
 
 ### 10.2 用户绑定
 
@@ -537,14 +675,22 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 ```json
 {
   "bindings": [
-    {"userId":501,"wecomUserId":"XiangWenLai","enabled":true},
-    {"userId":502,"wecomUserId":"pete","enabled":true},
-    {"userId":503,"wecomUserId":"YanYan","enabled":true}
+    {"userId":501,"wecomUserId":"${WECOM_USER_ID_501}","enabled":true},
+    {"userId":502,"wecomUserId":"${WECOM_USER_ID_502}","enabled":true},
+    {"userId":503,"wecomUserId":"${WECOM_USER_ID_503}","enabled":true}
   ]
 }
 ```
 
-同一租户内平台 `userId` 和企业微信 `wecomUserId` 均须唯一；未传 `enabled` 默认启用。
+| 字段 | 类型 | 必填性 | 实际规则 |
+|---|---|---|---|
+| bindings | Array | 必填且至少一项 | 同一批次事务保存；批次内 userId 或 wecomUserId 重复会整体失败 |
+| bindings[].userId | Long | 必填 | 必须为正整数；表示 HPIS 业务用户 ID，不是企业微信账号 |
+| bindings[].wecomUserId | String | 必填 | 非空；同一租户内只能绑定一个业务用户，数据库最长 128 字符 |
+| bindings[].enabled | Boolean | 可选 | 省略默认 `true`；只有启用绑定参与接收人解析 |
+| bindings[].id/tenantId | Long | 不传/只读 | Service 按当前租户和 userId 新增或更新，不使用请求中的租户切换 |
+
+同一租户内平台 `userId` 和企业微信 `wecomUserId` 均有唯一约束。保存绑定时不会校验该 `userId` 是否真实存在于用户服务；测试必须使用当前租户通过正式用户接口取得的业务用户 ID。删除绑定不会自动把 userId 从接收组移除，组内成员会保留但投递时记录未绑定失败。
 
 ### 10.3 接收组
 
@@ -552,6 +698,7 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 |---|---|---|
 | GET | `/recipientGroup/list` | 当前租户列表 |
 | GET | `/recipientGroup/{groupId}` | 详情及 `userIds` |
+| GET | `/recipientGroup/workorderCandidates` | 按工单消息类型和设备解析候选负责人 |
 | POST | `/recipientGroup` | 新增 |
 | PUT | `/recipientGroup` | 修改，必须传 `groupId` |
 | DELETE | `/recipientGroup/{groupIds}` | 删除 |
@@ -560,7 +707,49 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 {"groupName":"TEST-ALARM-GROUP-20260718","enabled":true,"userIds":[501,502,503]}
 ```
 
-修改组会完整替换成员。接收组被 Push 配置引用时不能删除。
+| 字段 | 类型 | 新增/修改契约 | 实际规则 |
+|---|---|---|---|
+| groupId | Long | POST 新增不传；PUT 修改必填 | 按当前租户校验归属；当前 Controller 未按 HTTP 方法强制，PUT 缺 ID 会变成新增，POST 带 ID 会变成修改，调用方不得依赖该兼容行为 |
+| groupName | String | 新增、修改都必填 | 非空；同一租户唯一；数据库最长 100 字符 |
+| enabled | Boolean | 建议明确传 | 省略默认 `true`；禁用组不能被启用的企业微信配置通过保存校验 |
+| userIds | Long[] | 请求字段必填 | 每项必须为正整数，重复 ID 自动去重；修改时完整替换全部成员 |
+| tenantId | Long | 不传/只读 | 强制当前租户 |
+
+`userIds=null` 会被拒绝，但当前代码允许 `userIds=[]`。空组即使保存成功也没有实际接收人；创建启用组时调用方必须至少传一名已建立启用绑定的用户。保存接收组不会校验成员是否存在或是否已绑定企业微信，正式启用前必须通过 `/wecom/userBinding/list` 和组详情完成交叉核验。
+
+修改组会先删除原成员，再按本次 `userIds` 完整写入，整个过程处于同一数据库事务。接收组被任意未删除 Push 配置引用时不能删除，包括已禁用但仍保留 `recipientGroupId` 的配置。
+
+候选负责人查询：
+
+```http
+GET /recipientGroup/workorderCandidates?messageType=25&deviceSn=TEST-DEVICE-SN-001
+```
+
+`messageType`必填且非空，使用 Alarm 配置的 `workorderPushMessageType`；`deviceSn`选填。服务强制使用当前租户，只匹配 `enabled=true`、`pushChannelType=20`、同 `messageType`且接收组启用的 Push 配置：TENANT 配置无需设备即可命中，DEVICE 配置必须由 `pushconfigid_devicesn`精确关联传入设备。多个配置/组的成员按 `userId`去重，并一次批量查询成员和启用绑定。
+
+```json
+{
+  "code": 200,
+  "data": [
+    {"userId":502,"wecomUserId":"pete","wecomReachable":true},
+    {"userId":503,"wecomUserId":null,"wecomReachable":false}
+  ]
+}
+```
+
+未绑定成员仍作为业务候选人返回，但 `wecomReachable=false`；这表示可以被选为工单负责人，却不能通过当前企业微信绑定送达。该接口只辅助前端选人，工单所有权仍由 Alarm 的 `alarm_workorder.assignee_id`决定。
+
+### 10.4 企业微信推荐调用顺序
+
+1. `PUT /wecom/app`：保存应用；随后 `GET /wecom/app`，确认 `enabled=true`、`secretConfigured=true`。
+2. `PUT /wecom/userBinding/batch`：建立业务 `userId → wecomUserId` 绑定；随后列表读回。
+3. `POST /recipientGroup`：一个请求同时创建组和成员；使用返回的 `groupId` 调用详情确认完整成员。
+4. `POST /pushConfig/add`：创建 `pushChannelType=20`、`routeScope=TENANT` 的配置并填入 `recipientGroupId`。
+5. `/pushConfig/list` 回查 ID，再调用详情确认配置；检查配置专属队列存在且 Consumer 数为 1。
+6. 调用 `/recipientGroup/workorderCandidates?messageType={workorderPushMessageType}&deviceSn={deviceSn}`，只从 `wecomReachable=true` 中选择正常流程负责人。
+7. 普通报警不传 `assigneeId`，验证接收组有效成员实收；工单创建可传正整数负责人或 `0` 进入组兼容模式，转派必须传正整数且只通知新负责人。
+
+修改时也按依赖方向处理：先保证应用和绑定有效，再修改组，最后启用或修改 Push 配置。删除时反向执行：先禁用/删除引用组的 Push 配置，再删除组；应用没有删除接口，只能通过 PUT 设置 `enabled=false`。
 
 ## 11. Session、WebSocket、HTTP 和 MQTT
 
@@ -648,7 +837,7 @@ pushKey WebSocket 首帧发送 `{"pushKey":"PUSH-KEY"}`。收到带 `deliveryId`
 | pushEnabled | String | 写入 | `0` 不推、`1` 推 |
 | pushMessageType | String | 写入 | 普通报警 Push messageType |
 | workorderPushMessageType | String | 写入 | 工单 Push messageType |
-| workorderConfigId | Long | 写入 | 工单模板，正数启用 |
+| workorderConfigId | Long | 写入 | 工单模板语义的关联值，正数启用；当前不校验被引用模板实体 |
 | sequenceUid/irmsSn | String | 查询辅助 | 行业关联字段 |
 
 ### 13.2 Alarm
@@ -674,25 +863,27 @@ pushKey WebSocket 首帧发送 `{"pushKey":"PUSH-KEY"}`。收到带 `deliveryId`
 
 AlarmHandle 主要字段：`alarmHandleId,alarmId,workorderId,handlerId,handleUserOrder,deviceId,alarmType,alarmRank,alarmStatus,handleStatus,alarmBegintime,alarmEndtime,handleTime,identify,opinion,irmsSn,areaSn,targetName,deviceName,customerId,sceneType,handlePicture,confirmUserId,apparatusId,handlerName,alarmIds`。
 
-Workorder 主要字段：`workorderId,workorderNo,alarmId,workorderConfigId,status,assigneeId,assigneeName,title,content,handleResult,tenantId,delFlag`。
+Workorder 持久化字段：`workorderId,workorderNo,alarmId,workorderConfigId,status,assigneeId,assigneeName,title,content,handleResult,tenantId,delFlag`。返回字段 `handlePicture`是非持久化字段，从 `alarm_handle.handle_picture`批量回填。创建、编辑、转派、完成和关闭的可写边界见第 8 章，不能因为实体含有字段就认为客户端可以修改。
 
 ### 13.4 ActivePushConfig
 
-| 字段 | 类型 | 含义 |
+完整的新增/修改必填性、默认值和空值语义见 9.5。本节只说明字段落点，不能代替接口契约。
+
+| 字段 | 实体/持久化位置 | 说明 |
 |---|---|---|
-| activePushConfigId | Long | Push 配置主键 |
-| messageType | String | 与 Alarm/工单消息类型匹配 |
-| pushChannelType | String | 通道枚举 |
-| enabled | Boolean | 是否创建运行路由/Consumer |
-| pushAddress | String | HTTP 目标地址 |
-| isPassive | String | 主动/被动标志 |
-| tenantId | Long | 当前租户，只读控制 |
-| configName | String | 配置名 |
-| pushKey | String | 被动 WS 绑定键 |
-| mqttTopic/mqttUsername/mqttPassword/mqttQos | 混合 | MQTT 连接与订阅参数 |
-| routeScope | String | DEVICE 或 TENANT |
-| recipientGroupId | Long | 企业微信默认接收组 |
-| deviceSns | String[] | DEVICE 路由设备 SN |
+| activePushConfigId | `active_push_config.active_push_config_id` | Push 配置主键 |
+| messageType | `active_push_config.message_type` | 与 Alarm/工单消息类型匹配 |
+| pushChannelType | `active_push_config.push_channel_type` | 单一通道枚举；一条配置不能包含多个通道 |
+| enabled | `active_push_config.enabled` | 是否创建有效运行路由/Consumer |
+| pushAddress | `active_push_config.push_address` | HTTP 目标地址；MQTT 当前也复用为连接地址 |
+| isPassive | `active_push_config.is_passive` | 历史主动/被动标志 |
+| tenantId | `active_push_config.tenant_id` | 当前租户，服务端强制覆盖 |
+| configName | `active_push_config.config_name` | 配置名，当前无唯一约束 |
+| pushKey | `active_push_config.push_key` | 被动 WS 绑定键 |
+| mqttTopic/mqttUsername/mqttPassword/mqttQos | `active_push_config.mqtt_*` | MQTT 连接与订阅参数 |
+| routeScope | `active_push_config.route_scope` | DEVICE 或 TENANT |
+| recipientGroupId | `active_push_config.recipient_group_id` | 企业微信默认接收组的逻辑引用 |
+| deviceSns | `pushconfigid_devicesn` 关系表 | 非 `active_push_config` 列；按配置 ID 批量读写设备 SN |
 
 ## 14. 枚举与状态字典
 
@@ -751,9 +942,9 @@ activePushConfigId → config.queue... → 对应 Consumer
 
 企业微信接收人解析：
 
-1. 消息顶层或 `data` 中存在 `assigneeId`：必须是 JSON 数字且大于 0。
-2. 查当前租户启用用户绑定；命中后只发该企业微信 UserID。
-3. 没有 `assigneeId`：查 Push 配置 `recipientGroupId`。
+1. 工单创建/转派消息顶层或 `data` 中存在正整数 `assigneeId`：查当前租户启用用户绑定，命中后只发该企业微信 UserID。
+2. 普通报警没有 `assigneeId`，以及工单创建兼容模式明确携带数字 `0`：查 Push 配置 `recipientGroupId`。
+3. 工单转派不允许 `0/null`，Alarm 在产生事件前即拒绝请求；若绕过 Alarm 构造非法转派消息，Push 返回 `INVALID_ASSIGNEE`。
 4. 接收组必须存在、属于当前租户且启用；逐个成员查启用绑定。
 5. 未绑定成员记录失败；至少一个有效成员才有实际接收人。
 
@@ -761,7 +952,7 @@ activePushConfigId → config.queue... → 对应 Consumer
 
 | 码 | 含义 |
 |---|---|
-| INVALID_ASSIGNEE | assigneeId 缺失有效数值或不是 JSON 数字 |
+| INVALID_ASSIGNEE | assigneeId 为非数字/负数，或转派事件缺少正整数负责人；创建事件的 `0/null` 会回退接收组，不属于此错误 |
 | ASSIGNEE_NOT_BOUND | 负责人没有启用企业微信绑定 |
 | RECIPIENT_GROUP_REQUIRED | 普通消息配置未关联组 |
 | RECIPIENT_GROUP_DISABLED_OR_MISSING | 组不存在、禁用或跨租户 |
@@ -770,6 +961,8 @@ activePushConfigId → config.queue... → 对应 Consumer
 
 ## 16. 已知限制与停用接口
 
+### 16.1 业务接口限制
+
 - `/alarm/alarmAdd` 吞掉业务异常并可能返回空 2xx；必须回查。
 - `/alarm/export` 当前无实际导出实现。
 - CID 单条停止 Service 存在，但没有独立 HTTP Controller；使用 MQ `operCode=260`。
@@ -777,3 +970,51 @@ activePushConfigId → config.queue... → 对应 Consumer
 - MQTT、普通 WebSocket、pushKey WebSocket 没有真实客户端时只能标记未执行/BLOCKED。
 - 短信 `30`、邮件 `31` 只有枚举，当前配置服务没有对应 Consumer。
 - 示例中的用户、设备、模板和 ID 均为脱敏示例，执行时必须替换为当前租户通过合法接口取得的真实测试数据。
+
+### 16.2 Push 接口—实体—Schema 契约扫描结果
+
+本节是 2026-07-23 按当前 Controller、请求对象、Service、Mapper、增量 SQL、测试库实际结构和真实服务回归进行的复核结果。它描述当前实际边界；本轮代码增加工单闭环、候选负责人查询、工单查询索引，并修复 Alarm 配置 Mapper 对不存在的主表 `device_sn` 列的遗留引用。数据库只做只读核验，未执行迁移。
+
+已闭合的 Schema 问题：正式 `alarm_configure` 不含 `device_sn`，设备关系只存在于 `alarm_device_configure.device_sn`。当前基础列表 SQL 不再选择主表 `device_sn`；按设备筛选使用关系表 `EXISTS`；报警配置匹配从关系表读取并别名为 `device_sn`。基础详情/修改使用的 ResultMap 也不再读取 `device_sn`，仅明确带设备关系列的查询使用设备 ResultMap。`AlarmWorkorderMapperXmlContractTest` 已增加防回归断言，真实服务的配置详情和修改已通过，避免再次出现 `Unknown column 'device_sn'`或 ShardingSphere 读取缺失列异常。
+
+| 级别 | 已确认遗漏/差异 | 实际影响 | 当前使用约束 |
+|---|---|---|---|
+| 高 | 启用 ActivePushConfig 未统一硬校验 `messageType`、`pushChannelType`、`configName`，HTTP 未硬校验 `pushAddress` | 可能保存成功但无法路由或没有 Consumer | 调用方按 9.5 必填；启用后必须检查详情、队列和 Consumer |
+| 高 | `recipientGroupId=null` 在更新中表示保留旧值，Mapper 也跳过 NULL | 无法通过现有更新接口清空旧组；通道切换可留下引用并阻止删组 | 不原地切换通道；新建目标配置、验证后删除旧配置 |
+| 高 | 数据库事务提交后才刷新 Redis 路由和 RabbitMQ Consumer，刷新异常只写日志 | API 成功不保证运行态已经生效 | 每次启用/修改后做运行态核验；重启或重新保存可补偿 |
+| 高 | `/pushConfig/list` 和详情直接返回持久化实体，实体中的 `mqttPassword` 没有响应脱敏注解 | MQTT 配置密码可能通过查询接口明文返回；企业微信 Secret 已使用专用 View 脱敏，不受此项影响 | MQTT 上线前必须单独整改响应 DTO/脱敏；当前不要在共享环境查询、截图或导出真实 MQTT 密码 |
+| 中 | 企业微信 Push 配置保存时只校验组存在且启用，不校验 App、空组和成员绑定 | 错误延迟到实际投递，产生失败日志但没有实收 | 启用前依次读回 App、绑定、组成员和配置 |
+| 中 | Push 配置权限注解已注释，企业微信三个 Controller 也没有方法级权限注解 | 直连微服务时主要依赖上游认证头和租户上下文，没有细粒度权限门禁 | 正式环境只允许通过网关和合法 Token；不得向公网或非受控网络暴露微服务端口 |
+| 中 | 接收组 POST/PUT 共用 `saveGroup`，由 `groupId` 是否为空决定新增/修改 | PUT 漏传 ID 会新增；POST 错传 ID 会修改 | 严格遵守 POST 不传 ID、PUT 必传 ID，并在写后读回 |
+| 中 | `userIds=[]` 被代码和单元测试明确允许 | 启用空组可保存，但普通报警没有接收人 | 空组仅用于禁用草稿或失败检测；生产启用组至少一名有效绑定用户 |
+| 中 | 删除用户绑定不检查其是否仍属于接收组 | 组成员关系保留，后续投递记录未绑定失败 | 删除绑定前查询并调整相关接收组 |
+| 中 | ActivePushConfig 新增不返回生成 ID，`configName` 又没有唯一键 | 请求超时或重复提交后难以唯一回查，重复配置可能造成重复推送 | 配置名由调用方保证租户内唯一；新增前后查询，禁止无条件重试 |
+| 中 | 正式资源中只有企业微信增量 SQL，没有完整 Push 基础库 DDL | 不能从空库仅靠仓库 SQL 完成正式安装，也不能完整自动核对基础表 | 全新环境先导入正式 Push 基础库，再执行增量脚本和结构预检 |
+| 中 | `20260716_wecom_push_incremental.sql` 的建表、加列和加索引不是整体幂等 | 已执行环境盲目重跑会在对象已存在处失败 | 执行前查 `information_schema`；按实际状态逐项处理，不能依赖 DDL 整体回滚 |
+| 中 | 历史 `active_push_config.enabled` 是可空 `CHAR(5)`，实体是 Boolean；`mqtt_qos` 是 VARCHAR，实体是 Integer | 依赖 MyBatis/MySQL 隐式转换，非法历史值没有 Schema 保护 | 只通过接口写 `true/false` 和整数 QoS；上线前只读扫描异常值 |
+| 中 | `pushconfigid_devicesn` 没有主键、唯一键或外键 | 手工 SQL、历史数据或并发异常可产生重复/孤儿关系 | 配置关系只走接口；结构核验时检查重复 `(active_push_config_id,device_sn)` 和孤儿行 |
+| 中 | Mapper 使用 `pushConfigId_deviceSn`，真实结构快照表名是 `pushconfigid_devicesn` | 在大小写敏感的 MySQL/Linux 配置上可能找不到表 | 部署前核对 `lower_case_table_names` 和实际表名；不要另建大小写不同的重复表 |
+| 中 | `/alarm/list` 实体含 `alarmCid`，但当前分页 QueryWrapper 没有按该字段过滤 | 传 `alarmCid` 看似合法却不会缩小结果，自动化可能抓错内部 ID | 先按当前租户、设备和时间分页，再在响应 `rows` 中精确匹配 `alarmCid`；不能只取第一条 |
+| 中 | 工单创建/编辑/转派仍直接接收持久化实体，仅完成/关闭使用专用请求 DTO | 客户端可提交多余字段，边界依赖 Service 清除和服务端重查 | 严格按第 8 章请求字段；自动化必须验证多余的租户、状态、负责人字段不能越权生效 |
+| 中 | 候选负责人接口只检查 Push 企业微信配置、组和绑定，不校验业务用户是否仍存在/启用 | 可返回历史 userId，或返回 `wecomReachable=false` | 前端最终选人仍应结合用户目录；Alarm 保存正数负责人但不调用 Push 同步校验 |
+| 中 | `workorderConfigId` 只有字段、正数门禁和工单快照，仓库内没有对应模板表/Controller/Mapper 查询 | 任意正数都能通过当前创建门禁，不能证明模板真实存在 | 把它视为当前兼容关联值；模板功能落地前不要在测试报告写“模板内容已应用” |
+| 低 | 企业微信四张新表含 `del_flag`，候选查询已过滤配置/组/成员，现有应用、绑定、组 CRUD 仍以物理删除为主且部分列表不统一过滤逻辑删除 | 当前 API 物理删除数据正常；手工把 `del_flag=2` 可能在部分列表继续可见 | 继续只走接口删除；不要手工改逻辑删除标记，后续若统一软删除需同时修改全部 Mapper |
+| 低 | ActivePushConfig Controller 直接接收持久化实体，没有独立新增/修改 DTO 或 Bean Validation | 可写/只读边界主要靠 Service 和本文约定，字段长度错误多由数据库返回 | 调用方不得提交只读字段；后续低风险迭代再补 DTO/校验，不在本轮改接口 |
+
+### 16.3 当前测试证据边界
+
+当前聚焦和全量单元测试已覆盖工单租户/所有权、我的工单、批量图片回填、转派、完成、关闭、并发终态门禁，以及候选人的租户、DEVICE/TENANT 路由、批量去重和企业微信可达性。真实本地服务回归执行 78 个请求和 48 个断言，覆盖配置 CRUD、跨租户详情/转派、具体/未分配工单、负责人转派与完成、异常关闭、API 清理；另从真实 RabbitMQ `alarm_queue`发布消息并到达 HTTP 接收器。只读数据库证据显示三张工单状态为 `2/2/3`，`alarm_handle`均有说明、图片和实际处理人；HTTP 通道记录 8 次成功，企业微信假地址记录 8 次失败发送尝试。
+
+本轮按约定不重复要求企业微信客户端实收，企业微信失败记录只证明配置路由、动态 Consumer、接收人解析和发送尝试已经执行。当前测试库未执行 DDL，`idx_alarm_workorder_tenant_assignee_status`只读检查为不存在，正式发布前必须按第 3 号文档迁移并复核。以下字段和异常恢复契约仍应在部署环境的专项负向回归中保留证据：
+
+- `messageType` 缺失或超过 5 字符；
+- `pushChannelType` 缺失或未知；
+- HTTP `pushAddress` 缺失、带协议头或不可达；
+- `configName` 缺失、超过 50 字符或重复；
+- PUT 接收组漏传 `groupId`、POST 错传 `groupId`；
+- 空组、未绑定成员、删除仍在组内的绑定；
+- 更新显式清空 `recipientGroupId`；
+- ActivePushConfig 新增超时重试导致的重复配置；
+- 数据库写成功但 after-commit 运行态刷新失败。
+
+因此，“本地真实服务端闭环已验证”不等于“企业微信客户端实收、生产网关鉴权、生产迁移和所有字段负向契约均已验证”。后续回归应把上述项目作为独立用例，并同时断言 HTTP 业务码、数据库状态、Redis 路由、RabbitMQ 队列/Consumer 和最终投递日志。

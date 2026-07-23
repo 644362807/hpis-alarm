@@ -27,10 +27,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -82,7 +84,7 @@ public class AlarmWorkorderServiceImplTest {
         request.setAlarmId(200L);
         request.setWorkorderNo("WO-200");
 
-        when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle);
         when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
                 .thenReturn(Collections.singletonList(configure));
@@ -95,6 +97,7 @@ public class AlarmWorkorderServiceImplTest {
         assertEquals(1, result);
         assertEquals(Long.valueOf(900L), captor.getValue().getWorkorderConfigId());
         assertEquals(Long.valueOf(10L), captor.getValue().getTenantId());
+        assertEquals(Long.valueOf(0L), captor.getValue().getAssigneeId());
         assertEquals("0", captor.getValue().getDelFlag());
         verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
         verify(alarmHandleMapper, never()).updateAlarmHandle(any(AlarmHandle.class));
@@ -109,7 +112,7 @@ public class AlarmWorkorderServiceImplTest {
         AlarmWorkorder request = request();
         request.setAssigneeId(77L);
 
-        when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle);
         when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
                 .thenReturn(Collections.singletonList(configure));
@@ -151,7 +154,7 @@ public class AlarmWorkorderServiceImplTest {
         AlarmConfigure configure = configuredWorkorder(900L, null);
         AlarmWorkorder request = request();
 
-        when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
         when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
                 .thenReturn(Collections.singletonList(configure));
@@ -163,7 +166,7 @@ public class AlarmWorkorderServiceImplTest {
     }
 
     @Test
-    public void workorderMessageWithoutAssigneeFailsClosedInsteadOfFallingBackToGroup() {
+    public void workorderMessageWithoutAssigneeCarriesZeroForRecipientGroupFallback() {
         AlarmWorkorder workorder = request();
         workorder.setWorkorderId(300L);
 
@@ -180,7 +183,7 @@ public class AlarmWorkorderServiceImplTest {
         AlarmConfigure configure = configuredWorkorder(900L, "25");
         AlarmWorkorder request = request();
 
-        when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
         when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
                 .thenReturn(Collections.singletonList(configure));
@@ -198,7 +201,7 @@ public class AlarmWorkorderServiceImplTest {
         AlarmConfigure configure = configuredWorkorder(900L, "25");
         AlarmWorkorder request = request();
 
-        when(alarmMapper.selectAlarmById(200L)).thenReturn(alarm);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm);
         when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
         when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
                 .thenReturn(Collections.singletonList(configure));
@@ -278,6 +281,35 @@ public class AlarmWorkorderServiceImplTest {
         verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
     }
 
+    @Test
+    public void transferPushFailureAfterCommitDoesNotChangeSuccessfulTransferResult() {
+        ReflectionTestUtils.setField(service, "pushOpen", true);
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setWorkorderNo("WO-200");
+        existing.setTenantId(10L);
+        existing.setStatus("0");
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setAssigneeId(88L);
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+        when(workorderMapper.updateAssigneeByIdAndTenant(any(AlarmWorkorder.class), eq(10L))).thenReturn(1);
+        doThrow(new RuntimeException("mq unavailable"))
+                .when(pushProducer).sendCustomPushMessage(any(JSONObject.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        assertEquals(1, service.transferWorkorder(request));
+        for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+            synchronization.afterCommit();
+        }
+
+        verify(pushProducer).sendCustomPushMessage(any(JSONObject.class));
+    }
+
     @Test(expected = CustomException.class)
     public void transferWorkorderRejectsInvalidAssignee() {
         AlarmWorkorder request = new AlarmWorkorder();
@@ -288,12 +320,24 @@ public class AlarmWorkorderServiceImplTest {
     }
 
     @Test
-    public void completeWorkorderWritesFinalAlarmHandleWithWorkorderId() {
+    public void completeWorkorderUsesOwnedServerStateAndWritesFinalHandle() {
         AlarmWorkorder request = new AlarmWorkorder();
         request.setWorkorderId(300L);
-        request.setAlarmId(200L);
+        request.setAlarmId(999L);
+        request.setAssigneeId(888L);
+        request.setStatus("3");
         request.setHandleResult("现场已处理");
-        when(workorderMapper.updateAlarmWorkorder(any(AlarmWorkorder.class))).thenReturn(1);
+        request.setHandlePicture("/upload/workorder/300.jpg");
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setTenantId(10L);
+        existing.setAssigneeId(77L);
+        existing.setAssigneeName("负责人");
+        existing.setStatus("0");
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+        when(workorderMapper.completeByIdAndOwner(eq(300L), eq(10L), eq(77L),
+                eq("现场已处理"), any(), any())).thenReturn(1);
         when(alarmHandleMapper.updateAlarmHandle(any(AlarmHandle.class))).thenReturn(1);
 
         int result = service.completeWorkorder(request);
@@ -303,8 +347,104 @@ public class AlarmWorkorderServiceImplTest {
         assertEquals(1, result);
         assertEquals(Long.valueOf(300L), captor.getValue().getWorkorderId());
         assertEquals(Long.valueOf(200L), captor.getValue().getAlarmId());
+        assertEquals(Long.valueOf(77L), captor.getValue().getHandlerId());
         assertEquals("现场已处理", captor.getValue().getOpinion());
+        assertEquals("/upload/workorder/300.jpg", captor.getValue().getHandlePicture());
         assertEquals(HandleStatusEnums.ALARM_STATUS_ENUMS_1.getKey(), captor.getValue().getHandleStatus());
+    }
+
+    @Test(expected = CustomException.class)
+    public void completeWorkorderRejectsUnassignedWorkorder() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setHandleResult("现场已处理");
+        request.setHandlePicture("/upload/workorder/300.jpg");
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setTenantId(10L);
+        existing.setAssigneeId(0L);
+        existing.setStatus("0");
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+
+        service.completeWorkorder(request);
+    }
+
+    @Test(expected = CustomException.class)
+    public void completeWorkorderRequiresHandleResult() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setHandleResult(" ");
+
+        service.completeWorkorder(request);
+    }
+
+    @Test(expected = CustomException.class)
+    public void completeWorkorderRequiresHandlePicture() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setHandleResult("现场已处理");
+        request.setHandlePicture(" ");
+
+        service.completeWorkorder(request);
+    }
+
+    @Test
+    public void closeWorkorderRecordsReasonWithoutChangingAlarmHandleStatus() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setHandleResult("重复报警，异常关闭");
+        AlarmWorkorder existing = new AlarmWorkorder();
+        existing.setWorkorderId(300L);
+        existing.setAlarmId(200L);
+        existing.setTenantId(10L);
+        existing.setStatus("0");
+        when(workorderMapper.selectAlarmWorkorderByIdAndTenant(300L, 10L)).thenReturn(existing);
+        when(workorderMapper.closeByIdAndTenant(eq(300L), eq(10L),
+                eq("重复报警，异常关闭"), eq("负责人"), any())).thenReturn(1);
+        when(alarmHandleMapper.updateAlarmHandle(any(AlarmHandle.class))).thenReturn(1);
+
+        assertEquals(1, service.closeWorkorder(request));
+
+        ArgumentCaptor<AlarmHandle> captor = ArgumentCaptor.forClass(AlarmHandle.class);
+        verify(alarmHandleMapper).updateAlarmHandle(captor.capture());
+        assertEquals(Long.valueOf(200L), captor.getValue().getAlarmId());
+        assertEquals("重复报警，异常关闭", captor.getValue().getOpinion());
+        assertNull(captor.getValue().getHandleStatus());
+    }
+
+    @Test
+    public void allWorkorderQueryForcesCurrentTenant() {
+        AlarmWorkorder query = new AlarmWorkorder();
+        query.setTenantId(999L);
+        query.setPageNum(1);
+        query.setPageSize(20);
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<AlarmWorkorder> page =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 20);
+        when(workorderMapper.selectAlarmWorkorderPage(any(), eq(query), eq(10L))).thenReturn(page);
+
+        service.selectAlarmWorkorderPage(query);
+
+        assertEquals(Long.valueOf(10L), query.getTenantId());
+    }
+
+    @Test
+    public void genericUpdateClearsProtectedFields() {
+        AlarmWorkorder request = new AlarmWorkorder();
+        request.setWorkorderId(300L);
+        request.setTenantId(999L);
+        request.setAssigneeId(88L);
+        request.setStatus("2");
+        request.setTitle("新标题");
+        when(workorderMapper.updateEditableByIdAndTenant(any(AlarmWorkorder.class), eq(10L))).thenReturn(1);
+
+        assertEquals(1, service.updateWorkorder(request));
+
+        ArgumentCaptor<AlarmWorkorder> captor = ArgumentCaptor.forClass(AlarmWorkorder.class);
+        verify(workorderMapper).updateEditableByIdAndTenant(captor.capture(), eq(10L));
+        assertNull(captor.getValue().getTenantId());
+        assertNull(captor.getValue().getAssigneeId());
+        assertNull(captor.getValue().getStatus());
     }
 
     private Alarm alarm() {
@@ -353,6 +493,16 @@ public class AlarmWorkorderServiceImplTest {
         @Override
         protected Long currentTenantId() {
             return tenantId;
+        }
+
+        @Override
+        protected Long currentUserId() {
+            return 77L;
+        }
+
+        @Override
+        protected String currentUsername() {
+            return "负责人";
         }
     }
 }

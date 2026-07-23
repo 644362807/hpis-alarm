@@ -8,7 +8,6 @@
         <result property="alarmConfigureId"    column="alarm_configure_id" jdbcType="INTEGER"   />
         <result property="alarmConfigureName"    column="alarm_configure_name"    />
         <result property="alarmType"    column="alarm_type"    />
-        <result property="deviceSn"    column="device_sn"    />
         <result property="deviceAlarmControl"    column="device_alarm_control"    />
         <result property="alarmConfigurePeriod"    column="alarm_configure_period"    />
         <result property="delFlag"    column="del_flag"    />
@@ -27,13 +26,13 @@
         <collection property="alarmConfigureTimeList"
                     ofType="com.hpis.alarm.domain.AlarmConfigureTime" column="alarm_configure_id" select="queryList1">
         </collection>
-        <!-- 核心：把 device_id 绑定到集合 -->
-        <collection property="deviceSet" ofType="string">
-            <result column="device_sn"/>
-        </collection>
     </resultMap>
 
     <resultMap type="com.hpis.alarm.domain.AlarmConfigure" id="AlarmConfigureForAlarmResult" extends="AlarmConfigureResult" autoMapping="true">
+        <result property="deviceSn" column="device_sn"/>
+        <collection property="deviceSet" ofType="string">
+            <result column="device_sn"/>
+        </collection>
     </resultMap>
 
     <select id="queryList1" resultType="com.hpis.alarm.domain.AlarmConfigureTime" >
@@ -41,7 +40,7 @@
     </select>
 
     <sql id="selectAlarmConfigureVo">
-        select alarm_configure_id, alarm_configure_name, alarm_type, device_sn, device_alarm_control, alarm_configure_period, del_flag, create_time, create_by, update_time, update_by,repeat_alarm_duration,scene_type,tenant_id,repeat_cycle_number,push_enabled,push_message_type,workorder_push_message_type,workorder_config_id from alarm_configure
+        select alarm_configure_id, alarm_configure_name, alarm_type, device_alarm_control, alarm_configure_period, del_flag, create_time, create_by, update_time, update_by,repeat_alarm_duration,scene_type,tenant_id,repeat_cycle_number,push_enabled,push_message_type,workorder_push_message_type,workorder_config_id from alarm_configure
     </sql>
 
     <select id="selectAlarmConfigureList" parameterType="AlarmConfigure" resultMap="AlarmConfigureResult">
@@ -51,7 +50,14 @@
             del_flag = "0"
             <if test="alarmConfigureName != null  and alarmConfigureName != ''"> and alarm_configure_name like concat('%', #{alarmConfigureName}, '%')</if>
             <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
-            <if test="deviceSn != null  and deviceSn != ''"> and device_sn = #{deviceSn}</if>
+            <if test="deviceSn != null  and deviceSn != ''">
+                and exists (
+                    select 1
+                    from alarm_device_configure adc
+                    where adc.alarm_configure_id = alarm_configure.alarm_configure_id
+                      and adc.device_sn = #{deviceSn}
+                )
+            </if>
             <if test="deviceAlarmControl != null  and deviceAlarmControl != ''"> and device_alarm_control = #{deviceAlarmControl}</if>
             <if test="alarmConfigurePeriod != null  and alarmConfigurePeriod != ''"> and alarm_configure_period = #{alarmConfigurePeriod}</if>
             <if test="repeatAlarmDuration != null  "> and repeat_alarm_duration = #{repeatAlarmDuration}</if>
@@ -70,13 +76,13 @@
     </select>
 
     
-    <select id="selectDeviceConfigureByCustomer" resultMap="AlarmConfigureResult">
-        select d.device_sn,c.repeat_cycle_number,c.alarm_configure_id,alarm_configure_name,alarm_type,device_alarm_control,alarm_configure_period,repeat_alarm_duration,scene_type,tenant_id,c.push_enabled,c.push_message_type,c.workorder_push_message_type,c.workorder_config_id
+    <select id="selectDeviceConfigureByCustomer" resultMap="AlarmConfigureForAlarmResult">
+        select d.device_sn,c.repeat_cycle_number,c.alarm_configure_id,c.alarm_configure_name,c.alarm_type,c.device_alarm_control,c.alarm_configure_period,c.repeat_alarm_duration,c.scene_type,c.tenant_id,c.push_enabled,c.push_message_type,c.workorder_push_message_type,c.workorder_config_id
         from  alarm_configure c left join alarm_device_configure d on c.alarm_configure_id = d.alarm_configure_id
         <where>
             <if test="alarmConfigureName != null  and alarmConfigureName != ''"> and alarm_configure_name like concat('%', #{alarmConfigureName}, '%')</if>
             <if test="alarmType != null  and alarmType != ''"> and alarm_type = #{alarmType}</if>
-            <if test="deviceSn != null  and deviceSn != ''"> and device_sn = #{deviceSn}</if>
+            <if test="deviceSn != null  and deviceSn != ''"> and d.device_sn = #{deviceSn}</if>
             <if test="deviceAlarmControl != null  and deviceAlarmControl != ''"> and device_alarm_control = #{deviceAlarmControl}</if>
             <if test="alarmConfigurePeriod != null  and alarmConfigurePeriod != ''"> and alarm_configure_period = #{alarmConfigurePeriod}</if>
             <if test="sceneType != null  and sceneType != ''"> and scene_type = #{sceneType}</if>
@@ -86,12 +92,12 @@
     </select>
 
     <select id="selectEnabledForAlarm" resultMap="AlarmConfigureForAlarmResult">
-        select c.alarm_configure_id, c.alarm_configure_name, c.alarm_type, c.device_sn,
+        select c.alarm_configure_id, c.alarm_configure_name, c.alarm_type,
                c.device_alarm_control, c.alarm_configure_period, c.del_flag, c.create_time,
                c.create_by, c.update_time, c.update_by, c.repeat_alarm_duration, c.scene_type,
                c.tenant_id, c.repeat_cycle_number, c.push_enabled, c.push_message_type,
                c.workorder_push_message_type, c.workorder_config_id,
-               adc.device_sn as matched_device_sn
+               adc.device_sn as device_sn
         from alarm_configure c
         join alarm_device_configure adc
           on adc.alarm_configure_id = c.alarm_configure_id

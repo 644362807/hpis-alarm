@@ -35,6 +35,7 @@ public class AlarmConfigure extends BaseEntity
     private String alarmType;
 
     /** 设备序列号 */
+    @TableField(exist = false)
     @Excel(name = "设备序列号")
     private String deviceSn;
 
