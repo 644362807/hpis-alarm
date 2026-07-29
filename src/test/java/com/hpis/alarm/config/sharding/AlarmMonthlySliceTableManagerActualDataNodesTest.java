@@ -10,8 +10,10 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.text.SimpleDateFormat;
 import java.time.LocalDate;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -21,11 +23,51 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class AlarmMonthlySliceTableManagerActualDataNodesTest {
+
+    @Test
+    public void shouldReturnAllTablesWhenTimeRangeIsMissing() {
+        Set<String> tables = monthlyTables();
+        AlarmMonthlySliceTableManager manager = managerWithTables(tables);
+
+        assertThat(manager.listTablesByTimeRange("alarm", null, null)).isEqualTo(tables);
+    }
+
+    @Test
+    public void shouldKeepStartMonthAndLaterMonthsForLowerBoundOnly() throws Exception {
+        AlarmMonthlySliceTableManager manager = managerWithTables(monthlyTables());
+
+        Set<String> routed = manager.listTablesByTimeRange("alarm", time("2026-07-15 00:00:00"), null);
+
+        assertThat(routed).containsExactly(
+                "alarm_202607_00", "alarm_202607_01", "alarm_202608_00");
+    }
+
+    @Test
+    public void shouldKeepEndMonthAndEarlierMonthsForUpperBoundOnly() throws Exception {
+        AlarmMonthlySliceTableManager manager = managerWithTables(monthlyTables());
+
+        Set<String> routed = manager.listTablesByTimeRange("alarm", null, time("2026-07-15 00:00:00"));
+
+        assertThat(routed).containsExactly(
+                "alarm_202606_00", "alarm_202607_00", "alarm_202607_01");
+    }
+
+    @Test
+    public void shouldKeepAllSlicesInMonthsCoveredByBothBounds() throws Exception {
+        AlarmMonthlySliceTableManager manager = managerWithTables(monthlyTables());
+
+        Set<String> routed = manager.listTablesByTimeRange(
+                "alarm", time("2026-07-01 00:00:00"), time("2026-07-31 23:59:59"));
+
+        assertThat(routed).containsExactly("alarm_202607_00", "alarm_202607_01");
+    }
 
     @Test
     public void shouldRegisterHistoryActualTablesCurrentMonthAllSlicesAndNextMonthWarmSlices() {
@@ -215,5 +257,24 @@ public class AlarmMonthlySliceTableManagerActualDataNodesTest {
         ResultSet resultSet = mock(ResultSet.class);
         when(resultSet.next()).thenReturn(exists);
         return resultSet;
+    }
+
+    private AlarmMonthlySliceTableManager managerWithTables(Set<String> tables) {
+        AlarmMonthlySliceTableManager manager = spy(
+                new AlarmMonthlySliceTableManager(null, new AlarmShardProperties()));
+        doReturn(tables).when(manager).listAllShardTables("alarm");
+        return manager;
+    }
+
+    private Set<String> monthlyTables() {
+        return new LinkedHashSet<>(Arrays.asList(
+                "alarm_202606_00",
+                "alarm_202607_00",
+                "alarm_202607_01",
+                "alarm_202608_00"));
+    }
+
+    private Date time(String value) throws Exception {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(value);
     }
 }

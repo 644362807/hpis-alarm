@@ -38,7 +38,7 @@
        <where>
         ${ew.sqlSegment}
        </where>
-        order by a.create_time desc
+        order by a.alarm_beginTime desc, a.alarm_id desc
     </select>
 
     <select id="selectAlarmList"  resultMap="AlarmResult" >
@@ -52,7 +52,7 @@
             <if test="alarmBegintime != null "> and a.alarm_beginTime > #{alarmBegintime} </if>
             <if test="alarmEndtime != null "> and  #{alarmEndtime} > a.alarm_beginTime</if>
         </where>
-        order by a.create_time desc
+        order by a.alarm_beginTime desc, a.alarm_id desc
     </select>
 
     <select id="selectAlarmById" parameterType="Long" resultMap="AlarmResult">

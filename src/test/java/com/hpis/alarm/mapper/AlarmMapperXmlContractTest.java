@@ -23,6 +23,16 @@ public class AlarmMapperXmlContractTest {
     }
 
     @Test
+    public void alarmListsUseStableBeginTimeAndIdOrdering() throws Exception {
+        String xml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
+
+        assertTrue(fragmentById(xml, "selectAlarmListPage")
+                .contains("order by a.alarm_beginTime desc, a.alarm_id desc"));
+        assertTrue(fragmentById(xml, "selectAlarmList")
+                .contains("order by a.alarm_beginTime desc, a.alarm_id desc"));
+    }
+
+    @Test
     public void extensionDeleteStatementsRemainLogicalDeletes() throws Exception {
         String electrolyticXml = normalizeWhitespace(
                 readResource("/mapper/alarm/AlarmElectrolyticCellMapper.xml")).toLowerCase();

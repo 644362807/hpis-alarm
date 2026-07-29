@@ -103,20 +103,18 @@ public class AlarmServicePageTest {
 
     @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
-    public void selectAlarmPageDefaultsToLastThirtyDaysWhenBothTimesAreMissing() {
+    public void selectAlarmPageAddsNoTimeConditionWhenBothTimesAreMissing() {
         Alarm request = emptyRequest();
         stubEmptyPage();
 
         service.selectAlarmPage(request);
 
         QueryWrapper<?> wrapper = captureWrapper();
-        Date expectedStart = DateUtil.offsetDay(FIXED_NOW, -30);
         String sql = wrapper.getSqlSegment();
         Map<String, Object> values = wrapper.getParamNameValuePairs();
-        assertTrue(sql.contains("a.alarm_beginTime >="));
-        assertTrue(sql.contains("a.alarm_beginTime <="));
-        assertTrue(values.containsValue(expectedStart));
-        assertTrue(values.containsValue(FIXED_NOW));
+        assertFalse(sql.contains("a.alarm_beginTime"));
+        assertFalse(values.containsValue(DateUtil.offsetDay(FIXED_NOW, -30)));
+        assertFalse(values.containsValue(FIXED_NOW));
     }
 
     @Test

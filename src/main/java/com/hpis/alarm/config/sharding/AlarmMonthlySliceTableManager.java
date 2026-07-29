@@ -193,22 +193,37 @@ public class AlarmMonthlySliceTableManager {
             return listAllShardTables(logicTableName);
         }
 
-        Date start = startTime == null ? endTime : startTime;
-        Date end = endTime == null ? startTime : endTime;
-        YearMonth startMonth = toYearMonth(start);
-        YearMonth endMonth = toYearMonth(end);
-        if (startMonth.isAfter(endMonth)) {
+        YearMonth startMonth = startTime == null ? null : toYearMonth(startTime);
+        YearMonth endMonth = endTime == null ? null : toYearMonth(endTime);
+        if (startMonth != null && endMonth != null && startMonth.isAfter(endMonth)) {
             YearMonth tmp = startMonth;
             startMonth = endMonth;
             endMonth = tmp;
         }
 
-        Set<String> result = new LinkedHashSet<>();
-        for (YearMonth month = startMonth; !month.isAfter(endMonth); month = month.plusMonths(1)) {
-            String monthKey = month.format(MONTH_FORMATTER);
-            result.addAll(listTablesByMonth(logicTableName, monthKey));
+        final YearMonth lowerMonth = startMonth;
+        final YearMonth upperMonth = endMonth;
+        Set<String> allTables = listAllShardTables(logicTableName);
+        Set<String> result = allTables.stream()
+                .filter(tableName -> isWithinMonthRange(logicTableName, tableName, lowerMonth, upperMonth))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        return result.isEmpty() ? allTables : result;
+    }
+
+    private boolean isWithinMonthRange(String logicTableName, String tableName,
+                                       YearMonth startMonth, YearMonth endMonth) {
+        String prefix = logicTableName + "_";
+        if (tableName == null || !tableName.startsWith(prefix) || tableName.length() < prefix.length() + 6) {
+            return false;
         }
-        return result.isEmpty() ? listAllShardTables(logicTableName) : result;
+        try {
+            YearMonth tableMonth = YearMonth.parse(
+                    tableName.substring(prefix.length(), prefix.length() + 6), MONTH_FORMATTER);
+            return (startMonth == null || !tableMonth.isBefore(startMonth))
+                    && (endMonth == null || !tableMonth.isAfter(endMonth));
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     /**
