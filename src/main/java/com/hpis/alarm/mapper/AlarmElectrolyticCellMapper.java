@@ -8,6 +8,7 @@ import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmElectrolyticCell;
 import com.hpis.alarm.dto.AlarmDetailEc;
 import com.hpis.alarm.dto.AlarmElectrolyticCellRecord;
+import com.hpis.alarm.dto.AlarmQueryParameter;
 import com.hpis.alarm.dto.RepeatAlarmDto;
 import org.apache.ibatis.annotations.Param;
 
@@ -163,5 +164,5 @@ public interface AlarmElectrolyticCellMapper  extends BaseMapper<AlarmElectrolyt
      * @param alarmElectrolyticCell 电解槽关联报警
      * @return 电解槽关联报警集合
      */
-    public List<AlarmElectrolyticCellDTO> selectNewAlarmElectrolyticCellList();
+    public List<AlarmElectrolyticCellDTO> selectNewAlarmElectrolyticCellList(AlarmQueryParameter alarmQueryParameter);
 }

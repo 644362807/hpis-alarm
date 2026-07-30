@@ -29,6 +29,8 @@ import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
 import com.hpis.alarm.service.support.AlarmDeviceResolver;
 import com.hpis.alarm.service.support.AlarmBatchChunker;
+import com.hpis.alarm.service.support.AlarmQueryTimeNormalizer;
+import com.hpis.alarm.service.support.AlarmQueryTimeNormalizer.EffectiveTimeRange;
 import com.hpis.alarm.service.support.DisconnectAlarmDeduplicator;
 import com.hpis.alarm.transfer.RabbitMQAlarmPushProducer;
 
@@ -225,21 +227,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				.eq(alarm.getDeviceSn() != null, "a.device_sn", alarm.getDeviceSn())
 				.eq(alarm.getTenantId() != null, "a.tenant_id", alarm.getTenantId())
 				.like(StringUtils.isNotBlank(alarm.getTargetName()), "a.target_name", alarm.getTargetName());
-		boolean useDefaultTimeRange = alarm.getStartTime() == null && alarm.getEndTime() == null;
-		if (useDefaultTimeRange) {
-			Date defaultEndTime = currentTime();
-			Date defaultStartTime = DateUtil.offsetDay(defaultEndTime, -30);
-			queryWrapper.ge("a.alarm_beginTime", defaultStartTime)
-					.le("a.alarm_beginTime", defaultEndTime);
-		} else {
-			// 调用方显式传入单边或双边时间时，保持现有开放区间语义。
-			if (alarm.getStartTime() != null) {
-				queryWrapper.gt("a.alarm_beginTime", alarm.getStartTime());
-			}
-			if (alarm.getEndTime() != null) {
-				queryWrapper.lt("a.alarm_beginTime", alarm.getEndTime());
-			}
-		}
+		EffectiveTimeRange timeRange = normalizeAlarmQueryTime(
+				"selectAlarmPage", alarm.getStartTime(), alarm.getEndTime());
+		applyAlarmQueryTime(queryWrapper, timeRange, "a.alarm_beginTime");
 
 		Page<Alarm> alarmPage = this.baseMapper.selectAlarmListPage(new Page<>(alarm.getPageNum(), alarm.getPageSize()), queryWrapper);
 		List<Alarm> records = alarmPage.getRecords();
@@ -294,11 +284,35 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		return DateUtils.getNowDate();
 	}
 
+	private EffectiveTimeRange normalizeAlarmQueryTime(String queryMethod, Date startTime, Date endTime) {
+		EffectiveTimeRange timeRange = AlarmQueryTimeNormalizer.normalize(startTime, endTime, currentTime());
+		if (timeRange.isFutureEndClamped()) {
+			log.warn("alarm query future end time clamped, queryMethod={}, effectiveStartTime={}, effectiveEndTime={}",
+					queryMethod, timeRange.getStartTime(), timeRange.getEndTime());
+		} else if (timeRange.isInvalidRange()) {
+			log.warn("alarm query invalid time range, queryMethod={}, effectiveStartTime={}, effectiveEndTime={}",
+					queryMethod, timeRange.getStartTime(), timeRange.getEndTime());
+		} else if (timeRange.isDefaultEndApplied()) {
+			log.debug("alarm query default end time applied, queryMethod={}, effectiveStartTime={}, effectiveEndTime={}",
+					queryMethod, timeRange.getStartTime(), timeRange.getEndTime());
+		}
+		return timeRange;
+	}
+
+	private void applyAlarmQueryTime(QueryWrapper<Alarm> queryWrapper,
+								 EffectiveTimeRange timeRange, String timeColumn) {
+		Date startTime = timeRange.getStartTime();
+		if (startTime != null) {
+			queryWrapper.gt(timeColumn, startTime);
+		}
+		queryWrapper.lt(timeColumn, timeRange.getEndTime());
+	}
+
 //	void sceneTypeShowHandle(Alarm alarm)
 
 	@Override
 	public Long countAlarm(Alarm alarm) {
-		Long currentTenantId = SecurityUtils.getCurrentTenantId();
+		Long currentTenantId = currentTenantId();
 		alarm.setTenantId(currentTenantId);
 		QueryWrapper<Alarm> queryWrapper = new QueryWrapper<>();
 		queryWrapper.eq(StringUtils.isNotBlank(alarm.getSceneType()),"scene_type",alarm.getSceneType());
@@ -307,15 +321,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		queryWrapper.eq(StringUtils.isNotBlank(alarm.getAlarmStatus()),"alarm_status",alarm.getAlarmStatus());
 		queryWrapper.eq(alarm.getDeviceSn()!=null,"device_sn",alarm.getDeviceSn());
 		queryWrapper.eq(alarm.getTenantId()!=null,"tenant_id",alarm.getTenantId());
-		// 添加开始时间条件
-		if (alarm.getStartTime() != null) {
-			queryWrapper.gt("alarm_beginTime", alarm.getStartTime());
-		}
-
-		// 添加结束时间条件
-		if (alarm.getEndTime() != null) {
-			queryWrapper.lt( "alarm_beginTime",alarm.getEndTime());
-		}
+		EffectiveTimeRange timeRange = normalizeAlarmQueryTime(
+				"countAlarm", alarm.getStartTime(), alarm.getEndTime());
+		applyAlarmQueryTime(queryWrapper, timeRange, "alarm_beginTime");
 		Long aLong = alarmMapper.selectCount(queryWrapper);
 		return aLong;
 	}
@@ -2187,6 +2195,38 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	}
 
+	private AlarmQueryParameter normalizeAlarmQueryParameter(String queryMethod,
+													 AlarmQueryParameter source) {
+		AlarmQueryParameter target = copyAlarmQueryParameter(source);
+		EffectiveTimeRange timeRange = normalizeAlarmQueryTime(
+				queryMethod, target.getStartTime(), target.getEndTime());
+		target.setStartTime(timeRange.getStartTime());
+		target.setEndTime(timeRange.getEndTime());
+		return target;
+	}
+
+	private AlarmQueryParameter copyAlarmQueryParameter(AlarmQueryParameter source) {
+		AlarmQueryParameter target = new AlarmQueryParameter();
+		if (source == null) {
+			return target;
+		}
+		target.setAlarmType(source.getAlarmType());
+		target.setStartTime(copyDate(source.getStartTime()));
+		target.setEndTime(copyDate(source.getEndTime()));
+		target.setDeviceSn(source.getDeviceSn());
+		target.setSceneType(source.getSceneType());
+		target.setTenantId(source.getTenantId());
+		target.setAlarmRank(source.getAlarmRank());
+		target.setAlarmStatus(source.getAlarmStatus());
+		target.setHandleStatus(source.getHandleStatus());
+		target.setDeviceIds(source.getDeviceIds() == null ? null : source.getDeviceIds().clone());
+		return target;
+	}
+
+	private Date copyDate(Date value) {
+		return value == null ? null : new Date(value.getTime());
+	}
+
 	/**
 	 * 通用
 	 * 根据用户 行业 时间 统计报警类型
@@ -2195,30 +2235,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	 */
 	@Override
 	public  Map<String,Long> alarmModeCount(AlarmQueryParameter alarmQueryParameter){
+		AlarmQueryParameter effectiveQuery = normalizeAlarmQueryParameter(
+				"alarmModeCount", alarmQueryParameter);
+		List<Map<String, Long>> maps = alarmMapper.countAlarmMode(effectiveQuery);
 
-		Date endDate = alarmQueryParameter.getEndTime();
-
-// 使用 Calendar 设置时间为当天的最大时间
-		Calendar calendar = Calendar.getInstance();
-		// 将 endDate 设置到 Calendar 中
-		calendar.setTime(endDate);
-
-// 设置时间为当天的最大时间
-		calendar.set(Calendar.HOUR_OF_DAY, 23);
-		calendar.set(Calendar.MINUTE, 59);
-		calendar.set(Calendar.SECOND, 59);
-		calendar.set(Calendar.MILLISECOND, 999);
-
-// 更新 endDate 对象
-		endDate.setTime(calendar.getTimeInMillis());
-		alarmQueryParameter.setEndTime(endDate);
-//		List<Alarm> alarmList = alarmMapper.selectAlarmByQueryParameter(alarmQueryParameter,userInfo.getCustomerId());
-
-
-		List<Map<String, Long>> maps = alarmMapper.countAlarmMode(alarmQueryParameter);
-
-		alarmQueryParameter.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_0.getKey());
-		List<Map<String, Long>> maps1 = alarmMapper.countNoHandelOfDay(alarmQueryParameter);
+		effectiveQuery.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_0.getKey());
+		List<Map<String, Long>> maps1 = alarmMapper.countNoHandelOfDay(effectiveQuery);
 
 		Map<String, Long> map1 = new LinkedHashMap<>();
 
@@ -2248,35 +2270,16 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Override
 	public  Map<YearMonth, Long>  alarmTimeCountByMonth(AlarmQueryParameter alarmQueryParameter){
-		LocalDate today = LocalDate.now();
-		// 今天的最大时刻是今天的最后一刻，即 23:59:59.999
-		LocalDateTime todayMaxMoment = today.atTime(LocalTime.MAX);
-
-		// 获取两个月前的第一个时刻
-		LocalDate twoMonthsAgoFirst = LocalDate.now().minusMonths(2).withDayOfMonth(1);
+		Date queryNow = currentTime();
+		LocalDate queryDate = queryNow.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+		LocalDate twoMonthsAgoFirst = queryDate.minusMonths(2).withDayOfMonth(1);
 		LocalDateTime twoMonthsAgoFirstMoment = twoMonthsAgoFirst.atStartOfDay();
 
-
-		Date endDate = Date.from(todayMaxMoment.atZone(ZoneId.systemDefault()).toInstant());
+		Date endDate = copyDate(queryNow);
 		Date startDate = Date.from(twoMonthsAgoFirstMoment.atZone(ZoneId.systemDefault()).toInstant());
-		alarmQueryParameter.setStartTime(startDate);
-		alarmQueryParameter.setEndTime(endDate);
-
-//		Date endDate = alarmQueryParameter.getEndTime();
-//		if (endDate != null) {
-//			Calendar calendar = Calendar.getInstance();
-//			calendar.setTime(endDate);
-//			calendar.set(Calendar.HOUR_OF_DAY, 23);
-//			calendar.set(Calendar.MINUTE, 59);
-//			calendar.set(Calendar.SECOND, 59);
-//			calendar.set(Calendar.MILLISECOND, 999);
-//
-//			endDate.setTime(calendar.getTimeInMillis());
-//
-//		}
-
-//		Date startDate = alarmQueryParameter.getStartTime();
-//		endDate = alarmQueryParameter.getEndTime();
+		AlarmQueryParameter effectiveQuery = copyAlarmQueryParameter(alarmQueryParameter);
+		effectiveQuery.setStartTime(copyDate(startDate));
+		effectiveQuery.setEndTime(copyDate(endDate));
 
 		List<YearMonth> expectedMonths = DateUtils.getMonthsBetweenDates(startDate, endDate);
 
@@ -2287,7 +2290,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		}
 
 
-		List<Alarm> dataList = selectAlarmByQueryParameter(alarmQueryParameter);
+		List<Alarm> dataList = selectAlarmByQueryParameter(effectiveQuery);
 
 
 
@@ -2332,28 +2335,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	 */
 	@Override
 	public  Map<String,Long> alarmCountByTime(AlarmQueryParameter alarmQueryParameter) {
-
-		Date endDate = alarmQueryParameter.getEndTime();
-
-// 使用 Calendar 设置时间为当天的最大时间
-		Calendar calendar = Calendar.getInstance();
-		// 将 endDate 设置到 Calendar 中
-		calendar.setTime(endDate);
-
-// 设置时间为当天的最大时间
-		calendar.set(Calendar.HOUR_OF_DAY, 23);
-		calendar.set(Calendar.MINUTE, 59);
-		calendar.set(Calendar.SECOND, 59);
-		calendar.set(Calendar.MILLISECOND, 999);
-
-// 更新 endDate 对象
-		endDate.setTime(calendar.getTimeInMillis());
-		alarmQueryParameter.setEndTime(endDate);
-
-//		List<Alarm> alarmList = alarmMapper.selectAlarmByQueryParameter(alarmQueryParameter, userInfo.getCustomerId());
-
-
-		List<Map<String, Long>> maps = alarmMapper.alarmCountByTime(alarmQueryParameter);
+		AlarmQueryParameter effectiveQuery = normalizeAlarmQueryParameter(
+				"alarmCountByTime", alarmQueryParameter);
+		List<Map<String, Long>> maps = alarmMapper.alarmCountByTime(effectiveQuery);
 
 		Map<String, Long> map1 = new HashMap<>();
 		if (maps.get(0)!=null) {
@@ -2367,7 +2351,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		}
 
 		//统计当前报警的点位数量
-		map1.put("currentAlarmCount", (long) iAlarmElectrolyticCellService.selectAlarmListByEC().size());
+		map1.put("currentAlarmCount", (long) iAlarmElectrolyticCellService.selectAlarmListByEC(effectiveQuery).size());
 		return map1;
 	}
 
@@ -2379,25 +2363,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 	 */
 	@Override
 	public  Map<String, String> AlarmOfDay(AlarmQueryParameter alarmQueryParameter){
-		Date endDate = alarmQueryParameter.getEndTime();
-
-// 使用 Calendar 设置时间为当天的最大时间
-		Calendar calendar = Calendar.getInstance();
-		// 将 endDate 设置到 Calendar 中
-		calendar.setTime(endDate);
-
-// 设置时间为当天的最大时间
-		calendar.set(Calendar.HOUR_OF_DAY, 23);
-		calendar.set(Calendar.MINUTE, 59);
-		calendar.set(Calendar.SECOND, 59);
-		calendar.set(Calendar.MILLISECOND, 999);
-
-// 更新 endDate 对象
-		endDate.setTime(calendar.getTimeInMillis());
-		alarmQueryParameter.setEndTime(endDate);
-
-
-		List<Map<String, Long>> maps = alarmMapper.alarmOfDay(alarmQueryParameter);
+		AlarmQueryParameter effectiveQuery = normalizeAlarmQueryParameter(
+				"AlarmOfDay", alarmQueryParameter);
+		List<Map<String, Long>> maps = alarmMapper.alarmOfDay(effectiveQuery);
 
 
 

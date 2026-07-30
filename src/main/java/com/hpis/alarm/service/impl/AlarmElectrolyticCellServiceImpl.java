@@ -12,6 +12,7 @@ import com.hpis.alarm.config.AlarmBatchProperties;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.domain.AlarmElectrolyticCell;
 import com.hpis.alarm.dto.AlarmDetailEc;
+import com.hpis.alarm.dto.AlarmQueryParameter;
 import com.hpis.alarm.dto.RepeatAlarmDto;
 import com.hpis.alarm.enums.AlarmTypeEnums;
 import com.hpis.alarm.mapper.AlarmElectrolyticCellMapper;
@@ -988,8 +989,12 @@ return alarmElectrolyticCellDTOList;
 
     @Override
     public List<AlarmElectrolyticCellDTO> selectAlarmListByEC() {
-        List<AlarmElectrolyticCellDTO> dtos = alarmElectrolyticCellMapper.selectNewAlarmElectrolyticCellList();
-        return dtos;
+        return selectAlarmListByEC(new AlarmQueryParameter());
+    }
+
+    @Override
+    public List<AlarmElectrolyticCellDTO> selectAlarmListByEC(AlarmQueryParameter alarmQueryParameter) {
+        return alarmElectrolyticCellMapper.selectNewAlarmElectrolyticCellList(alarmQueryParameter);
     }
 
     @Override

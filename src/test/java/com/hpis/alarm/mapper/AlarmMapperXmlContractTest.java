@@ -33,6 +33,36 @@ public class AlarmMapperXmlContractTest {
     }
 
     @Test
+    public void alarmCountByTimeSupportsMissingStartTime() throws Exception {
+        String xml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
+        String select = fragmentById(xml, "alarmCountByTime");
+
+        assertTrue(select.contains("COUNT(*) AS total_count_custom_range"));
+        assertFalse(select.contains("SUM(CASE WHEN alarm_beginTime > #{alarm.startTime}"));
+        assertTrue(select.contains("alarm_beginTime &lt; #{alarm.endTime}"));
+    }
+
+    @Test
+    public void alarmStatisticsKeepShardColumnOnLeftOfEndPredicate() throws Exception {
+        String xml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
+        String electrolyticXml = normalizeWhitespace(
+                readResource("/mapper/alarm/AlarmElectrolyticCellMapper.xml"));
+
+        assertTrue(fragmentById(xml, "selectAlarmByQueryParameter")
+                .contains("a.alarm_beginTime &lt; #{endTime}"));
+        assertTrue(fragmentById(xml, "alarmOfDay")
+                .contains("alarm_beginTime &lt; #{endTime}"));
+        assertTrue(fragmentById(xml, "countNoHandelOfDay")
+                .contains("a.alarm_beginTime &lt; #{endTime}"));
+        assertTrue(fragmentById(xml, "countAlarmMode")
+                .contains("alarm_beginTime &lt; #{endTime}"));
+        assertTrue(fragmentById(xml, "alarmCountByTime")
+                .contains("alarm_beginTime &lt; #{alarm.endTime}"));
+        assertTrue(fragmentById(electrolyticXml, "selectNewAlarmElectrolyticCellList")
+                .contains("a.alarm_beginTime &lt; #{endTime}"));
+    }
+
+    @Test
     public void extensionDeleteStatementsRemainLogicalDeletes() throws Exception {
         String electrolyticXml = normalizeWhitespace(
                 readResource("/mapper/alarm/AlarmElectrolyticCellMapper.xml")).toLowerCase();

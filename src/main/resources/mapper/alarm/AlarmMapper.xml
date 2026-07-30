@@ -50,7 +50,7 @@
             <if test="alarmRank != null  and alarmRank != ''"> and alarm_rank = #{alarmRank}</if>
             <if test="alarmStatus != null  and alarmStatus != ''"> and alarm_status = #{alarmStatus}</if>
             <if test="alarmBegintime != null "> and a.alarm_beginTime > #{alarmBegintime} </if>
-            <if test="alarmEndtime != null "> and  #{alarmEndtime} > a.alarm_beginTime</if>
+            <if test="alarmEndtime != null "> and a.alarm_beginTime &lt; #{alarmEndtime}</if>
         </where>
         order by a.alarm_beginTime desc, a.alarm_id desc
     </select>
@@ -90,7 +90,7 @@
             <if test="tenantId != null "> and tenant_id = #{tenantId}</if>
             <if test="alarmStatus != null  and alarmStatus != ''"> and alarm_status = #{alarmStatus}</if>
             <if test="startTime != null "> and a.alarm_beginTime > #{startTime} </if>
-            <if test="endTime != null "> and  #{endTime} > a.alarm_beginTime</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt; #{endTime}</if>
         </where>
     </select>
 
@@ -102,7 +102,7 @@
         FROM  alarm
         <where>
             <if test="startTime != null "> and alarm_beginTime > #{startTime} </if>
-            <if test="endTime != null "> and  #{endTime} > alarm_beginTime</if>
+            <if test="endTime != null "> and alarm_beginTime &lt; #{endTime}</if>
             <if test="tenantId != null "> and tenant_id = #{tenantId}</if>
         </where>
         GROUP BY DATE(alarm_beginTime)
@@ -124,7 +124,7 @@
             a.del_flag = '0'
             <if test="handleStatus !=null and handleStatus != ''"> and  #{handleStatus} = d.handle_status</if>
             <if test="startTime != null "> and a.alarm_beginTime &gt; #{startTime} </if>
-            <if test="endTime != null "> and  #{endTime} &gt; a.alarm_beginTime</if>
+            <if test="endTime != null "> and a.alarm_beginTime &lt; #{endTime}</if>
         </where>
     </select>
 
@@ -137,7 +137,7 @@
         <where>
             del_flag = '0'
             <if test="startTime != null "> and alarm_beginTime > #{startTime} </if>
-            <if test="endTime != null "> and  #{endTime} > alarm_beginTime</if>
+            <if test="endTime != null "> and alarm_beginTime &lt; #{endTime}</if>
      </where>
 </select>
 
@@ -145,13 +145,13 @@
 
     <select id="alarmCountByTime" resultType="map">
         SELECT
-        SUM(CASE WHEN alarm_beginTime > #{alarm.startTime} AND #{alarm.endTime} > alarm_beginTime  THEN 1 ELSE 0 END) AS total_count_custom_range,
+        COUNT(*) AS total_count_custom_range,
         SUM(CASE WHEN DATE(alarm_beginTime) = CURDATE() THEN 1 ELSE 0 END) AS count_today
         FROM
         alarm
         <where>
             <if test="alarm.startTime != null "> alarm_beginTime &gt; #{alarm.startTime} </if>
-            <if test="alarm.endTime != null "> and #{alarm.endTime} &gt; alarm_beginTime</if>
+            <if test="alarm.endTime != null "> and alarm_beginTime &lt; #{alarm.endTime}</if>
         </where>
     </select>
 

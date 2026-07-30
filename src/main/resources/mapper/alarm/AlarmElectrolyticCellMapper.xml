@@ -434,7 +434,12 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
                a.alarm_endTime
         from alarm_electrolytic_cell_ectype c
                  inner join alarm a on c.alarm_id = a.alarm_id
-        where c.sequence_id is not null
+        <where>
+            c.sequence_id is not null
+            <if test="startTime != null">and a.alarm_beginTime &gt; #{startTime}</if>
+            <if test="endTime != null">and a.alarm_beginTime &lt; #{endTime}</if>
+            <if test="tenantId != null">and a.tenant_id = #{tenantId}</if>
+        </where>
         order by a.alarm_beginTime desc, c.alarm_id desc
     </select>
 </mapper>

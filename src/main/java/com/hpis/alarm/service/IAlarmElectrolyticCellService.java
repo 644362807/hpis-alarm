@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hpis.alarm.api.dto.AlarmElectrolyticCellDTO;
 import com.hpis.alarm.domain.AlarmElectrolyticCell;
 import com.hpis.alarm.dto.AlarmDetailEc;
+import com.hpis.alarm.dto.AlarmQueryParameter;
 import com.hpis.alarm.dto.RepeatAlarmDto;
 
 import javax.servlet.http.HttpServletResponse;
@@ -127,6 +128,8 @@ public interface IAlarmElectrolyticCellService
      * @return 电解槽关联报警集合
      */
     List<AlarmElectrolyticCellDTO> selectAlarmListByEC();
+
+    List<AlarmElectrolyticCellDTO> selectAlarmListByEC(AlarmQueryParameter alarmQueryParameter);
 
     /**
      * 根据点位查看最新事件级别

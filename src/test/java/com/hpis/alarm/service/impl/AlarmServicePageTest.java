@@ -3,7 +3,6 @@ package com.hpis.alarm.service.impl;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import cn.hutool.core.date.DateUtil;
 import com.hpis.alarm.domain.Alarm;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.common.core.exception.CustomException;
@@ -112,13 +111,12 @@ public class AlarmServicePageTest {
         QueryWrapper<?> wrapper = captureWrapper();
         String sql = wrapper.getSqlSegment();
         Map<String, Object> values = wrapper.getParamNameValuePairs();
-        assertFalse(sql.contains("a.alarm_beginTime"));
-        assertFalse(values.containsValue(DateUtil.offsetDay(FIXED_NOW, -30)));
-        assertFalse(values.containsValue(FIXED_NOW));
+        assertTrue(sql.contains("a.alarm_beginTime <"));
+        assertTrue(values.containsValue(FIXED_NOW));
     }
 
     @Test
-    public void selectAlarmPageKeepsSuppliedStartTimeWithoutDefaultEndTime() {
+    public void selectAlarmPageCompletesSuppliedStartTimeWithCurrentEndTime() {
         Date suppliedStart = new Date(1770000000000L);
         Alarm request = emptyRequest();
         request.setStartTime(suppliedStart);
@@ -129,9 +127,9 @@ public class AlarmServicePageTest {
         QueryWrapper<?> wrapper = captureWrapper();
         Map<String, Object> values = wrapper.getParamNameValuePairs();
         assertTrue(wrapper.getSqlSegment().contains("a.alarm_beginTime >"));
+        assertTrue(wrapper.getSqlSegment().contains("a.alarm_beginTime <"));
         assertTrue(values.containsValue(suppliedStart));
-        assertFalse(values.containsValue(FIXED_NOW));
-        assertFalse(values.containsValue(DateUtil.offsetDay(FIXED_NOW, -30)));
+        assertTrue(values.containsValue(FIXED_NOW));
     }
 
     @Test
@@ -148,7 +146,6 @@ public class AlarmServicePageTest {
         assertTrue(wrapper.getSqlSegment().contains("a.alarm_beginTime <"));
         assertTrue(values.containsValue(suppliedEnd));
         assertFalse(values.containsValue(FIXED_NOW));
-        assertFalse(values.containsValue(DateUtil.offsetDay(FIXED_NOW, -30)));
     }
 
     @Test
@@ -168,7 +165,20 @@ public class AlarmServicePageTest {
         assertTrue(values.containsValue(suppliedStart));
         assertTrue(values.containsValue(suppliedEnd));
         assertFalse(values.containsValue(FIXED_NOW));
-        assertFalse(values.containsValue(DateUtil.offsetDay(FIXED_NOW, -30)));
+    }
+
+    @Test
+    public void selectAlarmPageClampsFutureEndTimeToCurrentTime() {
+        Alarm request = emptyRequest();
+        request.setEndTime(new Date(FIXED_NOW.getTime() + 1000L));
+        stubEmptyPage();
+
+        service.selectAlarmPage(request);
+
+        QueryWrapper<?> wrapper = captureWrapper();
+        Map<String, Object> values = wrapper.getParamNameValuePairs();
+        assertTrue(wrapper.getSqlSegment().contains("a.alarm_beginTime <"));
+        assertTrue(values.containsValue(FIXED_NOW));
     }
 
     private Alarm emptyRequest() {
