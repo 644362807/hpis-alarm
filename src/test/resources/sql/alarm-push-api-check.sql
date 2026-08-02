@@ -25,6 +25,13 @@ WHERE table_schema = 'hpis_alarm'
                       'workorder_push_message_type', 'workorder_config_id')
 ORDER BY column_name;
 
+-- 三态契约要求 assignee_id 可空且默认 NULL；NULL=不推送，0=组推送，正数=定向推送。
+SELECT column_name, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'hpis_alarm'
+  AND table_name = 'alarm_workorder'
+  AND column_name = 'assignee_id';
+
 SELECT index_name, seq_in_index, column_name
 FROM information_schema.statistics
 WHERE table_schema = 'hpis_alarm'
@@ -86,11 +93,29 @@ ORDER BY created_time DESC;
 
 SELECT w.workorder_id, w.alarm_id, w.workorder_no, w.workorder_config_id,
        w.status, w.assignee_id, w.assignee_name, w.title, w.handle_result,
+       CASE
+         WHEN w.assignee_id IS NULL THEN 'NONE'
+         WHEN w.assignee_id = 0 THEN 'GROUP'
+         WHEN w.assignee_id > 0 THEN 'DIRECT'
+         ELSE 'INVALID'
+       END AS push_target_mode,
        w.tenant_id, w.del_flag, w.create_by, w.create_time, w.update_by, w.update_time
 FROM hpis_alarm.alarm_workorder w
 JOIN hpis_alarm.alarm_cid_index i ON i.alarm_id = w.alarm_id
 WHERE i.alarm_cid LIKE @alarm_cid_prefix
 ORDER BY w.workorder_id DESC;
+
+-- 终态一致性：状态 2 应有处理结果；状态 3 应有结束原因。活动工单在报警停止后应为 0 行。
+SELECT
+    SUM(CASE WHEN w.status = '2' AND (w.handle_result IS NULL OR w.handle_result = '') THEN 1 ELSE 0 END)
+        AS completed_without_result,
+    SUM(CASE WHEN w.status = '3' AND (w.handle_result IS NULL OR w.handle_result = '') THEN 1 ELSE 0 END)
+        AS closed_without_reason,
+    SUM(CASE WHEN w.status IN ('0', '1') AND i.alarm_endTime IS NOT NULL THEN 1 ELSE 0 END)
+        AS ended_alarm_with_active_workorder
+FROM hpis_alarm.alarm_workorder w
+JOIN hpis_alarm.alarm_cid_index i ON i.alarm_id = w.alarm_id
+WHERE i.alarm_cid LIKE @alarm_cid_prefix;
 
 -- 非分片/兼容基础表可直接核验；启用月度分片时，先从 alarm_cid_index.table_suffix
 -- 找到对应 alarm_handle_{suffix}，把下列表名替换为实际分片后只读执行。

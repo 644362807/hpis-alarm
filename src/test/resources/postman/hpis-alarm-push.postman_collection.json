@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2a8d863d-d7e8-42aa-8aa1-53e67a358f8c",
     "name": "HPIS Alarm Push API - Fresh Environment",
-    "description": "覆盖 Alarm、Push、企业微信资源、候选负责人和工单闭环。配置数据全部通过 API 增删改查；SQL 仅用于只读证据核验。请仅在专用测试租户使用，并在本地填写 Secret/Token 后禁止导出真实值。",
+    "description": "覆盖 Alarm、Push、消息类型目录、alarm_rank等级过滤、企业微信资源、候选负责人和工单闭环。配置数据全部通过 API 增删改查；SQL 仅用于只读证据核验。请仅在专用测试租户使用，并在本地填写 Secret/Token 后禁止导出真实值。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -198,6 +198,36 @@
       ]
     },
     {
+      "name": "02A - Message Type Catalog and Dictionary",
+      "item": [
+        {
+          "name": "Read push message groups from System",
+          "request": { "method": "GET", "url": "{{systemBaseUrl}}/dict/data/type/push_message_group" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "pm.test('push message group dictionary is available', () => { pm.expect(rows.some(x => String(x.dictValue) === 'ALARM')).to.be.true; pm.expect(rows.some(x => String(x.dictValue) === 'WORKORDER')).to.be.true; });"] } }]
+        },
+        {
+          "name": "Read alarm rank 1 2 3 from System",
+          "request": { "method": "GET", "url": "{{systemBaseUrl}}/dict/data/type/alarm_rank" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "const values = rows.map(x => String(x.dictValue));", "pm.test('alarm_rank contains 1/2/3', () => { pm.expect(values).to.include('1'); pm.expect(values).to.include('2'); pm.expect(values).to.include('3'); });"] } }]
+        },
+        {
+          "name": "Read enabled message type catalog",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/pushMessageType/list?enabled=true" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "pm.test('catalog covers messageType 10 and 25', () => { pm.expect(rows.some(x => String(x.messageType) === '10' && x.dictFilterSupported === true && x.filterDictType === 'alarm_rank')).to.be.true; pm.expect(rows.some(x => String(x.messageType) === '25' && x.dictFilterSupported === false)).to.be.true; });"] } }]
+        },
+        {
+          "name": "Read message type option tree",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/pushMessageType/options/tree" },
+          "event": [{ "listen": "test", "script": { "exec": ["const groups = pm.response.json().data || [];", "pm.test('option tree exposes grouped message types', () => pm.expect(groups.some(g => (g.children || []).some(x => String(x.messageType) === '10'))).to.be.true);"] } }]
+        },
+        {
+          "name": "Read alarm rank filter options for messageType 10",
+          "request": { "method": "GET", "url": "{{pushBaseUrl}}/pushMessageType/10/filterOptions" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().data || [];", "const values = rows.map(x => String(x.value));", "pm.test('messageType 10 filter options are 1/2/3', () => { pm.expect(values).to.include('1'); pm.expect(values).to.include('2'); pm.expect(values).to.include('3'); });"] } }]
+        }
+      ]
+    },
+    {
       "name": "03 - Push Config",
       "item": [
         {
@@ -207,7 +237,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19010/codex/emergency-10\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-10\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
+              "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19010/codex/emergency-10\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-10\",\n  \"excludedDictValues\": \"2,3\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
             },
             "description": "/pushConfig/add 必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns。pushAddress 不得包含 http://，当前 PushHttpConsumer 会自行补充协议。",
             "url": "{{pushBaseUrl}}/pushConfig/add"
@@ -221,7 +251,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
+              "raw": "{\n  \"messageType\": \"25\",\n  \"pushChannelType\": \"10\",\n  \"enabled\": true,\n  \"pushAddress\": \"127.0.0.1:19025/codex/workorder-25\",\n  \"isPassive\": \"0\",\n  \"configName\": \"api-push-e2e-http-25\",\n  \"excludedDictValues\": \"\",\n  \"deviceSns\": [\"{{deviceASn}}\", \"{{deviceBSn}}\"]\n}"
             },
             "description": "/pushConfig/add 创建工单推送配置。必填：messageType、pushChannelType、enabled、pushAddress、isPassive、configName、deviceSns；messageType=25，HTTP 接收器端口 19025，pushAddress 不带协议。",
             "url": "{{pushBaseUrl}}/pushConfig/add"
@@ -233,7 +263,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": true,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-10\",\n  \"deviceSns\": []\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"messageType\": \"10\",\n  \"pushChannelType\": \"20\",\n  \"enabled\": true,\n  \"routeScope\": \"TENANT\",\n  \"recipientGroupId\": {{recipientGroupId}},\n  \"configName\": \"api-push-e2e-wecom-10\",\n  \"excludedDictValues\": \"2,3\",\n  \"deviceSns\": []\n}" },
             "url": "{{pushBaseUrl}}/pushConfig/add"
           },
           "event": [{ "listen": "test", "script": { "exec": ["pm.test('wecom config 10 created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
@@ -317,7 +347,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-A-{{runId}}\",\n  \"deviceSn\": \"{{deviceASn}}\",\n  \"gatewaySn\": \"{{deviceAGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
+              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-A-{{runId}}\",\n  \"deviceSn\": \"{{deviceASn}}\",\n  \"gatewaySn\": \"{{deviceAGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"alarmDegree\": \"1\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
             },
             "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
           },
@@ -338,17 +368,17 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-B-{{runId}}\",\n  \"deviceSn\": \"{{deviceBSn}}\",\n  \"gatewaySn\": \"{{deviceBGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
+              "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-B-{{runId}}\",\n  \"deviceSn\": \"{{deviceBSn}}\",\n  \"gatewaySn\": \"{{deviceBGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"alarmDegree\": \"2\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}"
             },
             "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
           }
         },
         {
-          "name": "Verify device B arrived at receiver 10",
+          "name": "Verify rank 2 device B was excluded from receiver 10",
           "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver10BaseUrl}}/_events" },
           "event": [{ "listen": "test", "script": { "exec": [
             "const events = pm.response.json().events || [];",
-            "pm.test('device B messageType 10 received', () => pm.expect(events.some(e => (e.rawBody || JSON.stringify(e.body || {})).includes('\"messageType\":\"10\"') && (e.rawBody || JSON.stringify(e.body || {})).includes('\"deviceSn\":\"' + pm.environment.get('deviceBSn') + '\"'))).to.be.true);"
+            "pm.test('rank 2 device B excluded by config', () => pm.expect(events.some(e => (e.rawBody || JSON.stringify(e.body || {})).includes('\"messageType\":\"10\"') && (e.rawBody || JSON.stringify(e.body || {})).includes('\"deviceSn\":\"' + pm.environment.get('deviceBSn') + '\"'))).to.be.false);"
           ] } }]
         },
         {
@@ -381,7 +411,16 @@
           }
         },
         {
-          "name": "Capture three internal alarm IDs through API",
+          "name": "Create emergency alarm for no workorder push",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": \"API-PUSH-E2E-NONE-{{runId}}\",\n  \"deviceSn\": \"{{deviceASn}}\",\n  \"gatewaySn\": \"{{deviceAGatewaySn}}\",\n  \"alarmType\": \"10\",\n  \"sceneType\": \"1\",\n  \"cameraType\": \"1\",\n  \"tenantId\": {{tenantId}}\n}" },
+            "url": "{{alarmBaseUrl}}/alarm/alarmAdd"
+          }
+        },
+        {
+          "name": "Capture four internal alarm IDs through API",
           "request": { "method": "GET", "url": "{{alarmBaseUrl}}/alarm/list?pageNum=1&pageSize=200" },
           "event": [{ "listen": "test", "script": { "exec": [
             "const rawResponse = pm.response.text();",
@@ -391,27 +430,49 @@
             "const assigned = rows.find(x => x.alarmCid === 'API-PUSH-E2E-A-' + runId);",
             "const unassigned = rows.find(x => x.alarmCid === 'API-PUSH-E2E-B-' + runId);",
             "const closeAlarm = rows.find(x => x.alarmCid === 'API-PUSH-E2E-CLOSE-' + runId);",
-            "pm.test('three alarm IDs resolved by exact CID in response', () => { pm.expect(assigned).to.exist; pm.expect(unassigned).to.exist; pm.expect(closeAlarm).to.exist; });",
+            "const noPush = rows.find(x => x.alarmCid === 'API-PUSH-E2E-NONE-' + runId);",
+            "pm.test('four alarm IDs resolved by exact CID in response', () => { pm.expect(assigned).to.exist; pm.expect(unassigned).to.exist; pm.expect(closeAlarm).to.exist; pm.expect(noPush).to.exist; });",
             "if (assigned) pm.environment.set('internalAlarmId', exactAlarmId(assigned.alarmCid));",
             "if (unassigned) pm.environment.set('unassignedAlarmId', exactAlarmId(unassigned.alarmCid));",
-            "if (closeAlarm) pm.environment.set('closeAlarmId', exactAlarmId(closeAlarm.alarmCid));"
+            "if (closeAlarm) pm.environment.set('closeAlarmId', exactAlarmId(closeAlarm.alarmCid));",
+            "if (noPush) pm.environment.set('noPushAlarmId', exactAlarmId(noPush.alarmCid));"
           ] } }]
         }
       ]
     },
     {
-      "name": "05 - Workorder Ownership Lifecycle",
-      "description": "使用三条不同报警验证具体负责人、未分配后转派和异常关闭。完成请求必须由负责人 Token 发起；企业微信客户端实收不作为本轮自动断言。",
+      "name": "05 - Workorder Reminder Lifecycle",
+      "description": "验证督促目标三态、转派、任意实际处理人通过 /handle/save 联动完成以及异常关闭。assigneeId 只决定推送，不决定处理权限。",
       "item": [
         {
-          "name": "Confirm three alarms",
+          "name": "Confirm four alarms",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"alarmIds\": [{{internalAlarmId}}, {{unassignedAlarmId}}, {{closeAlarmId}}],\n  \"handleStatus\": \"2\",\n  \"opinion\": \"Alarm Push workorder lifecycle confirmed\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"alarmIds\": [{{internalAlarmId}}, {{unassignedAlarmId}}, {{closeAlarmId}}, {{noPushAlarmId}}],\n  \"handleStatus\": \"2\",\n  \"opinion\": \"Alarm Push workorder lifecycle confirmed\"\n}" },
             "url": "{{alarmBaseUrl}}/handle/update"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('three alarms confirmed', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('four alarms confirmed', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Create no-push workorder with omitted assigneeId",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{noPushAlarmId}},\n  \"title\": \"API Push no-target workorder\",\n  \"content\": \"omitted assigneeId means no workorder push\"\n}" },
+            "url": "{{alarmBaseUrl}}/workorder"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('no-push workorder created', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+        },
+        {
+          "name": "Verify omitted assignee persisted as null",
+          "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/list?alarmId={{noPushAlarmId}}&pageNum=1&pageSize=20" },
+          "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('no-push target is distinguishable from group target', () => { pm.expect(rows).to.have.lengthOf(1); pm.expect(rows[0].assigneeId).to.eql(null); pm.expect(rows[0].pushTargetMode).to.eql('NONE'); });", "if (rows[0]) pm.environment.set('noPushWorkorderId', String(rows[0].workorderId));"] } }]
+        },
+        {
+          "name": "Verify omitted assignee emitted no workorder event",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{receiver25BaseUrl}}/_events" },
+          "event": [{ "listen": "test", "script": { "exec": ["const events = pm.response.json().events || [];", "const alarmId = pm.environment.get('noPushAlarmId');", "pm.test('no event exists for no-push workorder', () => pm.expect(events.some(e => { const raw = e.rawBody || JSON.stringify(e.body || {}); return raw.includes('\\\"alarmId\\\":' + alarmId) && raw.includes('ALARM_WORKORDER_CREATED'); })).to.be.false);"] } }]
         },
         {
           "name": "Create assigned workorder",
@@ -476,12 +537,12 @@
           "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('only editable fields changed', () => { pm.expect(responseData.title).to.eql('API Push assigned workorder updated'); pm.expect(responseData.status).to.eql('0'); pm.expect(String(responseData.assigneeId)).to.eql(pm.environment.get('userId')); pm.expect(String(responseData.tenantId)).to.eql(pm.environment.get('tenantId')); });"] } }]
         },
         {
-          "name": "Complete without picture must fail",
+          "name": "Handle without picture must fail",
           "request": {
-            "method": "PUT",
+            "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
-            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"missing picture\"\n}" },
-            "url": "{{alarmBaseUrl}}/workorder/complete"
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"identify\": \"0\",\n  \"opinion\": \"missing picture\"\n}" },
+            "url": "{{alarmBaseUrl}}/handle/save"
           },
           "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('missing picture rejected', () => pm.expect(failed).to.be.true);"] } }]
         },
@@ -511,30 +572,30 @@
           "event": [{ "listen": "test", "script": { "exec": ["const events = pm.response.json().events || [];", "pm.test('transferred event carries only new assignee target', () => pm.expect(events.some(e => { const raw = e.rawBody || JSON.stringify(e.body || {}); return raw.includes('\"messageType\":\"25\"') && raw.includes('\"eventType\":\"ALARM_WORKORDER_TRANSFERRED\"') && raw.includes('\"assigneeId\":' + pm.environment.get('secondUserId')); })).to.be.true);"] } }]
         },
         {
-          "name": "Old owner cannot complete after transfer",
+          "name": "Original reminder target handles after transfer",
           "request": {
-            "method": "PUT",
+            "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"old owner must fail\",\n  \"handlePicture\": \"/test/{{runId}}/old-owner.jpg\"\n}" },
-            "url": "{{alarmBaseUrl}}/workorder/complete"
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"identify\": \"0\",\n  \"opinion\": \"handled by actual operator {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/actual-handler.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/handle/save"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('old owner completion rejected', () => pm.expect(failed).to.be.true);"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('actual handler accepted independently of reminder target', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
-          "name": "Second owner completes assigned workorder",
+          "name": "Repeated handle by second target must fail",
           "request": {
             "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{secondAssigneeToken}}", "type": "string" }] },
-            "method": "PUT",
+            "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
-            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{workorderId}},\n  \"handleResult\": \"assigned completed {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/assigned-complete.jpg\"\n}" },
-            "url": "{{alarmBaseUrl}}/workorder/complete"
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{internalAlarmId}},\n  \"identify\": \"0\",\n  \"opinion\": \"repeat must fail\",\n  \"handlePicture\": \"/test/{{runId}}/repeat.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/handle/save"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["pm.test('current owner completion accepted', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('repeated alarm handling rejected', () => pm.expect(failed).to.be.true);"] } }]
         },
         {
           "name": "Read completed workorder and picture",
           "request": { "method": "GET", "url": "{{alarmBaseUrl}}/workorder/{{workorderId}}" },
-          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('completion result and picture returned', () => { pm.expect(responseData.status).to.eql('2'); pm.expect(responseData.handleResult).to.eql('assigned completed ' + pm.environment.get('runId')); pm.expect(responseData.handlePicture).to.eql('/test/' + pm.environment.get('runId') + '/assigned-complete.jpg'); });"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["const responseData = pm.response.json().data || {};", "pm.test('handled alarm completed reminder workorder', () => { pm.expect(responseData.status).to.eql('2'); pm.expect(responseData.handleResult).to.eql('handled by actual operator ' + pm.environment.get('runId')); pm.expect(responseData.handlePicture).to.eql('/test/' + pm.environment.get('runId') + '/actual-handler.jpg'); pm.expect(responseData.processable).to.eql(false); });"] } }]
         },
         {
           "name": "Create unassigned workorder",
@@ -556,14 +617,14 @@
           "event": [{ "listen": "test", "script": { "exec": ["const rows = pm.response.json().rows || [];", "pm.test('unassigned is not owned by current user', () => pm.expect(rows.some(x => String(x.workorderId) === pm.environment.get('unassignedWorkorderId'))).to.be.false);"] } }]
         },
         {
-          "name": "Unassigned workorder cannot complete",
+          "name": "Retired workorder complete endpoint must not write",
           "request": {
             "method": "PUT",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"handleResult\": \"must transfer first\",\n  \"handlePicture\": \"/test/{{runId}}/unassigned.jpg\"\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"handleResult\": \"retired endpoint must not write\",\n  \"handlePicture\": \"/test/{{runId}}/retired.jpg\"\n}" },
             "url": "{{alarmBaseUrl}}/workorder/complete"
           },
-          "event": [{ "listen": "test", "script": { "exec": ["let failed = pm.response.code >= 400;", "try { failed = failed || pm.response.json().code !== 200; } catch (e) {}", "pm.test('unassigned completion rejected', () => pm.expect(failed).to.be.true);"] } }]
+          "event": [{ "listen": "test", "script": { "exec": ["const body = pm.response.json();", "pm.test('retired endpoint returns fixed guidance', () => { pm.expect(body.code).to.eql(500); pm.expect(body.msg).to.include('/handle/save'); });"] } }]
         },
         {
           "name": "Transfer target zero must fail",
@@ -585,14 +646,15 @@
           }
         },
         {
-          "name": "Second owner completes formerly unassigned workorder",
+          "name": "Actual operator handles formerly group-targeted alarm",
           "request": {
             "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{secondAssigneeToken}}", "type": "string" }] },
-            "method": "PUT",
+            "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "user_id", "value": "{{secondUserId}}" }, { "key": "username", "value": "codex-postman-second" }],
-            "body": { "mode": "raw", "raw": "{\n  \"workorderId\": {{unassignedWorkorderId}},\n  \"handleResult\": \"transferred workorder completed {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/unassigned-complete.jpg\"\n}" },
-            "url": "{{alarmBaseUrl}}/workorder/complete"
-          }
+            "body": { "mode": "raw", "raw": "{\n  \"alarmId\": {{unassignedAlarmId}},\n  \"identify\": \"0\",\n  \"opinion\": \"group-targeted alarm handled {{runId}}\",\n  \"handlePicture\": \"/test/{{runId}}/group-targeted.jpg\"\n}" },
+            "url": "{{alarmBaseUrl}}/handle/save"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('actual operator completed alarm and linked workorder', () => pm.expect(pm.response.json().code).to.equal(200));"] } }]
         },
         {
           "name": "Create workorder for abnormal close",

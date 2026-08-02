@@ -50,6 +50,13 @@ WHERE table_schema = 'hpis_alarm'
         ('alarm_id', 'workorder_id', 'handler_id', 'handler_name', 'opinion', 'handle_picture')))
 ORDER BY table_name, column_name;
 
+SELECT 'workorder_assignee_nullable_contract' AS item,
+       column_name, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'hpis_alarm'
+  AND table_name = 'alarm_workorder'
+  AND column_name = 'assignee_id';
+
 SELECT 'workorder_query_index' AS item, index_name, seq_in_index, column_name
 FROM information_schema.statistics
 WHERE table_schema = 'hpis_alarm'

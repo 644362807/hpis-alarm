@@ -1,5 +1,7 @@
 # Alarm-Push API 接口文档
 
+> 当前复核基线：2026-08-02。新增消息类型目录、System 字典查询和主动推送按字典值排除能力；站内推送当前不参与该过滤。
+
 ## 1. 文档用途与阅读方式
 
 本文面向接口测试人员，描述当前 `hpis-alarm` 和 `hpis-push` 的真实外部接口、字段来源、输入输出以及 Alarm → Push 路由规则。
@@ -39,7 +41,7 @@ HTTP / MQTT / WebSocket / 企业微信
 - `/alarm/alarmAdd` 当前捕获业务异常并可能返回空 HTTP 2xx，必须通过 `alarmCid` 回查记录。
 - 默认 `alarm.push.require-matched-config=true`：未匹配 Alarm 配置时跳过配置推送；设为 `false` 时才按旧兼容逻辑使用原始 `alarmType`。
 - 普通报警没有 `assigneeId`，企业微信使用 Push 配置的接收组。
-- 工单创建/转派消息带数值型 `assigneeId`，企业微信只发当前负责人，接收组不再参与。
+- 工单创建消息的 `assigneeId`为三态：`null`不推送、`0`按接收组推送、正数定向推送；转派只接受正数并只通知新目标。
 
 ## 3. 公共访问约定
 
@@ -403,6 +405,19 @@ AlarmQueryParameter 字段：`alarmType,startTime,endTime,deviceSn,sceneType,ten
 GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 ```
 
+`POST /handle/save`是报警正常处理和工单联动的唯一入口：
+
+| 字段 | 必填性 | 规则 |
+|---|---|---|
+| alarmId 或 alarmIds | 必填其一 | 正整数；批量时去重；必须全部属于当前租户、正在报警且已确认 |
+| opinion | 必填 | 非空处理说明；同时写 `alarm_handle.opinion`和活动工单 `handle_result` |
+| handlePicture | 必填 | 非空图片地址；只写 `alarm_handle.handle_picture` |
+| identify | 选填 | `0`/空按真实处理写报警状态 `2`；`1`按误报写 `-1` |
+| handlerId/handlerName/tenantId/alarmStatus/handleStatus | 禁止客户端控制 | 实际处理人、租户和目标状态全部由服务端生成 |
+| sceneType/irmsSn/ecHandles/apparatusId | 场景选填 | 保留现有电解槽/设备同步兼容字段；普通报警不需要 |
+
+调用顺序固定为：先 `/handle/update`确认到 `handleStatus=2`；如需督促则创建工单；最终由任意实际处理人调用 `/handle/save`。服务端原子门禁避免已停止、已处理、未确认、跨租户或重复请求再次写入。`GET /handle/saveAll`沿用历史 Query 形式，但说明和图片同样必填并走同一事务收口。
+
 ## 8. 报警工单接口 `/workorder`
 
 | 方法 | 路径 | 用途 | 权限 |
@@ -410,11 +425,11 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 | GET | `/workorder/list` | 当前租户全部工单分页 | `alarm:workorder:list` |
 | GET | `/workorder/my` | 当前租户、当前用户的工单分页 | `alarm:workorder:list` |
 | GET | `/workorder/{workorderId}` | 当前租户工单详情 | `alarm:workorder:query` |
-| GET | `/workorder/my/{workorderId}` | 当前负责人自己的工单详情 | `alarm:workorder:query` |
+| GET | `/workorder/my/{workorderId}` | 当前用户作为定向督促目标的工单详情 | `alarm:workorder:query` |
 | POST | `/workorder` | 创建 | `alarm:workorder:add` |
 | PUT | `/workorder` | 只修改标题、内容 | `alarm:workorder:edit` |
 | PUT | `/workorder/transfer` | 转派 | `alarm:workorder:transfer` |
-| PUT | `/workorder/complete` | 当前负责人正常完成 | `alarm:workorder:complete` |
+| PUT | `/workorder/complete` | 兼容退役入口；固定提示改用 `/handle/save`，不更新数据 | `alarm:workorder:complete` |
 | PUT | `/workorder/close` | 异常关闭 | `alarm:workorder:close` |
 | DELETE | `/workorder/{workorderIds}` | 逻辑删除非终态工单 | `alarm:workorder:remove` |
 
@@ -427,9 +442,9 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 
 ### 8.1 查询边界
 
-`/workorder/list` 和普通详情按当前租户过滤，用于具有列表/查询权限的管理视角；`/workorder/my` 和 `/workorder/my/{id}` 还强制 `assignee_id=当前用户ID`，因此 `assigneeId=0` 的未分配工单不会出现在“我的工单”。两个列表都返回标准分页结构 `rows + total`，不是 `data` 数组。
+`/workorder/list` 和普通详情按当前租户过滤；`/workorder/my` 和 `/workorder/my/{id}` 还强制 `assignee_id=当前用户ID`。这里的“我的”表示“定向督促给我的记录”，不是报警所有权；`assigneeId=null/0`不会进入该列表，但仍可从租户全部列表查看。两个列表都返回标准分页结构 `rows + total`。
 
-列表可传 `pageNum`、`pageSize`、`alarmId`、`workorderNo`、`status`；全部列表还可传 `assigneeId`。详情和列表中的 `handlePicture` 从 `alarm_handle.handle_picture` 批量回填，不在 `alarm_workorder` 新增图片列，也不会逐工单循环查询。
+列表可传 `pageNum`、`pageSize`、`alarmId`、`workorderNo`、`status`；全部列表还可传 `assigneeId`。详情和列表批量返回 `pushTargetMode`、`alarmStatus`、`alarmEndtime`、`handleStatus`、`handlerId`、`handlerName`、`handlePicture`、`processable`和 `unprocessableReason`。分页后只按本页 `alarmId`做一次 `alarm_handle + alarm`批量查询，不逐工单循环 SQL。
 
 ### 8.2 创建
 
@@ -440,14 +455,14 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 | 字段 | 必填性 | 实际规则 |
 |---|---|---|
 | alarmId | 必填 | 必须是当前租户报警，且已有 `handleStatus=2` 的确认记录 |
-| assigneeId | 可选 | 正数表示具体负责人；`0/null/缺失`统一保存为 `0`，表示未分配并按配置接收组推送；负数拒绝 |
-| assigneeName | 可选 | 负责人展示名；不作为所有权判定依据 |
+| assigneeId | 可选 | 缺失/`null`保存 SQL `NULL`且不推送；`0`保存为组推送；正数保存为定向用户；负数拒绝 |
+| assigneeName | 可选 | 展示名称；`null/0`时服务端清空；不参与处理权限判断 |
 | title | 可选 | 空值由服务端生成 `报警工单-{alarmId}` |
 | content | 可选 | 工单说明 |
 | workorderNo | 兼容可选 | 空值由服务端生成；调用方通常不传 |
 | workorderConfigId/status/tenantId/delFlag/handleResult | 禁止客户端控制 | 分别由匹配配置、服务端状态机、当前租户和生命周期生成 |
 
-同一报警只允许一张工单。创建时服务端按该报警重新匹配 Alarm 配置并取得 `workorderConfigId`、`workorderPushMessageType`；不能用请求体绕过。正数负责人产生 `ALARM_WORKORDER_CREATED` 并只通知该负责人；未分配模式的事件携带 `assigneeId=0`，企业微信按该 Push 配置的接收组解析。
+同一报警只允许一张工单。创建时服务端按该报警重新匹配 Alarm 配置并取得 `workorderConfigId`、`workorderPushMessageType`。`null`不发布创建推送事件；`0`发布组路由事件；正数发布定向路由事件。`assigneeId`是督促推送目标，不是处理权限或工单所有权。
 
 ### 8.3 通用编辑和转派
 
@@ -467,15 +482,15 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 
 新负责人 ID 必须为正整数。成功产生 `ALARM_WORKORDER_TRANSFERRED`；只通知新负责人，不通知旧负责人。
 
-### 8.4 正常完成
+### 8.4 报警处理联动完成
 
 ```json
-{"workorderId":990001,"handleResult":"现场复核并恢复设备","handlePicture":"/upload/alarm/2026/07/result-990001.jpg"}
+{"alarmId":671599294431815216,"identify":"0","opinion":"现场复核并恢复设备","handlePicture":"/upload/alarm/2026/07/result-990001.jpg"}
 ```
 
-请求对象只定义三个字段，且均必填：`workorderId`、非空 `handleResult`、非空 `handlePicture`。`alarmId`、`assigneeId`、`tenantId`和目标状态不接收客户端指定。只有当前租户的当前负责人可以把状态 `0/1` 原子更新为 `2`；未分配、非负责人、终态和重复完成均失败。
+正常处理统一调用 `POST /handle/save`。`alarmId`、非空 `opinion`、非空 `handlePicture`必填；`identify`可选，`0`表示真实处理、`1`表示误报。服务端强制当前租户，并要求 `alarm.alarm_status='0'`且 `alarm_handle.handle_status='2'`。实际处理人取登录上下文，不比较工单 `assigneeId`。
 
-同一事务还会把说明、图片、当前用户 ID/名称和处理时间写回报警处理记录：`alarm_workorder.handle_result`、`alarm_handle.opinion`、`alarm_handle.handle_picture`、`handler_id`、`handler_name`。处理记录不存在时整个完成事务回滚。本轮正常完成不发送二次 Push，也不修改报警本体状态或结束时间。
+成功时同一事务写入：真实报警 `alarm_status='2'`（误报为 `-1`）、处理记录 `handle_status='1'`及处理人/说明/图片、存在的活动工单 `status='2'`和同一说明。没有工单不影响报警处理；重复处理、已停止、未确认或跨租户报警均失败。`PUT /workorder/complete`只保留兼容路由，固定返回 `{"msg":"工单完成已并入报警处理，请调用 /handle/save","code":500}`。
 
 ### 8.5 异常关闭
 
@@ -483,7 +498,7 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
 {"workorderId":990002,"handleResult":"重复告警产生的无效工单","handlePicture":"/upload/alarm/2026/07/close-990002.jpg"}
 ```
 
-`workorderId`和非空 `handleResult`必填，`handlePicture`选填。接口只依赖已有 `alarm:workorder:close` 权限，不在代码中额外识别“系统管理员/租户管理员”身份。当前租户任意非终态工单可原子进入状态 `3`，关闭原因和实际操作人同步写入 `alarm_handle`；已完成、已关闭和重复关闭均失败。
+`workorderId`和非空 `handleResult`必填，`handlePicture`选填。接口只依赖已有 `alarm:workorder:close` 权限，不额外识别管理员身份。它只异常关闭督促记录，不把报警伪装成已处理。设备 stop、HTTP stop、CID 过期清理等报警自然结束路径也会自动将活动工单置为 `3`并记录 `ALARM_ENDED`；已完成、已关闭和重复关闭均失败。
 
 ### 8.6 删除和状态规则
 
@@ -519,6 +534,7 @@ GET /handle/list?alarmId=671599294431815216&pageNum=1&pageSize=10
   "pushAddress": "127.0.0.1:19010/alarm-test",
   "isPassive": "0",
   "routeScope": "DEVICE",
+  "excludedDictValues": "2,3",
   "configName": "TEST-HTTP-PUSH-20260718",
   "deviceSns": ["TEST-DEVICE-SN-001"]
 }
@@ -536,6 +552,7 @@ HTTP DEVICE 的调用方必填项为 `messageType`、`pushChannelType=10`、`ena
   "pushChannelType": "20",
   "enabled": true,
   "routeScope": "TENANT",
+  "excludedDictValues": "2,3",
   "recipientGroupId": 880001,
   "configName": "TEST-WECOM-PUSH-20260718",
   "deviceSns": []
@@ -578,7 +595,8 @@ HTTP DEVICE 的调用方必填项为 `messageType`、`pushChannelType=10`、`ena
 | 字段 | 类型 | 新增/修改契约 | 默认、覆盖与当前校验 |
 |---|---|---|---|
 | activePushConfigId | Long | 新增不传；修改必填 | 新增由服务生成；修改按当前租户校验归属 |
-| messageType | String | 启用配置调用方必填，最长 5 字符 | 路由匹配键；当前 Service 未硬校验非空，数据库允许 NULL |
+| messageType | String | 必填，当前可投产值最长 5 字符 | 新增时必须存在于启用的消息类型目录；修改为新编码时同样校验目录；未改编码的历史配置允许兼容读写。目录表虽允许30字符，`active_push_config.message_type` 当前仍是`CHAR(5)` |
+| excludedDictValues | String | 可选，逗号分隔，最长 255 字符 | 表示“不推送”的字典值。仅目录声明支持过滤时保留；当前只允许 `alarm_rank` 中已启用的值，非过滤类型会强制保存为空字符串 |
 | pushChannelType | String | 启用配置调用方必填；本章使用 `10` 或 `20` | 当前未统一拒绝未知值；未知值可保存但不会创建有效 Consumer |
 | enabled | Boolean | 新增建议明确传；修改可省略 | 只有 `true` 生效；新增省略会保存为非启用状态，修改省略保留旧值 |
 | routeScope | String | 可省略；只允许 `DEVICE`、`TENANT` | 新增空值默认 `DEVICE`；修改空值保留旧值；不区分大小写并统一转大写 |
@@ -601,6 +619,8 @@ HTTP DEVICE 的调用方必填项为 `messageType`、`pushChannelType=10`、`ena
 - 启用的企业微信配置必须关联当前租户启用接收组。
 - `enabled=false` 的配置只校验 `routeScope`，其余设备、接收组和通道前置条件会跳过；可作为草稿保存，但启用前必须补全并重新读回。
 - 新增强制当前租户、`delFlag=0`；更新必须带 `activePushConfigId`。
+- 前端默认全选表示 `excludedDictValues=""`；用户取消某些选项时，只把未选中的字典值写入该字段，例如只接收等级 1 时写 `2,3`。
+- 字典过滤只控制主动配置队列。运行开关关闭、目录不支持过滤或消息没有 `messageLevel` 时，仍按原 `deviceSn + messageType + tenantId` 路由，不做等级排除。
 - 新增接口通常只返回影响行数，不返回生成的配置 ID；需要通过列表回查并调用详情确认。由于 `configName` 当前没有唯一约束，调用方必须自行使用不重复的名称。
 
 ### 9.6 新增、修改、禁用与删除流程
@@ -641,7 +661,7 @@ pushKey 绑定/解绑请求体为配置 ID 数组：
 
 ## 10. 企业微信应用、用户绑定和接收组
 
-企业微信接收链路不是把企业微信 UserID 直接写进 `ActivePushConfig`。普通报警按 `recipientGroupId → userIds → 当前租户启用绑定 → wecomUserId` 解析；工单消息存在正整数 `assigneeId` 时，直接按 `tenantId + assigneeId` 查询绑定并只通知该负责人。
+企业微信接收链路不是把企业微信 UserID 直接写进 `ActivePushConfig`。普通报警按 `recipientGroupId → userIds → 当前租户启用绑定 → wecomUserId`解析；工单消息正数 `assigneeId`定向查询绑定，`0`回退接收组，`null`时 Alarm 不发布本次工单推送。
 
 ### 10.1 应用
 
@@ -737,7 +757,7 @@ GET /recipientGroup/workorderCandidates?messageType=25&deviceSn=TEST-DEVICE-SN-0
 }
 ```
 
-未绑定成员仍作为业务候选人返回，但 `wecomReachable=false`；这表示可以被选为工单负责人，却不能通过当前企业微信绑定送达。该接口只辅助前端选人，工单所有权仍由 Alarm 的 `alarm_workorder.assignee_id`决定。
+未绑定成员仍作为候选推送目标返回，但 `wecomReachable=false`。该接口只辅助前端选择定向督促对象；报警处理权限和实际处理人不由 Push 或 `alarm_workorder.assignee_id`决定。
 
 ### 10.4 企业微信推荐调用顺序
 
@@ -747,7 +767,7 @@ GET /recipientGroup/workorderCandidates?messageType=25&deviceSn=TEST-DEVICE-SN-0
 4. `POST /pushConfig/add`：创建 `pushChannelType=20`、`routeScope=TENANT` 的配置并填入 `recipientGroupId`。
 5. `/pushConfig/list` 回查 ID，再调用详情确认配置；检查配置专属队列存在且 Consumer 数为 1。
 6. 调用 `/recipientGroup/workorderCandidates?messageType={workorderPushMessageType}&deviceSn={deviceSn}`，只从 `wecomReachable=true` 中选择正常流程负责人。
-7. 普通报警不传 `assigneeId`，验证接收组有效成员实收；工单创建可传正整数负责人或 `0` 进入组兼容模式，转派必须传正整数且只通知新负责人。
+7. 普通报警不传 `assigneeId`，按配置接收组；工单创建分别验证 `null`不推送、`0`组推送和正数定向推送，转派必须传正整数且只通知新目标。
 
 修改时也按依赖方向处理：先保证应用和绑定有效，再修改组，最后启用或修改 Push 配置。删除时反向执行：先禁用/删除引用组的 Push 配置，再删除组；应用没有删除接口，只能通过 PUT 设置 `enabled=false`。
 
@@ -863,7 +883,7 @@ pushKey WebSocket 首帧发送 `{"pushKey":"PUSH-KEY"}`。收到带 `deliveryId`
 
 AlarmHandle 主要字段：`alarmHandleId,alarmId,workorderId,handlerId,handleUserOrder,deviceId,alarmType,alarmRank,alarmStatus,handleStatus,alarmBegintime,alarmEndtime,handleTime,identify,opinion,irmsSn,areaSn,targetName,deviceName,customerId,sceneType,handlePicture,confirmUserId,apparatusId,handlerName,alarmIds`。
 
-Workorder 持久化字段：`workorderId,workorderNo,alarmId,workorderConfigId,status,assigneeId,assigneeName,title,content,handleResult,tenantId,delFlag`。返回字段 `handlePicture`是非持久化字段，从 `alarm_handle.handle_picture`批量回填。创建、编辑、转派、完成和关闭的可写边界见第 8 章，不能因为实体含有字段就认为客户端可以修改。
+Workorder 持久化字段：`workorderId,workorderNo,alarmId,workorderConfigId,status,assigneeId,assigneeName,title,content,handleResult,tenantId,delFlag`。其中 `assignee_id`允许 SQL `NULL`且默认 `NULL`。`handlePicture,pushTargetMode,alarmStatus,alarmEndtime,handleStatus,handlerId,handlerName,processable,unprocessableReason`均为返回期非持久化字段。不能因为实体含有字段就认为客户端可以修改。
 
 ### 13.4 ActivePushConfig
 
@@ -944,24 +964,77 @@ activePushConfigId → config.queue... → 对应 Consumer
 
 1. 工单创建/转派消息顶层或 `data` 中存在正整数 `assigneeId`：查当前租户启用用户绑定，命中后只发该企业微信 UserID。
 2. 普通报警没有 `assigneeId`，以及工单创建兼容模式明确携带数字 `0`：查 Push 配置 `recipientGroupId`。
-3. 工单转派不允许 `0/null`，Alarm 在产生事件前即拒绝请求；若绕过 Alarm 构造非法转派消息，Push 返回 `INVALID_ASSIGNEE`。
-4. 接收组必须存在、属于当前租户且启用；逐个成员查启用绑定。
-5. 未绑定成员记录失败；至少一个有效成员才有实际接收人。
+3. 工单创建的 `assigneeId`为 SQL `NULL`时，Alarm 不发布工单事件；不能在 Push 侧把它误判成组推送。
+4. 工单转派不允许 `0/null`，Alarm 在产生事件前即拒绝请求；若绕过 Alarm 构造非法转派消息，Push 返回 `INVALID_ASSIGNEE`。
+5. 接收组必须存在、属于当前租户且启用；逐个成员查启用绑定。
+6. 未绑定成员记录失败；至少一个有效成员才有实际接收人。
 
 常见失败码：
 
 | 码 | 含义 |
 |---|---|
-| INVALID_ASSIGNEE | assigneeId 为非数字/负数，或转派事件缺少正整数负责人；创建事件的 `0/null` 会回退接收组，不属于此错误 |
+| INVALID_ASSIGNEE | assigneeId 为非数字/负数，或转派事件缺少正整数目标；创建事件的 `0`回退接收组，`null`在 Alarm 侧不发布 |
 | ASSIGNEE_NOT_BOUND | 负责人没有启用企业微信绑定 |
 | RECIPIENT_GROUP_REQUIRED | 普通消息配置未关联组 |
 | RECIPIENT_GROUP_DISABLED_OR_MISSING | 组不存在、禁用或跨租户 |
 | RECIPIENT_GROUP_EMPTY | 组没有成员 |
 | NO_BOUND_RECIPIENT | 组成员均无有效绑定 |
 
-## 16. 已知限制与停用接口
+## 16. 消息类型目录与字典过滤接口
 
-### 16.1 业务接口限制
+消息组继续使用 System 字典 `push_message_group`，报警等级使用 `alarm_rank`。System 字典通过现有接口 `GET /dict/data/type/{dictType}` 维护和查询；不要直接向 Redis 写临时字典，因为 Push 读取的是 System 维护后的标准 `sys_dict2:*` 缓存结构。
+
+### 16.1 Push 消息类型目录
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/pushMessageType/list?enabled=true` | 按消息组、messageType、启用状态查询目录 |
+| GET | `/pushMessageType/{id}` | 查询单条目录元数据 |
+| POST | `/pushMessageType/add` | 新增消息类型 |
+| POST/PUT | `/pushMessageType/update` | 修改名称、组、过滤能力、启用状态和排序 |
+| DELETE | `/pushMessageType/{ids}` | 逻辑删除；被任意 Push 配置引用时拒绝 |
+| GET | `/pushMessageType/options/tree` | 前端下拉树：只返回启用且消息组字典存在的类型 |
+| GET | `/pushMessageType/{messageType}/filterOptions` | 返回该类型关联字典的可选值；不支持过滤时返回空数组 |
+
+新增/修改示例：
+
+```json
+{
+  "messageGroup": "ALARM",
+  "messageType": "10",
+  "messageTypeName": "报警消息",
+  "dictFilterSupported": true,
+  "filterDictType": "alarm_rank",
+  "enabled": true,
+  "sortNo": 10,
+  "remark": "报警主动推送"
+}
+```
+
+约束如下：
+
+- `messageGroup` 必须是启用的 `push_message_group` 字典值；消息组仅用于前端分组展示，不参与运行路由。
+- `messageType` 是实际路由编码，唯一且创建后不可直接修改；已有启用 Push 配置引用时，不允许修改其字典过滤能力。当前要被`active_push_config`引用的编码必须控制在5字符内。
+- 第一版只有 `filterDictType=alarm_rank` 可设为 `dictFilterSupported=true`；不支持过滤时服务端清空 `filterDictType`。
+- 删除前必须先删除所有引用该 `messageType` 的 Push 配置，禁用配置也属于引用。
+- 目录写事务提交后刷新内存元数据；发布后应重新查询目录，并用真实消息验证运行态。
+
+### 16.2 过滤语义
+
+当前 Alarm 生成 Push payload 时，`messageType`优先取匹配报警配置的`pushMessageType`；没有该值时才回退到上报`alarmType`。`alarmDegree`入库为`alarm_rank`，在发给 Push 时转成顶层`messageLevel`。配置保存的是排除集合 `excludedDictValues`：值为空表示所有等级都接收，`2,3` 表示等级 2、3 不进入该配置队列。
+
+运行时仅在 `push.routing.dict-exclude-filter-enabled=true` 且消息类型目录支持 `alarm_rank` 时比较等级。消息无 `messageLevel` 时直接沿用原路由，因此断线、颜色等无等级报警仍按类型推送，不需要引入 `NO_VALUE`。本功能发生在主动 Push 配置队列分拣阶段，当前不改变站内推送的全量接收逻辑。元数据首次加载失败或Redis配置快照缺失时会放行，目的是避免漏报，代价是字典过滤可能短时失效。
+
+### 16.3 前端配置顺序
+
+1. 查询 `/pushMessageType/options/tree` 展示消息组和消息类型。
+2. 用户选择类型后读取该节点的 `dictFilterSupported/filterOptions`，或单独调用 `/{messageType}/filterOptions`。
+3. 支持字典时默认全选；将“未选值”按逗号拼接为 `excludedDictValues`。不支持字典时隐藏等级控件并传空字符串。
+4. 保存后读取 `/pushConfig/{id}`，确认排除值已按字典顺序归一化。
+
+## 17. 已知限制与停用接口
+
+### 17.1 业务接口限制
 
 - `/alarm/alarmAdd` 吞掉业务异常并可能返回空 2xx；必须回查。
 - `/alarm/export` 当前无实际导出实现。
@@ -971,15 +1044,15 @@ activePushConfigId → config.queue... → 对应 Consumer
 - 短信 `30`、邮件 `31` 只有枚举，当前配置服务没有对应 Consumer。
 - 示例中的用户、设备、模板和 ID 均为脱敏示例，执行时必须替换为当前租户通过合法接口取得的真实测试数据。
 
-### 16.2 Push 接口—实体—Schema 契约扫描结果
+### 17.2 Push 接口—实体—Schema 契约扫描结果
 
-本节是 2026-07-23 按当前 Controller、请求对象、Service、Mapper、增量 SQL、测试库实际结构和真实服务回归进行的复核结果。它描述当前实际边界；本轮代码增加工单闭环、候选负责人查询、工单查询索引，并修复 Alarm 配置 Mapper 对不存在的主表 `device_sn` 列的遗留引用。数据库只做只读核验，未执行迁移。
+本节是 2026-08-02 按当前 Controller、请求对象、Service、Mapper、增量 SQL 和测试库结构进行的复核结果。除工单闭环外，当前版本已增加消息类型目录、配置排除值以及运行时字典过滤；数据库迁移和真实服务结果以本交付包最新执行报告为准。
 
 已闭合的 Schema 问题：正式 `alarm_configure` 不含 `device_sn`，设备关系只存在于 `alarm_device_configure.device_sn`。当前基础列表 SQL 不再选择主表 `device_sn`；按设备筛选使用关系表 `EXISTS`；报警配置匹配从关系表读取并别名为 `device_sn`。基础详情/修改使用的 ResultMap 也不再读取 `device_sn`，仅明确带设备关系列的查询使用设备 ResultMap。`AlarmWorkorderMapperXmlContractTest` 已增加防回归断言，真实服务的配置详情和修改已通过，避免再次出现 `Unknown column 'device_sn'`或 ShardingSphere 读取缺失列异常。
 
 | 级别 | 已确认遗漏/差异 | 实际影响 | 当前使用约束 |
 |---|---|---|---|
-| 高 | 启用 ActivePushConfig 未统一硬校验 `messageType`、`pushChannelType`、`configName`，HTTP 未硬校验 `pushAddress` | 可能保存成功但无法路由或没有 Consumer | 调用方按 9.5 必填；启用后必须检查详情、队列和 Consumer |
+| 高 | ActivePushConfig 已校验 `messageType` 目录和排除字典值，但仍未统一硬校验 `pushChannelType`、`configName`，HTTP 未硬校验 `pushAddress` | 可能保存成功但无法创建有效 Consumer | 调用方按 9.5 必填；启用后必须检查详情、队列和 Consumer |
 | 高 | `recipientGroupId=null` 在更新中表示保留旧值，Mapper 也跳过 NULL | 无法通过现有更新接口清空旧组；通道切换可留下引用并阻止删组 | 不原地切换通道；新建目标配置、验证后删除旧配置 |
 | 高 | 数据库事务提交后才刷新 Redis 路由和 RabbitMQ Consumer，刷新异常只写日志 | API 成功不保证运行态已经生效 | 每次启用/修改后做运行态核验；重启或重新保存可补偿 |
 | 高 | `/pushConfig/list` 和详情直接返回持久化实体，实体中的 `mqttPassword` 没有响应脱敏注解 | MQTT 配置密码可能通过查询接口明文返回；企业微信 Secret 已使用专用 View 脱敏，不受此项影响 | MQTT 上线前必须单独整改响应 DTO/脱敏；当前不要在共享环境查询、截图或导出真实 MQTT 密码 |
@@ -989,7 +1062,8 @@ activePushConfigId → config.queue... → 对应 Consumer
 | 中 | `userIds=[]` 被代码和单元测试明确允许 | 启用空组可保存，但普通报警没有接收人 | 空组仅用于禁用草稿或失败检测；生产启用组至少一名有效绑定用户 |
 | 中 | 删除用户绑定不检查其是否仍属于接收组 | 组成员关系保留，后续投递记录未绑定失败 | 删除绑定前查询并调整相关接收组 |
 | 中 | ActivePushConfig 新增不返回生成 ID，`configName` 又没有唯一键 | 请求超时或重复提交后难以唯一回查，重复配置可能造成重复推送 | 配置名由调用方保证租户内唯一；新增前后查询，禁止无条件重试 |
-| 中 | 正式资源中只有企业微信增量 SQL，没有完整 Push 基础库 DDL | 不能从空库仅靠仓库 SQL 完成正式安装，也不能完整自动核对基础表 | 全新环境先导入正式 Push 基础库，再执行增量脚本和结构预检 |
+| 中 | 正式资源中有企业微信和消息字典过滤增量 SQL，但没有完整 Push 基础库 DDL | 不能从空库仅靠仓库 SQL 完成正式安装 | 全新环境先导入正式 Push 基础库，再按顺序执行两个增量和结构预检 |
+| 中 | `push_message_type_catalog.message_type` 允许30字符，`active_push_config.message_type` 仍是`CHAR(5)`，两个Service也没有统一长度校验 | 可以建立“目录可保存但Push配置写入失败”的长编码 | 当前投产编码限制5字符以内；后续单独统一Schema和DTO校验 |
 | 中 | `20260716_wecom_push_incremental.sql` 的建表、加列和加索引不是整体幂等 | 已执行环境盲目重跑会在对象已存在处失败 | 执行前查 `information_schema`；按实际状态逐项处理，不能依赖 DDL 整体回滚 |
 | 中 | 历史 `active_push_config.enabled` 是可空 `CHAR(5)`，实体是 Boolean；`mqtt_qos` 是 VARCHAR，实体是 Integer | 依赖 MyBatis/MySQL 隐式转换，非法历史值没有 Schema 保护 | 只通过接口写 `true/false` 和整数 QoS；上线前只读扫描异常值 |
 | 中 | `pushconfigid_devicesn` 没有主键、唯一键或外键 | 手工 SQL、历史数据或并发异常可产生重复/孤儿关系 | 配置关系只走接口；结构核验时检查重复 `(active_push_config_id,device_sn)` 和孤儿行 |
@@ -1001,11 +1075,11 @@ activePushConfigId → config.queue... → 对应 Consumer
 | 低 | 企业微信四张新表含 `del_flag`，候选查询已过滤配置/组/成员，现有应用、绑定、组 CRUD 仍以物理删除为主且部分列表不统一过滤逻辑删除 | 当前 API 物理删除数据正常；手工把 `del_flag=2` 可能在部分列表继续可见 | 继续只走接口删除；不要手工改逻辑删除标记，后续若统一软删除需同时修改全部 Mapper |
 | 低 | ActivePushConfig Controller 直接接收持久化实体，没有独立新增/修改 DTO 或 Bean Validation | 可写/只读边界主要靠 Service 和本文约定，字段长度错误多由数据库返回 | 调用方不得提交只读字段；后续低风险迭代再补 DTO/校验，不在本轮改接口 |
 
-### 16.3 当前测试证据边界
+### 17.3 当前测试证据边界
 
-当前聚焦和全量单元测试已覆盖工单租户/所有权、我的工单、批量图片回填、转派、完成、关闭、并发终态门禁，以及候选人的租户、DEVICE/TENANT 路由、批量去重和企业微信可达性。真实本地服务回归执行 78 个请求和 48 个断言，覆盖配置 CRUD、跨租户详情/转派、具体/未分配工单、负责人转派与完成、异常关闭、API 清理；另从真实 RabbitMQ `alarm_queue`发布消息并到达 HTTP 接收器。只读数据库证据显示三张工单状态为 `2/2/3`，`alarm_handle`均有说明、图片和实际处理人；HTTP 通道记录 8 次成功，企业微信假地址记录 8 次失败发送尝试。
+历史 78/82 请求结果仅作为旧契约证据。当前 Collection 为 87 个请求，新增目录、字典和等级过滤断言；是否通过必须以本轮重新执行的 Maven、迁移检查及真实服务报告为准，不能复用历史数字。
 
-本轮按约定不重复要求企业微信客户端实收，企业微信失败记录只证明配置路由、动态 Consumer、接收人解析和发送尝试已经执行。当前测试库未执行 DDL，`idx_alarm_workorder_tenant_assignee_status`只读检查为不存在，正式发布前必须按第 3 号文档迁移并复核。以下字段和异常恢复契约仍应在部署环境的专项负向回归中保留证据：
+企业微信客户端到达能力已由当前测试方确认，可作为状态矩阵的通道基线；但每条当前事件仍须存在正确目标和成功发送日志，失败记录只能证明执行了发送尝试。当前测试库未执行 DDL，`idx_alarm_workorder_tenant_assignee_status`只读检查为不存在，正式发布前必须按第 3 号文档迁移并复核。以下字段和异常恢复契约仍应在部署环境的专项负向回归中保留证据：
 
 - `messageType` 缺失或超过 5 字符；
 - `pushChannelType` 缺失或未知；

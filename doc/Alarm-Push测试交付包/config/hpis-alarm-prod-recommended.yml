@@ -1,0 +1,169 @@
+# Alarm 单实例标准生产模板
+# Data ID: hpis-alarm-prod.yml
+# 适用：已完成时间容量分片DDL和旧数据迁移的单实例现场。
+
+server:
+  port: 8806
+
+spring:
+  shardingsphere:
+    datasource:
+      ds:
+        url: jdbc:mysql://${ALARM_DB_HOST}:${ALARM_DB_PORT:3306}/hpis_alarm?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&useCursorFetch=true
+        username: ${ALARM_DB_USERNAME}
+        password: ${ALARM_DB_PASSWORD}
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        # 注意：当前新分片代码只读取上述四项，并直接创建Hikari。
+        # initial-size/max-active等旧Druid参数即使配置也不生效。
+
+# 必填。Windows示例 D:/hpis-data/alarm/；Linux示例 /opt/hpis/data/alarm/。
+# 部署账号必须拥有创建、读取、写入和删除临时文件的权限。
+file:
+  path: ${ALARM_FILE_PATH}
+
+thread:
+  pool:
+    core-pool-size: 10
+    maximum-pool-size: 20
+    work-queue-size: 5000
+    # 当前代码未读取，仅保留与旧配置兼容。
+    keep-alive-time: 60
+
+push:
+  # 显式开启；代码默认false。
+  open: true
+
+alarm:
+  push:
+    require-matched-config: true
+
+  sharding:
+    enabled: true
+    max-rows-per-slice: 5000000
+    allocation-segment-size: 1000
+    pre-create-months: 0
+    # 已废弃兼容字段，当前路由不读取旧0..4表。
+    include-legacy-tables: false
+    id:
+      # 当前确认单实例，固定0。扩容前必须改为逐实例唯一值。
+      worker-id: 0
+    actual-data-nodes:
+      current-month-max-slice-no: 255
+      next-month-max-slice-no: 9
+    cid-index:
+      hot-hours: 24
+      stale-expire-days: 30
+      cleanup-batch-size: 1000
+      transfer-batch-size: 1000
+      cleanup-cron: "0 0 2 * * ?"
+      transfer-cron: "0 10 2 * * ?"
+      stale-timeout-cron: "0 20 2 * * ?"
+      log-enabled: false
+    rule-refresh:
+      enabled: true
+      cron: "0 5 0 1 * ?"
+      close-old-delay-ms: 300000
+      active-on-table-created-enabled: true
+      active-on-table-created-debounce-ms: 30000
+      active-on-table-created-async: true
+      month-end-pre-create-enabled: true
+      month-end-pre-create-cron: "0 50 23 * * ?"
+      month-end-pre-create-check-last-day: true
+      month-end-pre-create-next-month-max-slice-no: 0
+
+  batch:
+    stop-enabled: true
+    insert-enabled: true
+    in-limit: 500
+    fallback-single-on-batch-error: true
+    fallback-single-max-items: 100
+    # 标准现场保持单条listener；压测通过后才切true。
+    insert-consumer-batch-enabled: false
+    insert-consumer-batch-size: 100
+    insert-consumer-batch-receive-timeout-ms: 50
+    insert-consumer-batch-concurrency: "2-4"
+    insert-consumer-batch-prefetch: 100
+    insert-consumer-batch-log-enabled: false
+    insert-item-profile-log-enabled: false
+    stop-event-batch-enabled: true
+    stop-event-upsert-batch-size: 100
+    electrolytic-snapshot-batch-size: 100
+    electrolytic-snapshot-mode: SYNC
+    start-lock-retry-max-attempts: 3
+
+  stop-worker:
+    dispatch-enabled: true
+    dispatch-interval-ms: 100
+    worker-threads: 4
+    claim-batch-size: 200
+    max-in-flight-batches: 4
+    processing-timeout-ms: 60000
+    claim-recovery-batch-size: 500
+    claim-recovery-interval-ms: 10000
+    processing-retry-delay-ms: 1000
+    claim-retry-max-attempts: 3
+    claim-retry-backoff-ms: 25
+    route-missing-retry-delay-ms: 5000
+    route-missing-profile-log-every-batches: 100
+    initial-available-delay-ms: 0
+    low-watermark: 500
+    high-watermark: 5000
+    normal-batch-size: 500
+    high-batch-size: 2000
+    normal-interval-ms: 1000
+    high-interval-ms: 100
+    max-parallelism: 4
+    side-effect-enabled: true
+    applied-retention-minutes: 30
+    cleanup-batch-size: 1000
+    cleanup-interval-ms: 60000
+    failed-retention-days: 7
+    cleanup-only-low-traffic: true
+    max-retry: 5
+    route-missing-recovery-batch-size: 500
+    route-missing-recovery-delay-ms: 1000
+    route-missing-recovery-interval-ms: 10000
+    idle-pause-enabled: true
+    idle-confirm-count: 3
+    idle-probe-interval-ms: 60000
+    log-enabled: false
+
+  ec-snapshot-worker:
+    # SYNC模式保持关闭。
+    dispatch-enabled: false
+    dispatch-interval-ms: 100
+    worker-threads: 2
+    claim-batch-size: 100
+    max-in-flight-batches: 2
+    processing-timeout-ms: 60000
+    claim-retry-max-attempts: 3
+    claim-retry-backoff-ms: 50
+    retry-delay-ms: 5000
+    initial-available-delay-ms: 2000
+    max-retry: 5
+    recovery-batch-size: 500
+    recovery-interval-ms: 10000
+    log-enabled: false
+    idle-confirm-count: 3
+    idle-probe-interval-ms: 1000
+
+  sql-log:
+    enabled: false
+    mode: alarm-write
+    print-param: false
+    slow-enabled: true
+    slow-ms: 200
+
+  dedup:
+    disconnect:
+      ttl-seconds: 1800
+
+  internal-test:
+    # 生产必须为false。
+    remote-call-stub-enabled: false
+    push-mq-stub-enabled: false
+
+# 邮件推送未启用时可不配置真实值。
+mail:
+  domain: ${MAIL_DOMAIN:}
+  from: ${MAIL_FROM:}

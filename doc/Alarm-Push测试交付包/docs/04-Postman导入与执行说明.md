@@ -1,5 +1,7 @@
 # Postman 导入与执行说明
 
+> 当前 Collection 基线：2026-08-02，共 87 个请求。新增 `02A - Message Type Catalog and Dictionary`，执行过滤用例前必须部署增量 DDL、System 字典和目录基础数据。
+
 ## 1. 使用范围
 
 本说明对应当前交付包 Collection，覆盖：
@@ -7,8 +9,10 @@
 - Alarm 配置新增、查询、修改、删除；
 - 企业微信租户应用、业务用户绑定、接收组的受支持生命周期；
 - HTTP 与企业微信 `ActivePushConfig` 的新增、查询、修改、删除；
+- System 消息组/报警等级字典、Push 消息类型目录树、过滤选项；
+- `messageType=10` 的等级 1 放行、等级 2/3 排除和无等级兼容路由；
 - 普通报警 `pushMessageType=10`；
-- 工单 `workorderPushMessageType=25`、候选人、具体负责人、未分配、转派、完成和异常关闭；
+- 工单 `workorderPushMessageType=25`、候选目标、`null/0/正数`推送三态、转派、报警处理联动完成、stop 自动关闭和异常关闭；
 - 失败请求、配置恢复和 API 清理。
 
 Collection 只允许在专用测试租户运行。企业微信应用是“每租户一条”的配置且没有 DELETE 接口，绑定也可能覆盖相同业务用户的旧值；共享租户必须改用手工流程并先保存可恢复快照。
@@ -28,12 +32,13 @@ Collection 只允许在专用测试租户运行。企业微信应用是“每租
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
+| `systemBaseUrl` | 字典/目录联调必填 | System 网关或直连地址，默认示例 `http://127.0.0.1:8801` |
 | `alarmBaseUrl` | 是 | Alarm 网关或直连地址，默认示例 `http://127.0.0.1:18806` |
 | `pushBaseUrl` | 是 | Push 网关或直连地址，默认示例 `http://127.0.0.1:8812` |
 | `receiver10BaseUrl` | HTTP 测试必填 | 普通报警 HTTP 接收器 |
 | `receiver25BaseUrl` | 工单 HTTP 测试必填 | 工单 HTTP 接收器 |
-| `token` | 是 | 第一负责人且具备配置、工单接口权限的同租户 Token |
-| `secondAssigneeToken` | 是 | 第二负责人同租户 Token，用于验证完成所有权 |
+| `token` | 是 | 第一督促目标且具备配置、工单/报警处理接口权限的同租户 Token |
+| `secondAssigneeToken` | 是 | 第二督促目标同租户 Token，用于验证转派后仍不形成处理所有权 |
 | `closePermissionToken` | 是 | 具备 `alarm:workorder:close` 权限的同租户 Token；代码不额外识别管理员身份 |
 | `otherTenantToken` | 跨租户用例必填 | 另一租户用户 Token，只用于验证详情不可见和转派失败 |
 | `tenantId` | 是 | 三个 Token 对应的同一测试租户 |
@@ -47,7 +52,7 @@ Alarm 服务自身的默认端口是 `8806`；Postman Environment 使用 `18806`
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `userId` | 是 | `token` 对应业务用户 ID、第一负责人 |
+| `userId` | 是 | `token` 对应业务用户 ID、第一定向督促目标 |
 | `secondUserId` | 是 | `secondAssigneeToken` 对应业务用户 ID、转派目标 |
 | `closeUserId` | 是 | `closePermissionToken` 对应业务用户 ID，用于核验异常关闭实际处理人 |
 | `otherUserId` | 跨租户用例必填 | `otherTenantToken`对应业务用户 ID |
@@ -80,7 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File 'D:\studyProject\hpis2.0\hpis\hpis-alarm\src\test\resources\scripts\run-alarm-push-postman-e2e.ps1'
 ```
 
-脚本自动生成一次性租户、四类用户上下文和三台测试设备缓存，启动 Push、Alarm 与两个 HTTP 接收器，使用本地不可达企业微信地址运行 78 个请求，最后清理本轮 Redis 上下文和 API 配置。Newman JSON、导出环境和日志写入各模块 `target`，不得提交；除非使用 `-KeepServices`，脚本会停止自己启动的进程。它验证的是直连微服务的服务端闭环，不验证生产网关鉴权、企业微信客户端实收，也不补做缺失 DDL。
+脚本自动生成一次性租户、四类用户上下文和三台测试设备缓存，启动 Push、Alarm 与两个 HTTP 接收器并运行当前 87 个请求，最后清理本轮 Redis 上下文和 API 配置。脚本不会创建 System 字典、消息类型目录或执行 DDL，因此这些对象必须预先通过正式接口/增量脚本准备。Newman JSON、导出环境和日志写入各模块 `target`，不得提交；除非使用 `-KeepServices`，脚本会停止自己启动的进程。它验证的是直连微服务的服务端闭环，不验证生产网关鉴权或企业微信客户端实收。
 
 ## 4. 启动本地 HTTP 接收器
 
@@ -99,6 +104,7 @@ Invoke-RestMethod http://127.0.0.1:19025/_events
 
 - [ ] Push 先启动，Alarm 后启动，均连接正确 Nacos、数据库、Redis 和 RabbitMQ。
 - [ ] 已按 `03-运行配置与SQL同步说明.md` 完成结构同步，但未由本测试自动执行 DDL。
+- [ ] System 中 `push_message_group` 和 `alarm_rank` 字典可查，Push 目录包含启用的 10/25，且 `push.routing.dict-exclude-filter-enabled=true`。
 - [ ] `alarm_queue`、`push.alarm` 及动态配置队列具备声明和消费权限。
 - [ ] 三个 Token 属于同一测试租户，且用户 ID 与 Token 身份一致。
 - [ ] 第一、第二用户是专用测试用户，企业微信应用对二人可见。
@@ -137,7 +143,16 @@ Collection 必须按目录顺序单线程执行，不要并发运行。报警写
 
 应用、绑定、接收组是独立资源，不能与 ActivePushConfig 合并成一个请求。
 
-### 6.4 `03 - Push Config`
+### 6.4 `02A - Message Type Catalog and Dictionary`
+
+1. 从 System 查询 `push_message_group` 和 `alarm_rank`，确认字典值可用。
+2. 从 Push 查询启用目录，确认 `10` 支持 `alarm_rank`，`25` 不支持字典过滤。
+3. 查询 `/pushMessageType/options/tree`，确认消息组只用于展示且两个类型位于预期组。
+4. 查询 `/pushMessageType/10/filterOptions`，确认真实值域为 `1/2/3`。
+
+本目录只读，不在共享环境自动新增或修改全局元数据。
+
+### 6.5 `03 - Push Config`
 
 创建四条独立配置：
 
@@ -148,35 +163,36 @@ Collection 必须按目录顺序单线程执行，不要并发运行。报警写
 | 企业微信普通报警 | 10 | 20 | TENANT | recipientGroupId |
 | 企业微信工单 | 25 | 20 | TENANT | recipientGroupId |
 
-列表回填四个配置 ID；随后禁用/恢复企业微信 25 配置，证明更新接口生效。候选接口使用 `messageType=25 + deviceSn`，断言两名用户只出现一次且 `wecomReachable=true`。
+HTTP/企业微信的 `messageType=10` 配置写 `excludedDictValues=2,3`，表示只接收等级 1；`messageType=25` 写空字符串并由服务端保持为空。列表回填四个配置 ID；随后禁用/恢复企业微信 25 配置，证明更新接口生效。候选接口使用 `messageType=25 + deviceSn`，断言两名用户只出现一次且 `wecomReachable=true`。
 
-### 6.5 `04 - Alarm messageType 10`
+### 6.6 `04 - Alarm messageType 10`
 
-通过 `/alarm/alarmAdd` 创建具体负责人、未分配、异常关闭三条紧急报警和一条负向报警。最后调用 `/alarm/list`，在响应 `rows` 中按完整 `alarmCid` 精确定位三个内部 Long ID。
+通过 `/alarm/alarmAdd` 创建定向推送、组推送、无推送、异常关闭四条紧急报警和一条负向报警。最后调用 `/alarm/list`，在响应 `rows` 中按完整 `alarmCid`精确定位四个内部 Long ID。
 
 当前 `/alarm/list` 虽返回 `alarmCid`，但请求参数 `alarmCid`不参与分页过滤；Collection 不依赖该无效筛选，也不使用 SQL 回填 ID。
 
-### 6.6 `05 - Workorder Ownership Lifecycle`
+### 6.7 `05 - Workorder Ownership Lifecycle`
 
 按顺序验证：
 
 1. 批量把三条报警确认到 `handleStatus=2`。
-2. 为第一用户创建具体负责人工单，验证“我的工单”。
+2. 为第一用户创建正数定向督促工单，验证“我的工单”仅代表定向记录。
 3. 使用另一租户上下文查询该工单详情并尝试转派，分别验证不可见和写操作拒绝。
 4. 通用 PUT 只修改标题/内容；请求中的状态、租户、负责人不得生效。
-5. 缺图片完成失败；同一报警重复创建失败。
-6. 转派到第二用户，旧负责人完成失败，第二负责人带说明和图片完成为状态 `2`。
-7. 创建 `assigneeId=0` 未分配工单，验证不进入第一用户“我的工单”且不能完成。
-8. `assigneeId=0` 转派失败；转派给第二用户后由第二用户完成。
+5. `/handle/save`缺图片失败；同一报警重复创建失败；旧 `/workorder/complete`返回固定退役提示。
+6. 转派到第二用户只产生第二目标通知；第一目标或其他有处理权限用户均可作为实际处理人，通过 `/handle/save`联动工单到 `2`。
+7. 创建 `assigneeId=0`组督促工单，验证不进入“我的工单”但可以直接处理报警。
+8. 创建缺失/`null`的无推送工单，验证数据库 SQL NULL、`pushTargetMode=NONE`且无工单推送事件。
+9. 活动工单收到真实 stop 后自动进入 `3/ALARM_ENDED`，`processable=false`；另用独立报警验证手工异常关闭。
 9. 用第三条报警创建工单，使用 close 权限 Token 异常关闭为状态 `3`，重复关闭失败。
 
 完成/关闭不会在本轮自动断言企业微信客户端实收；路由、发送尝试和日志通过只读 SQL/服务日志保存证据。
 
-### 6.7 `06 - Negative Config and Failure`
+### 6.8 `06 - Negative Config and Failure`
 
 按请求名称执行 Push 禁用/恢复、HTTP 不可达/恢复、Alarm 工单 messageType 清空能力检查/恢复。每个负例后必须立即执行恢复请求。`workorderPushMessageType=null` 当前动态更新可能被忽略，该请求用于暴露实际契约，不能把 HTTP 200 自动判为字段已清空。
 
-### 6.8 `07 - Cleanup`
+### 6.9 `07 - Cleanup`
 
 删除顺序不能改变：企业微信/HTTP Push 配置 → 接收组 → 用户绑定 → 禁用企业微信应用 → Alarm 配置 → 接收器事件。组被配置引用时删除会失败，所以必须先删四条 Push 配置。
 
@@ -189,8 +205,9 @@ Collection 必须按目录顺序单线程执行，不要并发运行。报警写
 | 配置 CRUD | API 写后读一致、删除后不可见 | 只看 200，或字段/关系未生效 |
 | 租户边界 | 请求体不能切租户，跨租户 ID 不可访问 | 可读写其他租户数据 |
 | 候选人 | 路由命中、userId 去重、可达性正确 | 禁用/跨租户/不匹配成员进入结果 |
-| 工单所有权 | 我的工单、转派、完成操作者符合负责人 | 未分配或非负责人可完成 |
-| 工单终态 | 完成 `2`、关闭 `3`，重复写失败 | 重复写或状态回退 |
+| 督促目标 | 我的工单、转派和推送目标符合 `assigneeId`三态 | 把督促目标误当处理所有权 |
+| 处理闭环 | 任意实际处理人经 `/handle/save`使报警/处理记录/活动工单一致 | 非目标用户被错误拒绝或两套完成接口并存 |
+| 工单终态 | 处理联动 `2`、stop/异常关闭 `3`，重复写失败 | 结束报警仍显示可处理或状态回退 |
 | 处理证据 | 说明、图片、实际处理人同步到 `alarm_handle` | 只更新工单或图片丢失 |
 | Push 闭环 | HTTP 实收；企业微信有路由、发送尝试和日志证据 | 只进入上游 MQ、无配置消费/发送证据 |
 | 清理 | 配置资源通过 API 删除/禁用，无误删 | SQL 代替配置 CRUD 或遗留启用配置 |
@@ -205,6 +222,6 @@ Collection 必须按目录顺序单线程执行，不要并发运行。报警写
 - 命中的 ActivePushConfig、recipientGroupId 和候选人解析结果；
 - RabbitMQ 动态队列消费证据；
 - `push_message_log` 的目标、状态和失败详情；
-- 工单负责人、状态以及 `alarm_handle` 的说明、图片和实际处理人。
+- 工单督促目标三态、`pushTargetMode/processable`、状态以及 `alarm_handle` 的说明、图片和实际处理人。
 
 若本轮仍要声称“企业微信实际到达 PASS”，则必须额外提供目标账号实收证据；路由和发送日志只能证明服务端闭环。

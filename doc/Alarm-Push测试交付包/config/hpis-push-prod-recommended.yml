@@ -1,0 +1,64 @@
+# Push 单实例标准生产模板
+# Data ID: hpis-push-prod.yml
+# 所有推送通道均为选配；当前现场仅企业微信可能启用。
+
+server:
+  port: 8812
+
+spring:
+  datasource:
+    dynamic:
+      primary: master
+      strict: true
+      # 当前Push使用dynamic-datasource + Druid；全局Druid参数按已验证的现有配置形式填写。
+      druid:
+        initial-size: 3
+        min-idle: 3
+        maxActive: 20
+        maxWait: 60000
+        timeBetweenEvictionRunsMillis: 60000
+        minEvictableIdleTimeMillis: 300000
+        validationQuery: SELECT 1
+        testWhileIdle: true
+        testOnBorrow: false
+        testOnReturn: false
+      datasource:
+        master:
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://${PUSH_DB_HOST}:${PUSH_DB_PORT:3306}/hpis_push?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+          username: ${PUSH_DB_USERNAME}
+          password: ${PUSH_DB_PASSWORD}
+
+thread:
+  pool:
+    core-pool-size: 6
+    maximum-pool-size: 12
+    work-queue-size: 1000
+    # 当前代码未读取，仅保留兼容。
+    keep-alive-time: 60
+
+queue:
+  push:
+    # 以下键由@Value按camelCase读取，不能改成短横线。
+    maxLength: 1000
+    maxLengthBytes: 10485760
+    messageTTL: 60000
+    expiresTime: 3600000
+
+push:
+  inapp:
+    # TENANT_ALL=站内消息按租户全量；MESSAGE_TYPE=旧的租户+类型路由。
+    route-mode: TENANT_ALL
+  routing:
+    # 第一次发布必须false；DDL、字典、目录验证后再改true并重启Push。
+    dict-exclude-filter-enabled: false
+  wecom:
+    # 企业微信选配。不使用时secret-key可为空，不会阻断Push启动。
+    # 启用时必须是Base64，解码后严格32字节，并在所有重启中保持稳定。
+    secret-key: ${PUSH_WECOM_SECRET_KEY:}
+    base-url: https://qyapi.weixin.qq.com
+    connect-timeout-ms: 5000
+    read-timeout-ms: 5000
+    max-recipients-per-request: 1000
+    max-attempts: 3
+    max-text-bytes: 2048

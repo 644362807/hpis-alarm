@@ -2416,6 +2416,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		JSONObject pushMessage = new JSONObject();
 		pushMessage.put("data",jsonObject);
 		pushMessage.put("messageType", resolvePushMessageType(jsonObject, alarmOBJ1, alarmConfigure));
+		putMessageLevel(pushMessage, alarmOBJ1);
 		if(AlarmTypeEnums.ALARM_TYPE_ENUMS_1.getKey().equals(jsonObject.getString("alarmType"))){
 			pushMessage.put("alarmType","高温报警");
 		} else if (AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getKey().equals(jsonObject.getString("alarmType"))) {
@@ -2483,6 +2484,12 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 			return alarmType;
 		}
 		return alarm == null ? null : alarm.getAlarmType();
+	}
+
+	private void putMessageLevel(JSONObject pushMessage, Alarm alarm) {
+		if (pushMessage != null && alarm != null && StringUtils.isNotBlank(alarm.getAlarmRank())) {
+			pushMessage.put("messageLevel", alarm.getAlarmRank().trim());
+		}
 	}
 
 	private boolean isRemoteCallStubEnabled() {

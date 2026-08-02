@@ -1,4 +1,6 @@
-# Alarm / Push 运行配置与数据库同步说明（2026-07-15）
+# Alarm / Push 运行配置与数据库同步说明（2026-08-02）
+
+> 当前部署入口：配置键中文释义和推荐模式见 `07-Alarm-Push服务配置与启动手册.md`；从最初现场库 `hpis_alarm1` 升级见 `08-现场旧库升级迁移手册.md`。本文保留完整技术基线和脚本细节。
 
 ## 1. 文档目标与边界
 
@@ -15,7 +17,7 @@
 - Alarm 默认端口 `8806`，Push 默认端口 `8812`。
 - 配置数据的新增、查询、修改、删除必须走 Alarm/Push 接口，禁止用 SQL 代替配置 API。
 - SQL 只用于基础库导入、结构迁移、历史业务数据迁移和只读核验。
-- 本轮不新增 Push DDL；全新 Push 库必须导入正式数据库基线，不能根据 Java 实体临时造表。
+- 本轮新增 Push 消息类型目录/字典过滤增量 DDL；全新 Push 库仍须先导入正式数据库基线，再执行受控增量脚本，不能根据 Java 实体临时造表。
 - 企业微信、接收组、工单转派推送和候选负责人接口已进入当前版本；可选 `pushBindingId` 仍属于后续迭代，不混入本次 SQL。
 
 ## 2. 运行依赖与版本
@@ -58,6 +60,8 @@ spring:
 
 ### 3.2 Alarm 本地 bootstrap.yml
 
+下面是生产外部引导模板，不是仓库当前`bootstrap.yml`的逐字副本。仓库内置值仍是`dev + 127.0.0.1:8848 + nacos/nacos`，生产必须用外部配置或启动覆盖，不得直接沿用。
+
 ```yaml
 server:
   port: 8806
@@ -86,6 +90,8 @@ spring:
 ```
 
 ### 3.3 Push 本地 bootstrap.yml
+
+下面同样是生产外部引导模板；服务名`hpis-push`不能改，Namespace保持public，Group保持`DEFAULT_GROUP`。
 
 ```yaml
 server:
@@ -130,7 +136,7 @@ spring:
       pool:
         min-idle: 2
         max-idle: 8
-        max-active: 32
+        max-active: 16
         max-wait: 3000ms
 
   rabbitmq:
@@ -188,17 +194,17 @@ spring:
         password: ${ALARM_DB_PASSWORD}
         driver-class-name: com.mysql.cj.jdbc.Driver
 
-# AlarmServiceImpl 为该配置使用无默认值 @Value，必须配置且目录需要可写。
+# AlarmServiceImpl 为该配置使用无默认值 @Value，必须按操作系统人工配置且目录需要可写。
 file:
-  path: ${ALARM_FILE_PATH:D:/hpis-data/alarm/}
+  path: ${ALARM_FILE_PATH}
 
-# Alarm 和 Push 的 ThreadPoolConfig 均没有字段默认值，四项必须填写。
+# core/max/queue没有默认值，keep-alive-time当前虽能绑定但未被线程池工厂使用。
 thread:
   pool:
-    core-pool-size: 20
-    maximum-pool-size: 37
+    core-pool-size: 10
+    maximum-pool-size: 20
     keep-alive-time: 60
-    work-queue-size: 15000
+    work-queue-size: 5000
 
 push:
   # Alarm 总推送开关。生产闭环开启；紧急止推时可临时关闭。
@@ -346,7 +352,9 @@ mail:
 ### 5.1 Alarm 配置关注点
 
 - `thread.pool.*` 缺失会在创建线程池时产生空值问题，属于启动必配。
+- 上一条的必配范围是`core-pool-size/maximum-pool-size/work-queue-size`；`keep-alive-time`当前不参与线程池创建。
 - `alarm.sharding.enabled=true` 时必须配置 `spring.shardingsphere.datasource.ds.*`。
+- 新分片代码直接创建Hikari且只读取`url/username/password/driver-class-name`；旧`ds.initial-size/max-active/max-wait`等Druid参数不生效。
 - `max-rows-per-slice` 有效上限为 `8388608`；`worker-id` 有效范围为 `0..255`。
 - 当前月 actualDataNodes 推荐预注册 `00..255`，下个月推荐 `00..09`。
 - `alarm.batch.insert-consumer-batch-enabled=true` 会让批量 listener 接管 `alarm_queue`，开启前必须核对消费者数和数据库容量。
@@ -365,23 +373,29 @@ spring:
       # Push 只有一个主库时仍沿用当前动态数据源约定。
       primary: master
       strict: true
+      druid:
+        initial-size: 3
+        min-idle: 3
+        maxActive: 20
+        maxWait: 60000
+        timeBetweenEvictionRunsMillis: 60000
+        minEvictableIdleTimeMillis: 300000
+        validationQuery: SELECT 1
+        testWhileIdle: true
+        testOnBorrow: false
+        testOnReturn: false
       datasource:
         master:
-          type: com.alibaba.druid.pool.DruidDataSource
           driver-class-name: com.mysql.cj.jdbc.Driver
           url: jdbc:mysql://${PUSH_DB_HOST}:${PUSH_DB_PORT:3306}/hpis_push?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
           username: ${PUSH_DB_USERNAME}
           password: ${PUSH_DB_PASSWORD}
-          initial-size: 5
-          min-idle: 5
-          max-active: 30
-          max-wait: 60000
 
 # 无代码默认值，必须配置。keep-alive-time 当前保留配置兼容位。
 thread:
   pool:
-    core-pool-size: 10
-    maximum-pool-size: 30
+    core-pool-size: 6
+    maximum-pool-size: 12
     keep-alive-time: 60
     work-queue-size: 1000
 
@@ -401,10 +415,11 @@ queue:
 ### 6.1 Push 配置关注点
 
 - Push 启动时以数据库中 `enabled=1` 且未删除的配置为事实源，重建 Redis 路由、动态队列以及 HTTP/MQTT Consumer。
+- HTTP、MQTT、普通WebSocket、邮件和企业微信业务通道都是选配；但Push核心启动仍依赖MySQL、Redis和RabbitMQ，不能把“通道选配”理解为“基础中间件选配”。
 - HTTP 主动推送通道编码为 `10`，MQTT 为 `11`，被动 WebSocket 为 `1`；通道由配置 API 创建，不在 Nacos 中硬编码接收地址。
 - 动态队列参数过小会丢失或过早淘汰积压消息，过大会增加 RabbitMQ 内存和磁盘压力。
 - `strict=true` 可以避免数据源名称拼错后静默回落到其他库。
-- Push 当前没有独立的数据库迁移文件，正式基础表必须来自受控数据库基线。
+- Push 正式基础表必须来自受控数据库基线；当前增量依次为企业微信脚本和消息类型目录/字典过滤脚本，后者另有对应回滚脚本。
 
 ### 6.2 关键配置键精确映射
 
@@ -426,6 +441,9 @@ queue:
 | `queue.push.maxLengthBytes` | Push | 建议显式配置 | `@Value` 直接读取，默认 `10485760` |
 | `queue.push.messageTTL` | Push | 建议显式配置 | `@Value` 直接读取，默认 `60000ms` |
 | `queue.push.expiresTime` | Push | 建议显式配置 | `@Value` 直接读取，默认 `3600000ms` |
+| `push.inapp.route-mode` | Push | 生产显式 | 当前推荐`TENANT_ALL`，站内按租户全量 |
+| `push.routing.dict-exclude-filter-enabled` | Push | 灰度显式 | 首次发布`false`，字典/目录/配置验收后`true` |
+| `push.wecom.secret-key` | Push | 企业微信条件必填 | 不用企业微信时可为空；启用时Base64解码后必须32字节且保持稳定 |
 
 `queue.push.*` 四个参数保持表中的 camelCase 拼写，因为当前代码使用 `@Value` 的原始键名直接读取；不要仅凭 `@ConfigurationProperties` 的宽松绑定习惯改成短横线。
 
@@ -722,6 +740,7 @@ HAVING COUNT(*) > 1;
 - `alarm_configure.push_enabled`、`push_message_type`、`workorder_push_message_type`、`workorder_config_id`；
 - `alarm_workorder` 当前事实表；
 - 工单查询索引 `idx_alarm_workorder_tenant_assignee_status(tenant_id, assignee_id, status, create_time)`；
+- `alarm_workorder.assignee_id`规范为 `bigint NULL DEFAULT NULL`，用于区分“不推送”与组推送 `0`；历史 `NOT NULL DEFAULT 0`会有条件执行 `MODIFY COLUMN`；
 - 配置解析与设备绑定索引；
 - 当前已存在 `alarm_handle` 及月度分片的 `workorder_id` 和唯一约束。
 
@@ -738,13 +757,15 @@ WHERE table_schema = 'hpis_alarm'
 ORDER BY seq_in_index;
 ```
 
-预期依次返回 `tenant_id`、`assignee_id`、`status`、`create_time`。本轮不新增 `alarm_workorder.handle_picture`；完成/关闭图片继续写入 `alarm_handle.handle_picture`。DDL 执行失败时先查当前字段、索引和存储过程状态，再只补缺失项，不能假设整个脚本已事务回滚。
+预期依次返回 `tenant_id`、`assignee_id`、`status`、`create_time`。另检查 `information_schema.columns`中 `assignee_id.IS_NULLABLE='YES'`且 `COLUMN_DEFAULT IS NULL`。本轮不新增 `alarm_workorder.handle_picture`；处理图片继续写入 `alarm_handle.handle_picture`。`MODIFY COLUMN`和新增索引都有元数据锁风险，必须低峰执行。DDL 失败时按实际字段/索引状态继续，不能假设整体事务回滚。
 
-## 12. Push 数据库基线校验
+## 12. Push 数据库基线与消息字典过滤增量
 
-Push 仓库没有完整基础库建表脚本。全新环境必须先导入受控的 `hpis_push` 正式基础库，不能根据 Mapper 或实体临时生成生产 DDL。仓库现有 `hpis-push/src/main/resources/sql/20260716_wecom_push_incremental.sql` 只负责企业微信增量对象，不替代基础库。
+Push 仓库没有完整基础库建表脚本。全新环境必须先导入受控的 `hpis_push` 正式基础库，不能根据 Mapper 或实体临时生成生产 DDL。仓库增量脚本包括 `20260716_wecom_push_incremental.sql` 与 `20260731_push_message_dict_filter.sql`，均不替代基础库。
 
 企业微信增量脚本包含无 `IF NOT EXISTS` 的建表/加列以及唯一索引迁移，不是整体幂等。只在预检确认四张企业微信表、`route_scope`、`recipient_group_id`和推送日志增量字段均未部署时整脚本执行一次；部分对象已经存在时不得重跑整文件，必须由 DBA 按 `information_schema` 结果拆分缺失项。
+
+消息字典过滤增量会创建 `push_message_type_catalog`，并给 `active_push_config` 增加 `excluded_dict_values`。执行前必须运行 `sql/push-dict-filter-precheck.sql`；成功后再复跑该只读脚本。需要回滚时使用 `20260731_push_message_dict_filter_rollback.sql`，但回滚会丢弃目录和过滤配置，执行前必须导出相关数据。
 
 ### 12.1 表与字段检查
 
@@ -823,7 +844,7 @@ HAVING COUNT(*) > 1;
 - [ ] Alarm 连接 `hpis_alarm`，Push 连接 `hpis_push`。
 - [ ] Alarm 分片基础表、所需字段和索引全部存在。
 - [ ] Push 三张基础表和所需字段存在。
-- [ ] 工单联合索引列顺序正确，`alarm_workorder`没有新增图片列。
+- [ ] 工单联合索引列顺序正确，`assignee_id`允许 SQL NULL 且默认 NULL，`alarm_workorder`没有新增图片列。
 - [ ] Nacos 中两个实例注册健康，8806/8812 正常监听。
 - [ ] `alarm_queue`、`push.alarm` 及已启用配置动态队列的消费者数正常。
 
@@ -845,7 +866,7 @@ HAVING COUNT(*) > 1;
 - [ ] 未匹配配置或 `pushEnabled=0` 时不发送。
 - [ ] Push 禁用后停止投递，重新启用后恢复。
 - [ ] HTTP/MQTT/WebSocket 按实际启用通道分别验证，不以“只写入 MQ”代替最终接收。
-- [ ] 工单未分配、转派、负责人完成和异常关闭均按状态机验证；完成图片从 `alarm_handle`回填。
+- [ ] 工单 `null/0/正数`三态、转派、任意实际处理人联动完成、stop 自动关闭和手工异常关闭均按状态机验证；处理图片从 `alarm_handle`回填。
 
 可复用测试入口：
 
@@ -857,7 +878,7 @@ powershell -ExecutionPolicy Bypass `
   -File 'D:\studyProject\hpis2.0\hpis\hpis-alarm\src\test\resources\scripts\run-alarm-push-e2e.ps1'
 ```
 
-第一个脚本要求 Nacos、MySQL、Redis、RabbitMQ 和已打包的 Alarm/Push JAR 就绪；它启动隔离服务和 HTTP 接收器，执行 78 请求的完整配置/工单 Collection，不执行 DDL。第二个脚本是较小的 RabbitMQ 入口回归，直接向真实 `alarm_queue`发布并验证最终 HTTP 接收。两者产生的报告和日志均位于 `target`，不得纳入提交。
+第一个脚本要求 Nacos、MySQL、Redis、RabbitMQ 和已打包的 Alarm/Push JAR 就绪；它启动隔离服务和 HTTP 接收器，执行完整配置/工单 Collection，不执行 DDL。Collection 请求数会随本次三态和统一处理契约更新，不能继续以旧版“78 请求”为固定通过条件。第二个脚本直接向真实 `alarm_queue`发布并验证最终 HTTP 接收。报告和日志均位于 `target`，不得纳入提交。
 
 当前测试库只读检查显示 `idx_alarm_workorder_tenant_assignee_status`不存在。测试脚本不会自动补索引；正式发布前必须按 12.6 节执行 `alarm-configure-workorder-migration.sql`并复核列顺序，不能因本地接口回归通过而跳过结构同步。
 

@@ -1,0 +1,51 @@
+# Alarm / Push 公共 Nacos 配置模板
+# Data ID: application-prod.yml
+# Namespace: public（不配置 namespace）
+# Group: DEFAULT_GROUP（不配置 group）
+# 所有 ${...} 均由部署平台或环境变量提供，禁止提交真实密码。
+
+spring:
+  redis:
+    host: ${REDIS_HOST}
+    port: ${REDIS_PORT:6379}
+    database: ${REDIS_DATABASE:0}
+    password: ${REDIS_PASSWORD:}
+    timeout: 5000ms
+    lettuce:
+      pool:
+        min-idle: 2
+        max-idle: 8
+        max-active: 16
+        max-wait: 3000ms
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: ${RABBITMQ_PORT:5672}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    connection-timeout: 10000
+    requested-heartbeat: 30
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        default-requeue-rejected: true
+        missing-queues-fatal: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+logging:
+  level:
+    root: INFO
+    com.hpis.alarm: INFO
+    com.hpis.push: INFO
