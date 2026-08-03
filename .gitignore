@@ -1,1 +1,8 @@
-.worktrees/
+/target/
+/logs/
+*.log
+*.pid
+*.tmp
+*.class
+.idea/
+*.iml
