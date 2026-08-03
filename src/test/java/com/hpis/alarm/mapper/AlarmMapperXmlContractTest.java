@@ -23,6 +23,17 @@ public class AlarmMapperXmlContractTest {
     }
 
     @Test
+    public void alarmPageContractReturnsHandleStatusFromHandleTable() throws Exception {
+        String xml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
+        String resultMap = fragmentById(xml, "AlarmResult");
+        String selectVo = fragmentById(xml, "selectAlarmVo");
+
+        assertTrue(resultMap.contains("property=\"handleStatus\" column=\"handle_status\""));
+        assertTrue(selectVo.contains("h.handle_status"));
+        assertTrue(selectVo.contains("left join alarm_handle h on a.alarm_id = h.alarm_id"));
+    }
+
+    @Test
     public void alarmListsUseStableBeginTimeAndIdOrdering() throws Exception {
         String xml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
 
@@ -63,6 +74,27 @@ public class AlarmMapperXmlContractTest {
     }
 
     @Test
+    public void alarmHandlingUsesTenantAndActiveStateGuards() throws Exception {
+        String alarmXml = normalizeWhitespace(readResource("/mapper/alarm/AlarmMapper.xml"));
+        String workorderXml = normalizeWhitespace(readResource("/mapper/alarm/AlarmWorkorderMapper.xml"));
+        String validateSql = fragmentById(alarmXml, "selectProcessableIdsByTenant");
+        String handleSql = fragmentById(alarmXml, "handleActiveByIdsAndTenant");
+        String workorderSql = fragmentById(workorderXml, "completeActiveByAlarmIds");
+        String stopWorkorderSql = fragmentById(workorderXml, "closeActiveByAlarmIds");
+
+        assertTrue(validateSql.contains("a.tenant_id = #{tenantId}"));
+        assertTrue(validateSql.contains("a.alarm_status = '0'"));
+        assertTrue(validateSql.contains("h.handle_status = '2'"));
+        assertTrue(handleSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(handleSql.contains("alarm_status = '0'"));
+        assertTrue(workorderSql.contains("tenant_id = #{tenantId}"));
+        assertTrue(workorderSql.contains("status in ('0', '1')"));
+        assertTrue(workorderSql.contains("status = '2'"));
+        assertTrue(stopWorkorderSql.contains("status = '3'"));
+        assertTrue(stopWorkorderSql.contains("status in ('0', '1')"));
+    }
+
+    @Test
     public void extensionDeleteStatementsRemainLogicalDeletes() throws Exception {
         String electrolyticXml = normalizeWhitespace(
                 readResource("/mapper/alarm/AlarmElectrolyticCellMapper.xml")).toLowerCase();
@@ -95,9 +127,21 @@ public class AlarmMapperXmlContractTest {
             return "";
         }
         int selectEnd = xml.indexOf("</select>", start);
+        int sqlEnd = xml.indexOf("</sql>", start);
+        int resultMapEnd = xml.indexOf("</resultMap>", start);
         int deleteEnd = xml.indexOf("</delete>", start);
-        int end = selectEnd < 0 ? deleteEnd : deleteEnd < 0 ? selectEnd : Math.min(selectEnd, deleteEnd);
+        int end = firstPositive(selectEnd, sqlEnd, resultMapEnd, deleteEnd);
         return end < 0 ? xml.substring(start) : xml.substring(start, end);
+    }
+
+    private int firstPositive(int... values) {
+        int result = -1;
+        for (int value : values) {
+            if (value >= 0 && (result < 0 || value < result)) {
+                result = value;
+            }
+        }
+        return result;
     }
 
     private String normalizeWhitespace(String value) {

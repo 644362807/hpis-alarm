@@ -10,6 +10,7 @@
         <result property="alarmType"    column="alarm_type"    />
         <result property="alarmRank"    column="alarm_rank"    />
         <result property="alarmStatus"    column="alarm_status"    />
+        <result property="handleStatus"    column="handle_status"    />
         <result property="delFlag"    column="del_flag"    />
         <result property="alarmBegintime"    column="alarm_beginTime"    />
         <result property="alarmEndtime"    column="alarm_endTime"    />
@@ -29,7 +30,7 @@
     </resultMap>
 
     <sql id="selectAlarmVo">
-        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time, h.update_time, a.create_by, a.update_by,a.scene_type,a.tenant_id,h.identify,h.opinion,a.alarm_cid,a.irms_sn,a.target_name,a.remark_data from alarm a
+        select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, h.handle_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time, h.update_time, a.create_by, a.update_by,a.scene_type,a.tenant_id,h.identify,h.opinion,a.alarm_cid,a.irms_sn,a.target_name,a.remark_data from alarm a
                                                                                                                                                                                                                                                         left join alarm_handle h on a.alarm_id = h.alarm_id
     </sql>
 
@@ -77,6 +78,37 @@
           and tenant_id = #{tenantId}
           and del_flag = '0'
     </select>
+
+    <select id="selectProcessableIdsByTenant" resultType="java.lang.Long">
+        select a.alarm_id
+        from alarm a inner join alarm_handle h on h.alarm_id = a.alarm_id
+        where a.alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+          and a.tenant_id = #{tenantId}
+          and a.del_flag = '0'
+          and a.alarm_status = '0'
+          and h.del_flag = '0'
+          and h.handle_status = '2'
+    </select>
+
+    <update id="handleActiveByIdsAndTenant">
+        update alarm
+        set alarm_status = #{alarmStatus},
+            update_by = #{updateBy},
+            update_time = #{updateTime}
+        <if test="alarmEndtime != null">
+            , alarm_endTime = #{alarmEndtime}
+        </if>
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
+          and alarm_status = '0'
+    </update>
 
     <select id="selectAlarmByQueryParameter" resultMap="AlarmResult" >
         select a.alarm_id, a.device_sn, a.alarm_type, a.alarm_rank, a.alarm_status, a.del_flag, a.alarm_beginTime, a.alarm_endTime, a.picture_path, a.video_path, a.create_time,  a.create_by, a.update_by ,a.alarm_cid,a.irms_sn from alarm a

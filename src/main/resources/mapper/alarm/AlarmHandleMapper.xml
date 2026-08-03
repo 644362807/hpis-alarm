@@ -9,7 +9,7 @@
         <result property="alarmId"    column="alarm_id"    />
         <result property="workorderId"    column="workorder_id"    />
         <result property="handlerId"    column="handler_id"    />
-
+        <result property="alarmStatus"    column="alarm_status"    />
         <result property="handleStatus"    column="handle_status"    />
         <result property="delFlag"    column="del_flag"    />
         <result property="identify"    column="identify"    />
@@ -25,6 +25,7 @@
         <result property="irmsSn"    column="irms_sn"    />
         <result property="areaSn"    column="area_sn"    />
         <result property="alarmBegintime"    column="alarm_beginTime"    />
+        <result property="alarmEndtime"    column="alarm_endTime"    />
     </resultMap>
 
     <sql id="selectAlarmHandleVo">
@@ -78,11 +79,14 @@
     </select>
 
     <select id="selectAlarmHandlesByAlarmIds" resultMap="AlarmHandleResult">
-        select alarm_handle_id, alarm_id, workorder_id, handler_id, handle_status, del_flag, identify,
-               opinion, handle_picture, create_time, create_by, update_time, update_by, handle_time,
-               confirm_user_id, apparatus_id, handler_name, alarm_beginTime
-        from alarm_handle
-        where alarm_id in
+        select h.alarm_handle_id, h.alarm_id, h.workorder_id, h.handler_id, h.handle_status,
+               h.del_flag, h.identify, h.opinion, h.handle_picture, h.create_time, h.create_by,
+               h.update_time, h.update_by, h.handle_time, h.confirm_user_id, h.apparatus_id,
+               h.handler_name, h.alarm_beginTime, a.alarm_status, a.alarm_endTime
+        from alarm_handle h inner join alarm a on a.alarm_id = h.alarm_id
+        where h.del_flag = '0'
+          and a.del_flag = '0'
+          and h.alarm_id in
         <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
             #{alarmId}
         </foreach>

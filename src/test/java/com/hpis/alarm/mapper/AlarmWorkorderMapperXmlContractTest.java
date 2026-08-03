@@ -98,12 +98,15 @@ public class AlarmWorkorderMapperXmlContractTest {
     @Test
     public void alarmWorkorderMapperStoresCurrentWorkorderOnly() throws Exception {
         String xml = normalizeWhitespace(readMapperXml("AlarmWorkorderMapper.xml"));
+        String insertSql = fragmentById(xml, "insertAlarmWorkorder");
 
         assertTrue(xml.contains("namespace=\"com.hpis.alarm.mapper.AlarmWorkorderMapper\""));
         assertTrue(xml.contains("uk_alarm_workorder_alarm"));
         assertTrue(xml.contains("selectAlarmWorkorderByAlarmIdAndTenant"));
         assertFalse(xml.contains("id=\"selectAlarmWorkorderById\""));
         assertTrue(xml.contains("insertAlarmWorkorder"));
+        assertTrue(insertSql.contains("assignee_id,"));
+        assertTrue(insertSql.contains("#{assigneeId,jdbcType=BIGINT}"));
         assertTrue(xml.contains("updateEditableByIdAndTenant"));
         assertFalse(xml.contains("alarm_workorder_flow"));
         assertFalse(xml.contains("status_before"));
@@ -152,8 +155,11 @@ public class AlarmWorkorderMapperXmlContractTest {
         String batchSql = fragmentById(xml, "selectAlarmHandlesByAlarmIds");
 
         assertTrue(resultMap.contains("property=\"handlePicture\" column=\"handle_picture\""));
+        assertTrue(resultMap.contains("property=\"alarmStatus\" column=\"alarm_status\""));
+        assertTrue(resultMap.contains("property=\"alarmEndtime\" column=\"alarm_endTime\""));
         assertTrue(batchSql.contains("handle_picture"));
-        assertTrue(batchSql.contains("alarm_id in"));
+        assertTrue(batchSql.contains("from alarm_handle h inner join alarm a on a.alarm_id = h.alarm_id"));
+        assertTrue(batchSql.contains("h.alarm_id in"));
         assertTrue(batchSql.contains("<foreach collection=\"alarmIds\""));
     }
 
@@ -167,6 +173,8 @@ public class AlarmWorkorderMapperXmlContractTest {
         assertTrue(sql.contains("workorder_config_id"));
         assertTrue(sql.contains("workorder_id"));
         assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS `alarm_workorder`"));
+        assertTrue(sql.contains("`assignee_id` bigint NULL DEFAULT NULL"));
+        assertTrue(sql.contains("MODIFY COLUMN `assignee_id` bigint NULL DEFAULT NULL"));
         assertTrue(sql.contains("idx_alarm_workorder_tenant_assignee_status"));
         assertFalse(sql.contains("handle_type"));
         assertFalse(sql.contains("status_before"));

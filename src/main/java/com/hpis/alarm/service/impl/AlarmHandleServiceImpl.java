@@ -18,6 +18,7 @@ import com.hpis.alarm.enums.SceneTypeEnums;
 import com.hpis.alarm.mapper.AlarmElectrolyticCellMapper;
 import com.hpis.alarm.mapper.AlarmHandleMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
+import com.hpis.alarm.mapper.AlarmWorkorderMapper;
 import com.hpis.alarm.service.IAlarmHandleService;
 import com.hpis.alarm.service.support.AlarmBatchChunker;
 
@@ -68,6 +69,9 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
 
     @Autowired
     private AlarmMapper alarmMapper;
+
+    @Autowired
+    private AlarmWorkorderMapper alarmWorkorderMapper;
 
 //    @Autowired
 //    private RemoteDeviceService deviceService;
@@ -175,11 +179,20 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
      */
     @Override
     public int updateAlarmHandle(AlarmHandle alarmHandle){
-    if (alarmHandle.getHandleStatus().equals(HandleStatusEnums.ALARM_STATUS_ENUMS_2.getKey())){
-        LoginUser userInfo = tokenService.getLoginUser();
+    boolean confirming = HandleStatusEnums.ALARM_STATUS_ENUMS_2.getKey().equals(alarmHandle.getHandleStatus());
+    LoginUser userInfo = null;
+    if (confirming) {
+        userInfo = tokenService.getLoginUser();
         if (userInfo == null) {
             throw new CustomException("登录状态已失效");
         }
+    }
+    Long[] alarmIds = normalizeConfirmAlarmIds(alarmHandle);
+    List<Long> existingIds = alarmMapper.selectExistingIdsByTenant(alarmIds, currentTenantId());
+    if (existingIds == null || new HashSet<>(existingIds).size() != alarmIds.length) {
+        throw new CustomException("报警不存在或无权操作");
+    }
+    if (confirming) {
         alarmHandle.setConfirmUserId(userInfo.getUserid());
 
         Map<Long,Date> confirmAlarm = redisService.getCacheObject(Constants.CONFIRM_ALARM);
@@ -203,6 +216,26 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
         return alarmHandleMapper.updateAlarmHandle(alarmHandle);
     }
 
+    private Long[] normalizeConfirmAlarmIds(AlarmHandle alarmHandle) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        if (alarmHandle.getAlarmIds() != null) {
+            for (Long alarmId : alarmHandle.getAlarmIds()) {
+                if (alarmId != null && alarmId > 0) {
+                    ids.add(alarmId);
+                }
+            }
+        }
+        if (alarmHandle.getAlarmId() != null && alarmHandle.getAlarmId() > 0) {
+            ids.add(alarmHandle.getAlarmId());
+        }
+        if (ids.isEmpty()) {
+            throw new CustomException("报警ID不能为空");
+        }
+        Long[] alarmIds = ids.toArray(new Long[0]);
+        alarmHandle.setAlarmIds(alarmIds);
+        return alarmIds;
+    }
+
 
     /**
      * 通用接口 包含电解槽处理业务
@@ -214,9 +247,14 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
     @Override
     public int saveAlarmHandle(HandleParamDto handleParamDto)
     {
+        validateHandleContent(handleParamDto);
         LoginUser userInfo = tokenService.getLoginUser();
-        //修改报警记录信息状态
-        Alarm alarm1=new Alarm();
+        if (userInfo == null) {
+            throw new CustomException("登录状态已失效");
+        }
+        Long tenantId = currentTenantId();
+        Long[] alarmIds = normalizeAlarmIds(handleParamDto);
+        ensureProcessableAlarms(alarmIds, tenantId);
         //如果是电解槽行业 的处理 就需要去irms 同步结束报警
         if (handleParamDto.getSceneType() != null&&(SceneTypeEnums.SCENE_TYPE_2.getKey()+"").equals(handleParamDto.getSceneType())){
 
@@ -275,44 +313,86 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
             redisService.setCacheObject(Constants.CONFIRM_ALARM,confirmAlarm);
         }
         Date now=DateUtils.getNowDate();
-        alarm1.setUpdateTime(now);
-        alarm1.setAlarmIds(handleParamDto.getAlarmIds());
-        alarm1.setAlarmId(handleParamDto.getAlarmId());
-        alarm1.setUpdateBy(userInfo.getUsername());
-        alarm1.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-        //判断真实性
-        if ("1".equals(handleParamDto.getIdentify())) {
-            alarm1.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_999.getKey());
-        }
+        return persistHandledResult(handleParamDto, alarmIds, tenantId, userInfo, now, null);
+    }
 
-        alarmMapper.updateAlarm(alarm1);
+    private void validateHandleContent(HandleParamDto handleParamDto) {
+        if (handleParamDto == null) {
+            throw new CustomException("报警处理参数不能为空");
+        }
+        if (StringUtils.isBlank(handleParamDto.getOpinion())) {
+            throw new CustomException("处理说明不能为空");
+        }
+        if (StringUtils.isBlank(handleParamDto.getHandlePicture())) {
+            throw new CustomException("处理图片不能为空");
+        }
+        handleParamDto.setOpinion(handleParamDto.getOpinion().trim());
+        handleParamDto.setHandlePicture(handleParamDto.getHandlePicture().trim());
+    }
+
+    private Long[] normalizeAlarmIds(HandleParamDto handleParamDto) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        if (handleParamDto.getAlarmIds() != null) {
+            for (Long alarmId : handleParamDto.getAlarmIds()) {
+                if (alarmId != null && alarmId > 0) {
+                    ids.add(alarmId);
+                }
+            }
+        }
+        if (handleParamDto.getAlarmId() != null && handleParamDto.getAlarmId() > 0) {
+            ids.add(handleParamDto.getAlarmId());
+        }
+        if (ids.isEmpty()) {
+            throw new CustomException("报警ID不能为空");
+        }
+        Long[] alarmIds = ids.toArray(new Long[0]);
+        handleParamDto.setAlarmIds(alarmIds);
+        return alarmIds;
+    }
+
+    private void ensureProcessableAlarms(Long[] alarmIds, Long tenantId) {
+        List<Long> processableIds = alarmMapper.selectProcessableIdsByTenant(alarmIds, tenantId);
+        if (processableIds == null || new HashSet<>(processableIds).size() != alarmIds.length) {
+            throw new CustomException("报警不存在、已结束、已处理或尚未确认");
+        }
+    }
+
+    private int persistHandledResult(HandleParamDto handleParamDto, Long[] alarmIds, Long tenantId,
+                                     LoginUser userInfo, Date now, Date alarmEndtime) {
+        String alarmStatus = "1".equals(handleParamDto.getIdentify())
+                ? AlarmStatusEnums.ALARM_STATUS_ENUMS_999.getKey()
+                : AlarmStatusEnums.ALARM_STATUS_ENUMS_2.getKey();
+        int alarmUpdated = alarmMapper.handleActiveByIdsAndTenant(alarmIds, tenantId, alarmStatus,
+                userInfo.getUsername(), now, alarmEndtime);
+        if (alarmUpdated != alarmIds.length) {
+            throw new CustomException("报警状态已变化，请刷新后重试");
+        }
 
         AlarmHandle alarmHandle = new AlarmHandle();
-
-        BeanUtils.copyBeanProp(alarmHandle,handleParamDto);
-
-        if (StringUtils.isNotBlank(handleParamDto.getApparatusId())) {
-
-            DeviceKeyInfoDTO deviceKeyInfoDTO1 = redisService.getCacheObject(Constants.DEVICE_SN_KEY + handleParamDto.getApparatusId());
-
-            try {
-                log.info("设备查询deviceKeyInfoDTO(deviceId:{},deviceName:{},deviceSn:{})", deviceKeyInfoDTO1.getDeviceId(), deviceKeyInfoDTO1.getDeviceName(), deviceKeyInfoDTO1.getDeviceSn());
-            } catch (Exception e) {
-                throw new CustomException("设备sn 缓存有误");
-            }
-
-            alarmHandle.setApparatusId(deviceKeyInfoDTO1.getDeviceName());
-        }
-        //保存报警处理信息
+        BeanUtils.copyBeanProp(alarmHandle, handleParamDto);
+        alarmHandle.setAlarmId(null);
+        alarmHandle.setAlarmIds(alarmIds);
         alarmHandle.setHandlerName(userInfo.getUsername());
         alarmHandle.setHandlerId(userInfo.getUserid());
         alarmHandle.setHandleTime(now);
         alarmHandle.setUpdateTime(now);
         alarmHandle.setUpdateBy(userInfo.getUsername());
-        alarmHandle.setHandleStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-
-        log.info("处理报警ids{}，id{}",alarmHandle.getAlarmIds(),alarmHandle.getAlarmId());
-        return alarmHandleMapper.updateAlarmHandle(alarmHandle);
+        alarmHandle.setHandleStatus(HandleStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
+        if (StringUtils.isNotBlank(handleParamDto.getApparatusId())) {
+            DeviceKeyInfoDTO device = redisService.getCacheObject(
+                    Constants.DEVICE_SN_KEY + handleParamDto.getApparatusId());
+            if (device == null) {
+                throw new CustomException("设备sn 缓存有误");
+            }
+            alarmHandle.setApparatusId(device.getDeviceName());
+        }
+        int handleUpdated = alarmHandleMapper.updateAlarmHandle(alarmHandle);
+        if (handleUpdated != alarmIds.length) {
+            throw new CustomException("报警处理记录状态已变化，请刷新后重试");
+        }
+        alarmWorkorderMapper.completeActiveByAlarmIds(alarmIds, tenantId, handleParamDto.getOpinion(),
+                userInfo.getUsername(), now);
+        return handleUpdated;
     }
 
 
@@ -328,15 +408,19 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
     @Override
     public int saveAlarmAllHandle(HandleParamDto handleParamDto)
     {
+        validateHandleContent(handleParamDto);
         LoginUser userInfo = tokenService.getLoginUser();
+        if (userInfo == null) {
+            throw new CustomException("登录状态已失效");
+        }
+        Long tenantId = currentTenantId();
+        Long[] normalizedAlarmIds = null;
         AlarmElectrolyticCell alarmElectrolyticCell = new AlarmElectrolyticCell();
         BeanUtils.copyBeanProp(alarmElectrolyticCell,handleParamDto);
         //查询符合条件的电解槽报警
         List<AlarmDetailEc> alarmElectrolyticCellDTOList = alarmElectrolyticCellMapper.selectAlarmAlarmDetailEcList(alarmElectrolyticCell);
 
 
-        //修改报警记录信息状态
-        Alarm alarm1=new Alarm();
         //如果是电解槽行业 的处理 就需要去irms 同步结束报警
         if (handleParamDto.getSceneType() != null&&(SceneTypeEnums.SCENE_TYPE_2.getKey()+"").equals(handleParamDto.getSceneType())&&alarmElectrolyticCellDTOList.size()>0){
 
@@ -346,6 +430,8 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
                     .toArray(Long[]::new);
 
             handleParamDto.setAlarmIds(alarmIds);
+            normalizedAlarmIds = normalizeAlarmIds(handleParamDto);
+            ensureProcessableAlarms(normalizedAlarmIds, tenantId);
 
             Map<String, List<String>> groupedMap = alarmElectrolyticCellDTOList.stream()
                     .collect(Collectors.groupingBy(AlarmDetailEc::getDeviceSn,
@@ -399,45 +485,12 @@ public class AlarmHandleServiceImpl extends ServiceImpl<AlarmHandleMapper, Alarm
         }
 
 
+        if (normalizedAlarmIds == null) {
+            normalizedAlarmIds = normalizeAlarmIds(handleParamDto);
+            ensureProcessableAlarms(normalizedAlarmIds, tenantId);
+        }
         Date now=DateUtils.getNowDate();
-        alarm1.setUpdateTime(now);
-        alarm1.setAlarmIds(handleParamDto.getAlarmIds());
-        alarm1.setAlarmId(handleParamDto.getAlarmId());
-        alarm1.setUpdateBy(userInfo.getUsername());
-        alarm1.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-        //判断真实性
-        if ("1".equals(handleParamDto.getIdentify())) {
-            alarm1.setAlarmStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_999.getKey());
-        }
-
-        //7.1 加入的本地结束 使符合条件的alarm主表内的报警停止
-        alarm1.setAlarmEndtime(now);
-        alarmMapper.updateAlarm(alarm1);
-
-        AlarmHandle alarmHandle = new AlarmHandle();
-
-        BeanUtils.copyBeanProp(alarmHandle,handleParamDto);
-
-        if (StringUtils.isNotBlank(handleParamDto.getApparatusId())) {
-
-            DeviceKeyInfoDTO deviceKeyInfoDTO1 = redisService.getCacheObject(Constants.DEVICE_SN_KEY + handleParamDto.getApparatusId());
-            try {
-                log.info("设备查询deviceKeyInfoDTO(deviceId:{},deviceName:{},deviceSn:{})", deviceKeyInfoDTO1.getDeviceId(), deviceKeyInfoDTO1.getDeviceName(), deviceKeyInfoDTO1.getDeviceSn());
-            } catch (Exception e) {
-                throw new CustomException("设备sn 缓存有误");
-            }
-
-            alarmHandle.setApparatusId(deviceKeyInfoDTO1.getDeviceName());
-        }
-        //保存报警处理信息
-        alarmHandle.setHandlerName(userInfo.getUsername());
-        alarmHandle.setHandlerId(userInfo.getUserid());
-        alarmHandle.setHandleTime(now);
-        alarmHandle.setUpdateTime(now);
-        alarmHandle.setUpdateBy(userInfo.getUsername());
-        alarmHandle.setHandleStatus(AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
-        log.info("处理报警ids{}，id{}",alarmHandle.getAlarmIds(),alarmHandle.getAlarmId());
-        return alarmHandleMapper.updateAlarmHandle(alarmHandle);
+        return persistHandledResult(handleParamDto, normalizedAlarmIds, tenantId, userInfo, now, now);
     }
 
 

@@ -54,6 +54,17 @@ public interface AlarmWorkorderMapper extends BaseMapper<AlarmWorkorder> {
                            @Param("updateBy") String updateBy,
                            @Param("updateTime") java.util.Date updateTime);
 
+    int completeActiveByAlarmIds(@Param("alarmIds") Long[] alarmIds,
+                                 @Param("tenantId") Long tenantId,
+                                 @Param("handleResult") String handleResult,
+                                 @Param("updateBy") String updateBy,
+                                 @Param("updateTime") java.util.Date updateTime);
+
+    int closeActiveByAlarmIds(@Param("alarmIds") List<Long> alarmIds,
+                              @Param("handleResult") String handleResult,
+                              @Param("updateBy") String updateBy,
+                              @Param("updateTime") java.util.Date updateTime);
+
     int deleteByIdsAndTenant(@Param("workorderIds") Long[] workorderIds,
                              @Param("tenantId") Long tenantId,
                              @Param("updateBy") String updateBy,

@@ -24,6 +24,7 @@ import com.hpis.alarm.dto.RepeatAlarmDto;
 import com.hpis.alarm.enums.*;
 import com.hpis.alarm.mapper.AlarmHandleMapper;
 import com.hpis.alarm.mapper.AlarmMapper;
+import com.hpis.alarm.mapper.AlarmWorkorderMapper;
 import com.hpis.alarm.service.*;
 import com.hpis.alarm.service.support.AlarmDeviceCacheMissingException;
 import com.hpis.alarm.service.support.AlarmElectrolyticCellInvalidException;
@@ -114,6 +115,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 	@Autowired
 	private AlarmMapper alarmMapper;
+
+	@Autowired
+	private AlarmWorkorderMapper alarmWorkorderMapper;
 
 	/**
 	 * 临时存储在本地的根路径
@@ -224,6 +228,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				.eq(StringUtils.isNotBlank(alarm.getAlarmType()), "a.alarm_type", alarm.getAlarmType())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmRank()), "a.alarm_rank", alarm.getAlarmRank())
 				.eq(StringUtils.isNotBlank(alarm.getAlarmStatus()), "a.alarm_status", alarm.getAlarmStatus())
+				.eq(StringUtils.isNotBlank(alarm.getHandleStatus()), "h.handle_status", alarm.getHandleStatus())
 				.eq(alarm.getDeviceSn() != null, "a.device_sn", alarm.getDeviceSn())
 				.eq(alarm.getTenantId() != null, "a.tenant_id", alarm.getTenantId())
 				.like(StringUtils.isNotBlank(alarm.getTargetName()), "a.target_name", alarm.getTargetName());
@@ -1195,6 +1200,9 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 
 
 	void jsonTransformJava (JSONObject jsonObject,Alarm alarm) throws ParseException {
+		// 新报警固定从“活动、未删除”开始，避免批量 INSERT 显式写 NULL 覆盖数据库默认值。
+		alarm.setAlarmStatus("0");
+		alarm.setDelFlag("0");
 		StringBuilder sb = new StringBuilder();
 		if (StringUtils.isNotBlank(jsonObject.getString("alarmDegree"))) {
 			//报警等级
@@ -1406,7 +1414,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 		alarmElectrolyticCell.setTemperatureVariation(new BigDecimal(jsonObject.getString("maxTemp")));
 		String electrodesPolarity = ElecCellPackMerNameUtil.estimateElectrodesPolarity(sequenceJson.getString("firstElectrodesPolarity"), subdivideIndex);
 		alarm.setTargetName(ElecCellPackMerNameUtil.packMerName(jsonObject.getString("seq"), subdivideIndex, type,
-				alarmElectrolyticCell.getGrooveNumber(), alarmElectrolyticCell.getRowIndex(), electrodesPolarity));
+				alarmElectrolyticCell.getGrooveNumber(), alarmElectrolyticCell.getRowIndex(), electrodesPolarity,sequenceJson.getIntValue("plateNumberingMode")));
 		//24.5.13插入电解槽点位副表
 		//24.7.1新增设备id字段
 		alarmElectrolyticCell.setDeviceSn(alarm.getDeviceSn());
@@ -1659,6 +1667,8 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 					log.warn("按 cid 停止报警已更新路由但未查到业务报警，alarmCid={}", alarmCid);
 					return;
 				}
+				alarmWorkorderMapper.closeActiveByAlarmIds(Collections.singletonList(alarm.getAlarmId()),
+						"ALARM_ENDED", "alarm-http-stop", endTime);
 				/**由于硝化棉 之后  断线结束会发device 同步状态  */
 				if (AlarmTypeEnums.ALARM_TYPE_ENUMS_6.getDescription().equals(alarm.getAlarmType())) {
 					if (StringUtils.equals(alarm.getTargetName(), IrTypeEnums.ITEMS_0.getDescription())) {
@@ -1727,6 +1737,11 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmMapper, Alarm> implements
 				if (alarmCidIndexService != null) {
 					List<AlarmCidRoute> routes = alarmCidIndexService.findActiveRoutesByDeviceSn(deviceSn);
 					stopDeviceRoutesBySuffix(deviceSn, endTimeText, routes);
+					if (routes != null && !routes.isEmpty()) {
+						alarmWorkorderMapper.closeActiveByAlarmIds(
+								routes.stream().map(AlarmCidRoute::getAlarmId).collect(Collectors.toList()),
+								"ALARM_ENDED", "alarm-device-stop", endTime);
+					}
 					alarmCidIndexService.closeRoutes(routes, endTime);
 				} else {
 					alarmMapper.alarmStopByDeviceId(deviceSn, endTimeText);

@@ -47,6 +47,16 @@ public interface AlarmMapper  extends BaseMapper<Alarm>
     List<Long> selectExistingIdsByTenant(@Param("alarmIds") Long[] alarmIds,
                                          @Param("tenantId") Long tenantId);
 
+    List<Long> selectProcessableIdsByTenant(@Param("alarmIds") Long[] alarmIds,
+                                            @Param("tenantId") Long tenantId);
+
+    int handleActiveByIdsAndTenant(@Param("alarmIds") Long[] alarmIds,
+                                   @Param("tenantId") Long tenantId,
+                                   @Param("alarmStatus") String alarmStatus,
+                                   @Param("updateBy") String updateBy,
+                                   @Param("updateTime") java.util.Date updateTime,
+                                   @Param("alarmEndtime") java.util.Date alarmEndtime);
+
     /**
      * 根据查询条件对alarm主表进行查询
      * @param alarmQueryParameter

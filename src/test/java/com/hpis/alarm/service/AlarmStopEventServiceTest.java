@@ -9,6 +9,7 @@ import com.hpis.alarm.domain.AlarmStopEvent;
 import com.hpis.alarm.dto.AlarmStopRecord;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
+import com.hpis.alarm.mapper.AlarmWorkorderMapper;
 import com.hpis.alarm.task.AlarmStopWorkerSignal;
 import org.junit.Before;
 import org.junit.Test;
@@ -48,6 +49,8 @@ public class AlarmStopEventServiceTest {
     @Mock
     private AlarmStopSideEffectService sideEffectService;
     @Mock
+    private AlarmWorkorderMapper alarmWorkorderMapper;
+    @Mock
     private AlarmStopWorkerSignal workerSignal;
 
     private AlarmStopWorkerProperties workerProperties;
@@ -60,7 +63,7 @@ public class AlarmStopEventServiceTest {
         batchProperties = new AlarmBatchProperties();
         batchProperties.setInLimit(500);
         service = new AlarmStopEventService(stopEventMapper, alarmMapper, alarmCidIndexService,
-                sideEffectService, batchProperties, workerProperties, workerSignal);
+                sideEffectService, alarmWorkorderMapper, batchProperties, workerProperties, workerSignal);
     }
 
     @Test
@@ -140,6 +143,8 @@ public class AlarmStopEventServiceTest {
 
         assertEquals(1, processed);
         verify(alarmMapper).batchStopByAlarmIds(anyList(), any());
+        verify(alarmWorkorderMapper).closeActiveByAlarmIds(eq(Collections.singletonList(1001L)),
+                eq("ALARM_ENDED"), eq("alarm-stop-worker"), any(Date.class));
         verify(alarmCidIndexService).closeRoutesByItems(anyList(), anyList(), any(Date.class));
         verify(stopEventMapper).markAppliedBatch(anyList(), any(Date.class));
         verify(sideEffectService).createEventsBatch(anyList(), any(Map.class), any());

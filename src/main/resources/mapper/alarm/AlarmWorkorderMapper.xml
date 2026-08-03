@@ -98,7 +98,7 @@
             <if test="alarmId != null">alarm_id,</if>
             <if test="workorderConfigId != null">workorder_config_id,</if>
             <if test="status != null and status != ''">status,</if>
-            <if test="assigneeId != null">assignee_id,</if>
+            assignee_id,
             <if test="assigneeName != null and assigneeName != ''">assignee_name,</if>
             <if test="title != null and title != ''">title,</if>
             <if test="content != null and content != ''">content,</if>
@@ -115,7 +115,7 @@
             <if test="alarmId != null">#{alarmId},</if>
             <if test="workorderConfigId != null">#{workorderConfigId},</if>
             <if test="status != null and status != ''">#{status},</if>
-            <if test="assigneeId != null">#{assigneeId},</if>
+            #{assigneeId,jdbcType=BIGINT},
             <if test="assigneeName != null and assigneeName != ''">#{assigneeName},</if>
             <if test="title != null and title != ''">#{title},</if>
             <if test="content != null and content != ''">#{content},</if>
@@ -180,6 +180,35 @@
           and tenant_id = #{tenantId}
           and del_flag = '0'
           and status not in ('2', '3')
+    </update>
+
+    <update id="completeActiveByAlarmIds">
+        update alarm_workorder
+        set status = '2',
+            handle_result = #{handleResult},
+            update_by = #{updateBy},
+            update_time = #{updateTime}
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+          and tenant_id = #{tenantId}
+          and del_flag = '0'
+          and status in ('0', '1')
+    </update>
+
+    <update id="closeActiveByAlarmIds">
+        update alarm_workorder
+        set status = '3',
+            handle_result = #{handleResult},
+            update_by = #{updateBy},
+            update_time = #{updateTime}
+        where alarm_id in
+        <foreach collection="alarmIds" item="alarmId" open="(" separator="," close=")">
+            #{alarmId}
+        </foreach>
+          and del_flag = '0'
+          and status in ('0', '1')
     </update>
 
     <update id="deleteByIdsAndTenant">

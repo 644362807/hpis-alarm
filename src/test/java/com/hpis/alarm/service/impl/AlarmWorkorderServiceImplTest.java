@@ -25,9 +25,13 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.Collections;
+import java.util.Arrays;
+import java.util.Date;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -97,7 +101,7 @@ public class AlarmWorkorderServiceImplTest {
         assertEquals(1, result);
         assertEquals(Long.valueOf(900L), captor.getValue().getWorkorderConfigId());
         assertEquals(Long.valueOf(10L), captor.getValue().getTenantId());
-        assertEquals(Long.valueOf(0L), captor.getValue().getAssigneeId());
+        assertNull(captor.getValue().getAssigneeId());
         assertEquals("0", captor.getValue().getDelFlag());
         verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
         verify(alarmHandleMapper, never()).updateAlarmHandle(any(AlarmHandle.class));
@@ -166,15 +170,60 @@ public class AlarmWorkorderServiceImplTest {
     }
 
     @Test
-    public void workorderMessageWithoutAssigneeCarriesZeroForRecipientGroupFallback() {
-        AlarmWorkorder workorder = request();
-        workorder.setWorkorderId(300L);
+    public void createWorkorderWithNullAssigneePersistsNullAndDoesNotPublish() {
+        ReflectionTestUtils.setField(service, "pushOpen", true);
+        AlarmWorkorder request = request();
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+        when(workorderMapper.insertAlarmWorkorder(any(AlarmWorkorder.class))).thenReturn(1);
 
-        JSONObject message = ReflectionTestUtils.invokeMethod(service,
-                "buildWorkorderCreatedPushMessage", alarm(), workorder, configuredWorkorder(900L, "25"));
+        assertEquals(1, service.createWorkorder(request));
 
-        assertEquals(Long.valueOf(0L), message.getLong("assigneeId"));
-        assertEquals(Long.valueOf(0L), message.getJSONObject("data").getLong("assigneeId"));
+        ArgumentCaptor<AlarmWorkorder> captor = ArgumentCaptor.forClass(AlarmWorkorder.class);
+        verify(workorderMapper).insertAlarmWorkorder(captor.capture());
+        assertNull(captor.getValue().getAssigneeId());
+        verify(pushProducer, never()).sendCustomPushMessage(any(JSONObject.class));
+    }
+
+    @Test
+    public void createWorkorderWithZeroAssigneePublishesGroupRoutingEvent() {
+        ReflectionTestUtils.setField(service, "pushOpen", true);
+        AlarmWorkorder request = request();
+        request.setAssigneeId(0L);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+        when(workorderMapper.insertAlarmWorkorder(any(AlarmWorkorder.class))).thenAnswer(invocation -> {
+            AlarmWorkorder saved = invocation.getArgument(0);
+            saved.setWorkorderId(300L);
+            return 1;
+        });
+
+        TransactionSynchronizationManager.initSynchronization();
+        assertEquals(1, service.createWorkorder(request));
+        for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+            synchronization.afterCommit();
+        }
+
+        ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
+        verify(pushProducer).sendCustomPushMessage(captor.capture());
+        assertEquals(Long.valueOf(0L), captor.getValue().getLong("assigneeId"));
+        assertEquals(Long.valueOf(0L), captor.getValue().getJSONObject("data").getLong("assigneeId"));
+    }
+
+    @Test(expected = CustomException.class)
+    public void createWorkorderRejectsNegativeAssignee() {
+        AlarmWorkorder request = request();
+        request.setAssigneeId(-1L);
+        when(alarmMapper.selectAlarmByIdAndTenant(200L, 10L)).thenReturn(alarm());
+        when(alarmHandleMapper.selectAlarmHandleByAlarmId(200L)).thenReturn(confirmedHandle());
+        when(alarmConfigureService.selectEnabledForAlarm(10L, "2", "DEV-1", "1"))
+                .thenReturn(Collections.singletonList(configuredWorkorder(900L, "25")));
+
+        service.createWorkorder(request);
     }
 
     @Test
@@ -429,6 +478,51 @@ public class AlarmWorkorderServiceImplTest {
     }
 
     @Test
+    public void workorderPageEnrichesAlarmStateInOneBatchAndCalculatesProcessability() {
+        AlarmWorkorder processable = workorder(301L, 201L, "0", 88L);
+        AlarmWorkorder ended = workorder(302L, 202L, "0", 0L);
+        AlarmWorkorder noPush = workorder(303L, 203L, "2", null);
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<AlarmWorkorder> page =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 20);
+        page.setRecords(Arrays.asList(processable, ended, noPush));
+
+        AlarmHandle processableRelation = relation(201L, "0", "2");
+        processableRelation.setHandlerId(501L);
+        processableRelation.setHandlerName("handler-a");
+        processableRelation.setHandlePicture("picture-a");
+        AlarmHandle endedRelation = relation(202L, "1", "2");
+        Date endtime = new Date(123456L);
+        endedRelation.setAlarmEndtime(endtime);
+        AlarmHandle handledRelation = relation(203L, "2", "1");
+
+        AlarmWorkorder query = new AlarmWorkorder();
+        query.setPageNum(1);
+        query.setPageSize(20);
+        when(workorderMapper.selectAlarmWorkorderPage(any(), eq(query), eq(10L))).thenReturn(page);
+        when(alarmHandleMapper.selectAlarmHandlesByAlarmIds(Arrays.asList(201L, 202L, 203L)))
+                .thenReturn(Arrays.asList(processableRelation, endedRelation, handledRelation));
+
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<AlarmWorkorder> result =
+                service.selectAlarmWorkorderPage(query);
+
+        verify(alarmHandleMapper).selectAlarmHandlesByAlarmIds(Arrays.asList(201L, 202L, 203L));
+        assertEquals("DIRECT", result.getRecords().get(0).getPushTargetMode());
+        assertTrue(result.getRecords().get(0).getProcessable());
+        assertNull(result.getRecords().get(0).getUnprocessableReason());
+        assertEquals(Long.valueOf(501L), result.getRecords().get(0).getHandlerId());
+        assertEquals("picture-a", result.getRecords().get(0).getHandlePicture());
+
+        assertEquals("GROUP", result.getRecords().get(1).getPushTargetMode());
+        assertFalse(result.getRecords().get(1).getProcessable());
+        assertEquals("ALARM_ENDED", result.getRecords().get(1).getUnprocessableReason());
+        assertEquals(endtime, result.getRecords().get(1).getAlarmEndtime());
+
+        assertEquals("NONE", result.getRecords().get(2).getPushTargetMode());
+        assertFalse(result.getRecords().get(2).getProcessable());
+        assertEquals("WORKORDER_TERMINAL", result.getRecords().get(2).getUnprocessableReason());
+    }
+
+    @Test
     public void genericUpdateClearsProtectedFields() {
         AlarmWorkorder request = new AlarmWorkorder();
         request.setWorkorderId(300L);
@@ -475,6 +569,23 @@ public class AlarmWorkorderServiceImplTest {
         request.setAlarmId(200L);
         request.setWorkorderNo("WO-200");
         return request;
+    }
+
+    private AlarmWorkorder workorder(Long workorderId, Long alarmId, String status, Long assigneeId) {
+        AlarmWorkorder workorder = new AlarmWorkorder();
+        workorder.setWorkorderId(workorderId);
+        workorder.setAlarmId(alarmId);
+        workorder.setStatus(status);
+        workorder.setAssigneeId(assigneeId);
+        return workorder;
+    }
+
+    private AlarmHandle relation(Long alarmId, String alarmStatus, String handleStatus) {
+        AlarmHandle handle = new AlarmHandle();
+        handle.setAlarmId(alarmId);
+        handle.setAlarmStatus(alarmStatus);
+        handle.setHandleStatus(handleStatus);
+        return handle;
     }
 
     private void clearTransactionSynchronization() {

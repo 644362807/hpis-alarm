@@ -82,7 +82,7 @@ public class AlarmWorkorderController extends BaseController {
     @Log(title = "报警工单完成", businessType = BusinessType.UPDATE)
     @PutMapping("/complete")
     public AjaxResult complete(@RequestBody WorkorderCompleteRequest request) {
-        return toAjax(alarmWorkorderService.completeWorkorder(toCommand(request)));
+        return AjaxResult.error("工单完成已并入报警处理，请调用 /handle/save");
     }
 
     @PreAuthorize(hasPermi = "alarm:workorder:close")
@@ -97,16 +97,6 @@ public class AlarmWorkorderController extends BaseController {
     @DeleteMapping("/{workorderIds}")
     public AjaxResult remove(@PathVariable Long[] workorderIds) {
         return toAjax(alarmWorkorderService.deleteAlarmWorkorderByIds(workorderIds));
-    }
-
-    private AlarmWorkorder toCommand(WorkorderCompleteRequest request) {
-        AlarmWorkorder command = new AlarmWorkorder();
-        if (request != null) {
-            command.setWorkorderId(request.getWorkorderId());
-            command.setHandleResult(request.getHandleResult());
-            command.setHandlePicture(request.getHandlePicture());
-        }
-        return command;
     }
 
     private AlarmWorkorder toCommand(WorkorderCloseRequest request) {

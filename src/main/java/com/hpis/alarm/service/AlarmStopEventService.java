@@ -14,6 +14,7 @@ import com.hpis.alarm.dto.AlarmStopRecord;
 import com.hpis.alarm.enums.AlarmStatusEnums;
 import com.hpis.alarm.mapper.AlarmMapper;
 import com.hpis.alarm.mapper.AlarmStopEventMapper;
+import com.hpis.alarm.mapper.AlarmWorkorderMapper;
 import com.hpis.alarm.task.AlarmStopWorkerSignal;
 import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.utils.DateUtils;
@@ -57,6 +58,7 @@ public class AlarmStopEventService {
     private final AlarmMapper alarmMapper;
     private final AlarmCidIndexService alarmCidIndexService;
     private final AlarmStopSideEffectService sideEffectService;
+    private final AlarmWorkorderMapper alarmWorkorderMapper;
     private final AlarmBatchProperties batchProperties;
     private final AlarmStopWorkerProperties properties;
     private final AlarmStopWorkerSignal workerSignal;
@@ -68,6 +70,7 @@ public class AlarmStopEventService {
                                  AlarmMapper alarmMapper,
                                  AlarmCidIndexService alarmCidIndexService,
                                  AlarmStopSideEffectService sideEffectService,
+                                 AlarmWorkorderMapper alarmWorkorderMapper,
                                  AlarmBatchProperties batchProperties,
                                  AlarmStopWorkerProperties properties,
                                  AlarmStopWorkerSignal workerSignal) {
@@ -75,6 +78,7 @@ public class AlarmStopEventService {
         this.alarmMapper = alarmMapper;
         this.alarmCidIndexService = alarmCidIndexService;
         this.sideEffectService = sideEffectService;
+        this.alarmWorkorderMapper = alarmWorkorderMapper;
         this.batchProperties = batchProperties;
         this.properties = properties;
         this.workerSignal = workerSignal;
@@ -607,6 +611,8 @@ public class AlarmStopEventService {
             List<Long> alarmIds = items.stream()
                     .map(AlarmStopApplyItem::getAlarmId)
                     .collect(Collectors.toList());
+            alarmWorkorderMapper.closeActiveByAlarmIds(alarmIds, "ALARM_ENDED",
+                    "alarm-stop-worker", DateUtils.getNowDate());
             long selectAlarmStartMs = System.currentTimeMillis();
             Map<Long, Alarm> alarmMap = alarmMapper.selectAlarmByIdsForStop(alarmIds).stream()
                     .collect(Collectors.toMap(Alarm::getAlarmId, alarm -> alarm, (left, right) -> left));
@@ -693,6 +699,9 @@ public class AlarmStopEventService {
             AlarmShardContext.setTableSuffix(context.getRoute().getTableSuffix());
             alarmMapper.batchStopByAlarmIds(Collections.singletonList(context.getItem()),
                     AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
+            alarmWorkorderMapper.closeActiveByAlarmIds(
+                    Collections.singletonList(context.getItem().getAlarmId()), "ALARM_ENDED",
+                    "alarm-stop-worker", DateUtils.getNowDate());
             alarm.setAlarmEndtime(context.getEvent().getStopTime());
             applyRouteAndEvent(context, alarm);
         } finally {

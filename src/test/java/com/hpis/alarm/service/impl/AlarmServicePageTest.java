@@ -54,6 +54,7 @@ public class AlarmServicePageTest {
     public void selectAlarmPageUsesCurrentTenantAndExcludesDeletedRows() {
         Alarm request = new Alarm();
         request.setTenantId(123L);
+        request.setHandleStatus("2");
         request.setPageNum(2);
         request.setPageSize(15);
         Page<Alarm> emptyPage = new Page<>(2, 15);
@@ -76,8 +77,10 @@ public class AlarmServicePageTest {
         Map<String, Object> values = wrapper.getParamNameValuePairs();
         assertTrue(sql.contains("a.tenant_id"));
         assertTrue(sql.contains("a.del_flag"));
+        assertTrue(sql.contains("h.handle_status"));
         assertTrue(values.containsValue(990010L));
         assertTrue(values.containsValue("0"));
+        assertTrue(values.containsValue("2"));
     }
 
     @Test

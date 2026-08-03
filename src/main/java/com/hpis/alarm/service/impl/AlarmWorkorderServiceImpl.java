@@ -69,7 +69,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
     public AlarmWorkorder selectAlarmWorkorderById(Long workorderId) {
         AlarmWorkorder workorder = alarmWorkorderMapper.selectAlarmWorkorderByIdAndTenant(
                 workorderId, currentTenantId());
-        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        fillWorkorderRelations(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
         return workorder;
     }
 
@@ -77,7 +77,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
     public AlarmWorkorder selectAlarmWorkorderByAlarmId(Long alarmId) {
         AlarmWorkorder workorder = alarmWorkorderMapper.selectAlarmWorkorderByAlarmIdAndTenant(
                 alarmId, currentTenantId());
-        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        fillWorkorderRelations(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
         return workorder;
     }
 
@@ -85,7 +85,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
     public AlarmWorkorder selectMyAlarmWorkorderById(Long workorderId) {
         AlarmWorkorder workorder = alarmWorkorderMapper.selectMyAlarmWorkorderById(
                 workorderId, currentTenantId(), currentUserId());
-        fillHandlePictures(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
+        fillWorkorderRelations(workorder == null ? Collections.emptyList() : Collections.singletonList(workorder));
         return workorder;
     }
 
@@ -96,7 +96,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         query.setTenantId(tenantId);
         Page<AlarmWorkorder> page = alarmWorkorderMapper.selectAlarmWorkorderPage(
                 new Page<>(query.getPageNum(), query.getPageSize()), query, tenantId);
-        fillHandlePictures(page.getRecords());
+        fillWorkorderRelations(page.getRecords());
         return page;
     }
 
@@ -109,7 +109,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         query.setAssigneeId(userId);
         Page<AlarmWorkorder> page = alarmWorkorderMapper.selectMyAlarmWorkorderPage(
                 new Page<>(query.getPageNum(), query.getPageSize()), query, tenantId, userId);
-        fillHandlePictures(page.getRecords());
+        fillWorkorderRelations(page.getRecords());
         return page;
     }
 
@@ -118,7 +118,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         AlarmWorkorder query = alarmWorkorder == null ? new AlarmWorkorder() : alarmWorkorder;
         query.setTenantId(currentTenantId());
         List<AlarmWorkorder> workorders = alarmWorkorderMapper.selectAlarmWorkorderList(query);
-        fillHandlePictures(workorders);
+        fillWorkorderRelations(workorders);
         return workorders;
     }
 
@@ -145,10 +145,12 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         }
 
         alarmWorkorder.setWorkorderConfigId(configure.getWorkorderConfigId());
-        if (alarmWorkorder.getAssigneeId() == null) {
-            alarmWorkorder.setAssigneeId(0L);
-        } else if (alarmWorkorder.getAssigneeId() < 0) {
-            throw new CustomException("负责人ID不能为负数");
+        Long assigneeId = alarmWorkorder.getAssigneeId();
+        if (assigneeId != null && assigneeId < 0) {
+            throw new CustomException("督促目标ID不能为负数");
+        }
+        if (assigneeId == null || assigneeId == 0L) {
+            alarmWorkorder.setAssigneeName(null);
         }
         alarmWorkorder.setTenantId(tenantId);
         if (StringUtils.isBlank(alarmWorkorder.getWorkorderNo())) {
@@ -163,7 +165,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         alarmWorkorder.setCreateBy(currentUsername());
         try {
             int inserted = alarmWorkorderMapper.insertAlarmWorkorder(alarmWorkorder);
-            if (inserted > 0) {
+            if (inserted > 0 && alarmWorkorder.getAssigneeId() != null) {
                 publishWorkorderCreatedAfterCommit(alarm, alarmWorkorder, configure);
             }
             return inserted;
@@ -364,7 +366,7 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
         return normalized;
     }
 
-    private void fillHandlePictures(List<AlarmWorkorder> workorders) {
+    private void fillWorkorderRelations(List<AlarmWorkorder> workorders) {
         if (workorders == null || workorders.isEmpty()) {
             return;
         }
@@ -383,11 +385,63 @@ public class AlarmWorkorderServiceImpl extends ServiceImpl<AlarmWorkorderMapper,
                 .filter(handle -> handle != null && handle.getAlarmId() != null)
                 .collect(Collectors.toMap(AlarmHandle::getAlarmId, Function.identity(), (left, right) -> left));
         for (AlarmWorkorder workorder : workorders) {
+            if (workorder == null) {
+                continue;
+            }
+            fillPushTargetMode(workorder);
             AlarmHandle handle = workorder == null ? null : byAlarmId.get(workorder.getAlarmId());
             if (handle != null) {
                 workorder.setHandlePicture(handle.getHandlePicture());
+                workorder.setAlarmStatus(handle.getAlarmStatus());
+                workorder.setAlarmEndtime(handle.getAlarmEndtime());
+                workorder.setHandleStatus(handle.getHandleStatus());
+                workorder.setHandlerId(handle.getHandlerId());
+                workorder.setHandlerName(handle.getHandlerName());
             }
+            fillProcessability(workorder, handle);
         }
+    }
+
+    private void fillPushTargetMode(AlarmWorkorder workorder) {
+        Long assigneeId = workorder.getAssigneeId();
+        if (assigneeId == null) {
+            workorder.setPushTargetMode("NONE");
+        } else if (assigneeId == 0L) {
+            workorder.setPushTargetMode("GROUP");
+        } else {
+            workorder.setPushTargetMode("DIRECT");
+        }
+    }
+
+    private void fillProcessability(AlarmWorkorder workorder, AlarmHandle handle) {
+        workorder.setProcessable(false);
+        if ("2".equals(workorder.getStatus()) || "3".equals(workorder.getStatus())) {
+            workorder.setUnprocessableReason("WORKORDER_TERMINAL");
+            return;
+        }
+        if (handle == null) {
+            workorder.setUnprocessableReason("ALARM_NOT_FOUND");
+            return;
+        }
+        if ("1".equals(handle.getAlarmStatus())) {
+            workorder.setUnprocessableReason("ALARM_ENDED");
+            return;
+        }
+        if ("2".equals(handle.getAlarmStatus()) || "-1".equals(handle.getAlarmStatus())
+                || HandleStatusEnums.ALARM_STATUS_ENUMS_1.getKey().equals(handle.getHandleStatus())) {
+            workorder.setUnprocessableReason("ALARM_ALREADY_HANDLED");
+            return;
+        }
+        if (!HandleStatusEnums.ALARM_STATUS_ENUMS_2.getKey().equals(handle.getHandleStatus())) {
+            workorder.setUnprocessableReason("ALARM_NOT_CONFIRMED");
+            return;
+        }
+        if (!"0".equals(handle.getAlarmStatus())) {
+            workorder.setUnprocessableReason("ALARM_NOT_ACTIVE");
+            return;
+        }
+        workorder.setProcessable(true);
+        workorder.setUnprocessableReason(null);
     }
 
     private void ensureNotTerminal(AlarmWorkorder workorder) {

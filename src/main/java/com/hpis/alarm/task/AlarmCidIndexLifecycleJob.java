@@ -7,6 +7,7 @@ import com.hpis.alarm.domain.AlarmCidRoute;
 import com.hpis.alarm.dto.AlarmStopApplyItem;
 import com.hpis.alarm.enums.AlarmStatusEnums;
 import com.hpis.alarm.mapper.AlarmMapper;
+import com.hpis.alarm.mapper.AlarmWorkorderMapper;
 import com.hpis.alarm.service.support.AlarmBatchChunker;
 import com.hpis.common.core.utils.DateUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -39,11 +40,15 @@ public class AlarmCidIndexLifecycleJob {
 
     private final AlarmShardProperties alarmShardProperties;
 
+    private final AlarmWorkorderMapper alarmWorkorderMapper;
+
     public AlarmCidIndexLifecycleJob(AlarmCidIndexService alarmCidIndexService,
                                      AlarmMapper alarmMapper,
+                                     AlarmWorkorderMapper alarmWorkorderMapper,
                                      AlarmShardProperties alarmShardProperties) {
         this.alarmCidIndexService = alarmCidIndexService;
         this.alarmMapper = alarmMapper;
+        this.alarmWorkorderMapper = alarmWorkorderMapper;
         this.alarmShardProperties = alarmShardProperties;
     }
 
@@ -83,6 +88,9 @@ public class AlarmCidIndexLifecycleJob {
                             .map(route -> buildStopItem(route, now))
                             .collect(Collectors.toList());
                     alarmMapper.batchStopByAlarmIds(items, AlarmStatusEnums.ALARM_STATUS_ENUMS_1.getKey());
+                    alarmWorkorderMapper.closeActiveByAlarmIds(
+                            items.stream().map(AlarmStopApplyItem::getAlarmId).collect(Collectors.toList()),
+                            "ALARM_ENDED", "alarm-cid-lifecycle", now);
                     alarmCidIndexService.closeRoutes(chunk, now);
                 } finally {
                     AlarmShardContext.clear();

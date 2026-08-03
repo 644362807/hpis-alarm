@@ -59,6 +59,10 @@ public class Alarm extends BaseEntity
     @Excel(name = "警报状态", readConverterExp = "0=代表未处理,1=代表处理")
     private String alarmStatus;
 
+    /** 报警处理记录状态：0未处理、1已处理、2已确认 */
+    @TableField(exist = false)
+    private String handleStatus;
+
     /** 删除标志（0代表存在 2代表删除） */
     private String delFlag;
 
@@ -150,6 +154,7 @@ public class Alarm extends BaseEntity
                 ", alarmRank='" + alarmRank + '\'' +
                 ", alarmTime='" + alarmTime + '\'' +
                 ", alarmStatus='" + alarmStatus + '\'' +
+                ", handleStatus='" + handleStatus + '\'' +
                 ", delFlag='" + delFlag + '\'' +
                 ", alarmBegintime=" + alarmBegintime +
                 ", alarmEndtime=" + alarmEndtime +

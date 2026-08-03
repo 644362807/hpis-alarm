@@ -108,6 +108,22 @@ BEGIN
   CLOSE cur;
 END $$
 
+DROP PROCEDURE IF EXISTS normalize_alarm_workorder_assignee $$
+CREATE PROCEDURE normalize_alarm_workorder_assignee()
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'alarm_workorder'
+      AND column_name = 'assignee_id'
+      AND (is_nullable <> 'YES' OR column_default IS NOT NULL)
+  ) THEN
+    ALTER TABLE `alarm_workorder`
+      MODIFY COLUMN `assignee_id` bigint NULL DEFAULT NULL
+      COMMENT '督促目标用户ID；NULL不推送、0接收组、正数定向用户';
+  END IF;
+END $$
+
 DELIMITER ;
 
 CALL add_column_if_missing('alarm_configure', 'push_enabled',
@@ -128,8 +144,8 @@ CREATE TABLE IF NOT EXISTS `alarm_workorder` (
   `alarm_id` bigint NOT NULL COMMENT '报警ID',
   `workorder_config_id` bigint NULL COMMENT '来源工单模板ID',
   `status` char(2) NOT NULL DEFAULT '0' COMMENT '工单状态：0待处理 1处理中 2已完成 3已关闭 4退回',
-  `assignee_id` bigint NULL COMMENT '当前负责人ID',
-  `assignee_name` varchar(100) NULL COMMENT '当前负责人名称',
+  `assignee_id` bigint NULL DEFAULT NULL COMMENT '督促目标用户ID；NULL不推送、0接收组、正数定向用户',
+  `assignee_name` varchar(100) NULL COMMENT '定向督促目标名称',
   `title` varchar(200) NULL COMMENT '工单标题',
   `content` varchar(1000) NULL COMMENT '工单内容',
   `handle_result` varchar(500) NULL COMMENT '工单处理结果',
@@ -147,6 +163,8 @@ CREATE TABLE IF NOT EXISTS `alarm_workorder` (
   KEY `idx_alarm_workorder_tenant_assignee_status` (`tenant_id`, `assignee_id`, `status`, `create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报警工单表';
 
+CALL normalize_alarm_workorder_assignee();
+
 CALL add_index_if_missing('alarm_workorder', 'idx_alarm_workorder_tenant_assignee_status',
   'ALTER TABLE `alarm_workorder` ADD KEY `idx_alarm_workorder_tenant_assignee_status` (`tenant_id`, `assignee_id`, `status`, `create_time`)');
 
@@ -162,5 +180,6 @@ CALL add_index_if_missing('alarm_device_configure', 'idx_alarm_device_configure_
 CALL migrate_alarm_handle_tables();
 
 DROP PROCEDURE IF EXISTS migrate_alarm_handle_tables;
+DROP PROCEDURE IF EXISTS normalize_alarm_workorder_assignee;
 DROP PROCEDURE IF EXISTS add_index_if_missing;
 DROP PROCEDURE IF EXISTS add_column_if_missing;

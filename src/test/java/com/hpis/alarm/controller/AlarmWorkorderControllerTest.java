@@ -5,17 +5,17 @@ import com.hpis.alarm.domain.AlarmWorkorder;
 import com.hpis.alarm.service.IAlarmWorkorderService;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
-import static org.junit.Assert.assertNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
 public class AlarmWorkorderControllerTest {
@@ -47,18 +47,16 @@ public class AlarmWorkorderControllerTest {
     }
 
     @Test
-    public void completeBoundaryIgnoresClientOwnedAlarmStateAndAssigneeFields() throws Exception {
+    public void completeEndpointIsRetiredInFavorOfAlarmHandleSave() throws Exception {
         mockMvc.perform(put("/workorder/complete")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"workorderId\":300,\"handleResult\":\"现场已处理\",\"handlePicture\":\"/upload/a.jpg\","
                                 + "\"alarmId\":999,\"status\":\"3\",\"assigneeId\":888}"))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.msg").value("工单完成已并入报警处理，请调用 /handle/save"));
 
-        ArgumentCaptor<AlarmWorkorder> captor = ArgumentCaptor.forClass(AlarmWorkorder.class);
-        verify(service).completeWorkorder(captor.capture());
-        assertNull(captor.getValue().getAlarmId());
-        assertNull(captor.getValue().getStatus());
-        assertNull(captor.getValue().getAssigneeId());
+        verify(service, never()).completeWorkorder(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
